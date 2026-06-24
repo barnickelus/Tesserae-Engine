@@ -79,6 +79,7 @@
 
   <div id="controls">
     <div class="group" id="semantic-group"><span class="label">SIZING</span></div>
+    <div class="group" id="contrast-group"><span class="label">CONTRAST</span></div>
     <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
     <div class="group" id="clip-group"><span class="label">CLIP</span></div>
     <div class="group" id="regions-group"><span class="label">DEBUG</span></div>
@@ -109,11 +110,15 @@
     // Manual assignment — tuned for the Soldier's standing bind pose.
     const FACE = 0, HAIR = 1, CLOTH = 2, BOOTS = 3;
     const REGIONS = [
-      { name: 'Face',     band: [0.80, 0.91], size: 0.55, color: 0xff7a59 },
-      { name: 'Hair',     band: [0.91, 1.01], size: 0.85, color: 0xb07aff },
-      { name: 'Clothing', band: [0.12, 0.80], size: 1.20, color: 0x4f9bff },
-      { name: 'Boots',    band: [-0.01, 0.12], size: 1.55, color: 0x5ad08a },
+      { name: 'Face',     band: [0.80, 0.91], size: 0.45, color: 0xff7a59 },
+      { name: 'Hair',     band: [0.91, 1.01], size: 0.70, color: 0xb07aff },
+      { name: 'Clothing', band: [0.12, 0.80], size: 1.00, color: 0x4f9bff },
+      { name: 'Boots',    band: [-0.01, 0.12], size: 1.85, color: 0x5ad08a },
     ];
+    // Contrast exaggerates the spread of region sizes (multiplicative, so always
+    // positive): effectiveSize = size ^ contrast. Clothing (size 1.0) is the
+    // baseline; higher contrast shrinks Face/Hair and grows Boots dramatically.
+    const CONTRASTS = [1, 2, 3];
     function classify(yFrac) {
       for (let r = 0; r < REGIONS.length; r++) { const b = REGIONS[r].band; if (yFrac >= b[0] && yFrac < b[1]) return r; }
       return CLOTH;
@@ -150,10 +155,10 @@
     }
 
     // ---- state ----
-    let count = DEFAULT_COUNT, semantic = true, regionsDebug = false;
+    let count = DEFAULT_COUNT, semantic = true, regionsDebug = false, contrast = 2;
     let root = null, mixer = null, action = null, clips = [];
     let skinned = null, skeleton = null, inst = null;
-    let target = new THREE.Vector3(), radius = 1;
+    let target = new THREE.Vector3(), radius = 1, baseSize = 1;
 
     // per-tessera data
     let sp = null, bindQuat = null, sIndex = null, sWeight = null, region = null;
@@ -214,12 +219,17 @@
       }
     }
 
+    function recomputeSizes() {
+      if (!semanticScale) return;
+      for (let i = 0; i < semanticScale.length; i++) semanticScale[i] = baseSize * Math.pow(REGIONS[region[i]].size, contrast);
+    }
+
     function buildInstances(n) {
       if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); }
-      const baseSize = (radius * 2) / Math.sqrt(n) * 1.7;
+      baseSize = (radius * 2) / Math.sqrt(n) * 1.7;
       uniformScale = baseSize;
       semanticScale = new Float32Array(n);
-      for (let i = 0; i < n; i++) semanticScale[i] = baseSize * REGIONS[region[i]].size;
+      recomputeSizes();
 
       const geo = new RoundedBoxGeometry(1, 1, 1, 2, 0.28);   // unit cube, scaled per-instance
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.12, vertexColors: regionsDebug });
@@ -308,6 +318,7 @@
       }
     }
     makeButtons('count-group', COUNTS, count, c => (c/1000)+'k', c => { count = c; rebuild(); });
+    makeButtons('contrast-group', CONTRASTS, contrast, c => c + '×', c => { contrast = c; recomputeSizes(); });
 
     (function semanticToggle() {
       const g = document.getElementById('semantic-group');
