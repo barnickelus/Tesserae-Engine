@@ -82,6 +82,7 @@
     <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
     <div class="group" id="clip-group"><span class="label">CLIP</span></div>
     <div class="group" id="regions-group"><span class="label">DEBUG</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
 
   <script type="importmap">
@@ -97,6 +98,7 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const MODEL_URL = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb';
     const COUNTS = [5000, 10000, 20000, 40000];
@@ -130,6 +132,22 @@
     const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.6, 1); scene.add(key);
     const rim = new THREE.DirectionalLight(0x4f7bff, 0.7); rim.position.set(-1, -0.4, -1); scene.add(rim);
     const ground = new THREE.GridHelper(20, 20, 0x1b2533, 0x131b26); scene.add(ground);
+
+    // orbit / zoom / pan — drag to rotate, pinch or scroll to zoom, two-finger pan
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+    controls.minDistance = 0.001;
+
+    // Fit the camera so the whole figure is in view, accounting for aspect ratio.
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(target);
+      camera.position.set(target.x, target.y + radius * 0.12, target.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
 
     // ---- state ----
     let count = DEFAULT_COUNT, semantic = true, regionsDebug = false;
@@ -217,7 +235,15 @@
       document.getElementById('count').textContent = n.toLocaleString();
     }
 
-    function rebuild() { if (!skinned) return; sampleSkinned(skinned.geometry, count); buildInstances(count); }
+    function rebuild() {
+      if (!skinned) return;
+      sampleSkinned(skinned.geometry, count);
+      buildInstances(count);
+      skinTesserae();                         // populate matrices so we can frame the real cloud
+      inst.computeBoundingSphere();
+      if (inst.boundingSphere) { target.copy(inst.boundingSphere.center); radius = inst.boundingSphere.radius || radius; }
+      frameView();
+    }
 
     function skinTesserae() {
       scene.updateMatrixWorld(true);
@@ -301,6 +327,15 @@
       document.getElementById('regions-group').appendChild(b);
     })();
 
+    (function viewButtons() {
+      const g = document.getElementById('view-group');
+      const reframe = document.createElement('button'); reframe.textContent = 'reframe';
+      reframe.onclick = () => frameView();
+      const spin = document.createElement('button'); spin.textContent = 'auto-spin'; spin.classList.add('active');
+      spin.onclick = () => { controls.autoRotate = !controls.autoRotate; spin.classList.toggle('active', controls.autoRotate); };
+      g.append(reframe, spin);
+    })();
+
     function buildClipButtons() {
       const g = document.getElementById('clip-group');
       [...g.querySelectorAll('button')].forEach(b => b.remove());
@@ -320,15 +355,13 @@
       }
       if (mixer) mixer.update(dt);
       if (inst && skeleton) skinTesserae();
-      const a = now * 0.0002, d = radius * 2.8;
-      camera.position.set(target.x + Math.sin(a)*d, target.y + radius*0.25, target.z + Math.cos(a)*d);
-      camera.lookAt(target);
+      controls.update();
       renderer.render(scene, camera);
       requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
     });
     requestAnimationFrame(tick);
   </script>

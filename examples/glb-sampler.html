@@ -88,6 +88,7 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const COUNTS = [10000, 25000, 50000];
     const PRIMS = ['rounded', 'cube', 'sphere', 'diamond', 'mix'];
@@ -108,6 +109,20 @@
     scene.add(new THREE.AmbientLight(0xffffff, 0.5));
     const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.4, 0.8); scene.add(key);
     const rim = new THREE.DirectionalLight(0x4f7bff, 0.7); rim.position.set(-1, -0.6, -1); scene.add(rim);
+
+    // orbit / zoom / pan — drag to rotate, pinch or scroll to zoom, two-finger pan
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+    controls.minDistance = 0.001;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.12, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
 
     // ---- state ----
     let count = 25000, primitive = 'rounded', sizeMul = SIZES.M;
@@ -252,7 +267,7 @@
       const box = new THREE.Box3().setFromObject(rootObj);
       const sph = box.getBoundingSphere(new THREE.Sphere());
       center.copy(sph.center); radius = sph.radius || 1;
-      camera.near = radius/100; camera.far = radius*100; camera.updateProjectionMatrix();
+      frameView();
 
       window._surface = mergeSurface(rootObj);
       srcTris = window._surface.positions.length / 9;
@@ -291,7 +306,8 @@
       nb.onclick = () => { normalsDebug = !normalsDebug; nb.classList.toggle('active', normalsDebug); rebuild(); };
       const gb = document.createElement('button'); gb.textContent = 'ghost mesh';
       gb.onclick = () => { showGhost = !showGhost; gb.classList.toggle('active', showGhost); if (ghost) ghost.visible = showGhost; };
-      g.append(nb, gb);
+      const rf = document.createElement('button'); rf.textContent = 'reframe'; rf.onclick = () => frameView();
+      g.append(nb, gb, rf);
     })();
 
     const fileBtn = document.createElement('button'); fileBtn.textContent = 'open .glb…';
@@ -317,15 +333,13 @@
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
-      const t = now * 0.00025, d = radius * 2.6;
-      camera.position.set(center.x + Math.sin(t)*d, center.y + radius*0.4, center.z + Math.cos(t)*d);
-      camera.lookAt(center);
+      controls.update();
       renderer.render(scene, camera);
       requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
     });
 
     loadURL(DEFAULT_URL, 'DamagedHelmet.glb');
