@@ -19,6 +19,7 @@ Tesserae-Engine/
 │   └── core/                 # Core types (Tessera + enums)
 ├── shaders/                  # GPU shader programs
 ├── examples/                 # Example scenes and demos
+│   └── primitive-cloud.html  # GPU-instanced tesserae perf benchmark
 └── assets/                   # Models, textures, and other resources
 ```
 
