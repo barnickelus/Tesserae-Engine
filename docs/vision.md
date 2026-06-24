@@ -25,5 +25,11 @@ influence, avatars, style packs — should flow from that idea.
 
 ## Guiding Principles
 
-- _Principle 1_
-- _Principle 2_
+- **Tesserae are sculptural pixels, not voxels.** Voxel engines preserve
+  *volume*; Tesserae-Engine preserves *perception*. A reconstruction may be less
+  geometrically faithful yet communicate the object more effectively — this
+  distinction is emerging as the defining concept of the project.
+- **Primitive shape is visual language.** The choice of sphere / cube / diamond
+  is part of how the object reads, not merely a geometric substitute.
+- **Preserve perception over volume.** When the two conflict, optimize for what
+  the eye understands at the intended reading distance.

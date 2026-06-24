@@ -23,7 +23,8 @@ Tesserae-Engine/
 ├── examples/                 # Example scenes and demos
 │   ├── primitive-cloud.html  # GPU-instanced tesserae perf benchmark
 │   ├── glb-sampler.html      # GLB → surface tesserae (form validation)
-│   └── tessera-avatar.html   # Animated GLB → bone-skinned tesserae
+│   ├── tessera-avatar.html   # Animated GLB → bone-skinned tesserae
+│   └── semantic-tesserae.html # Region-based semantic sizing experiment
 └── assets/                   # Models, textures, and other resources
 ```
 

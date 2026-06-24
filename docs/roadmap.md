@@ -41,17 +41,25 @@
 ### M4 — Primitive Mixing (visual language over geometric accuracy)
 - [x] Procedural primitive variation in `glb-sampler.html`
       (≈70% rounded cubes / 20% spheres / 10% diamonds)
-- [ ] Test the hypothesis: **voxels preserve shape; Tesserae should preserve
-      *perception*.** A mixed primitive set (sphere/cube/diamond) may communicate
-      an object better than uniform cubes even when less faithful — where the
-      Chuck Close influence begins.
+- [x] Validated: **primitive shape is visual language, not just a geometric
+      substitute.** Sphere reads most sculptural; cube reads voxelized; diamond
+      breaks surface continuity. Mixing adds *richness* more than fidelity.
+      Readability ranking observed: sphere > mixed > rounded > cube > diamond.
 
-### M5 — Optical Blending (future experiment)
+### M5 — Semantic Sizing (validate BEFORE optical blending)
+- [x] `examples/semantic-tesserae.html` — Soldier with tesserae sized by manual
+      body region (Face small → Hair → Clothing → Boots largest), with a
+      semantic-on/off toggle and a count control to A/B against "more tesserae"
+- [ ] **Answer:** does semantic variation improve character readability more than
+      simply adding more tesserae?
+- [ ] If yes → semantic sizing becomes a core architectural component, ahead of
+      optical blending, glyphs, and advanced materials.
+
+### M6 — Optical Blending (only after M5)
 - [ ] `examples/optical-blend-face.html` — compare flat-color voxels
       (1 voxel = 1 color) vs. tesserae (1 tessera = base color + accent + shape +
       material), with near→far zoom, to test whether optical blending yields a
-      stronger *perceived* image. Build after glb-sampler and tessera-avatar are
-      solid.
+      stronger *perceived* image. The Chuck Close-inspired face-plate system.
 
 ## Backlog
 
