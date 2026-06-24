@@ -54,6 +54,16 @@
       simply adding more tesserae?
 - [ ] If yes → semantic sizing becomes a core architectural component, ahead of
       optical blending, glyphs, and advanced materials.
+- Observed: shrinking randomly-sampled tesserae leaves **negative space** (random
+  points don't tile). This motivated the occupancy approach below.
+
+### M5b — Occupancy & Opacity (adaptive sparse voxels)
+- [x] `examples/tessera-occupancy.html` — tile the surface with a voxel grid;
+      **subdivide a tessera into an N³ cube of sub-tesserae** where detail is
+      needed. Each cell's **opacity = surface coverage** (empty → 0, full → 1),
+      so the form stays contiguous (no random gaps) and edges blend softly.
+- [ ] Decide whether occupancy+opacity (vs. point sampling) becomes the base
+      representation. This is also the natural substrate for optical blending.
 
 ### M6 — Optical Blending (only after M5)
 - [ ] `examples/optical-blend-face.html` — compare flat-color voxels
