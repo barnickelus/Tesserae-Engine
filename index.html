@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae-Engine · prototypes</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100%; background: #07090d; color: #d7e0ea;
+      font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      display: flex; align-items: center; justify-content: center; padding: 32px; }
+    main { width: 100%; max-width: 720px; }
+    h1 { font-size: 18px; letter-spacing: .16em; text-transform: uppercase; color: #8aa0b6; margin: 0 0 4px; }
+    .sub { color: #65788c; margin: 0 0 28px; }
+    a.card { display: block; text-decoration: none; color: inherit; margin: 12px 0; padding: 16px 18px;
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; transition: .15s; }
+    a.card:hover { background: rgba(47,109,240,.14); border-color: #2f6df0; }
+    .card h2 { margin: 0 0 4px; font-size: 15px; color: #eaf2fb; }
+    .card p { margin: 0; color: #8aa0b6; font-size: 13px; }
+    .arrow { float: right; color: #2f6df0; }
+    footer { margin-top: 28px; color: #4a5b6e; font-size: 12px; }
+    footer a { color: #6f9bf0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tesserae-Engine</h1>
+    <p class="sub">Adaptive rendering from procedural tesserae. Live prototypes:</p>
+
+    <a class="card" href="examples/glb-sampler.html">
+      <span class="arrow">→</span>
+      <h2>glb-sampler</h2>
+      <p>GLB → surface tesserae. Form-validation tool: ghost-mesh overlay, normals
+         debug, primitive mixing. Does the reconstruction still read as the model?</p>
+    </a>
+
+    <a class="card" href="examples/tessera-avatar.html">
+      <span class="arrow">→</span>
+      <h2>tessera-avatar</h2>
+      <p>Animated GLB → tesserae skinned to the skeleton. Do the tesserae stay
+         attached through animation? Loading + animation + instancing stress test.</p>
+    </a>
+
+    <a class="card" href="examples/primitive-cloud.html">
+      <span class="arrow">→</span>
+      <h2>primitive-cloud</h2>
+      <p>GPU-instanced benchmark, 10k–1M primitives, with an Animate Tesserae
+         toggle. How many (animated) tesserae can this device push?</p>
+    </a>
+
+    <footer>
+      Source: <a href="https://github.com/barnickelus/Tesserae-Engine">barnickelus/Tesserae-Engine</a>.
+      Best on a desktop GPU; also runs on iPad Safari.
+    </footer>
+  </main>
+</body>
+</html>
