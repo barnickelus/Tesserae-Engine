@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · tessera-avatar</title>
+  <!--
+    tessera-avatar.html — architecture-validation prototype.
+
+    Goal: stress every major system at once — loading, skeletal animation, LOD,
+    instancing, performance — and prove the core claim:
+
+        an animated skinned mesh, reconstructed as a cloud of tesserae, keeps
+        the tesserae ATTACHED to the body as it animates.
+
+    Pipeline:
+        GLB -> sample surface -> generate tesserae -> attach to bones
+            -> animate -> render (single InstancedMesh)
+
+    This is about architecture, not visual quality. No VRM yet. Rounded cubes,
+    ~10k animated tesserae, target 60 FPS on desktop.
+
+    Skinning approach: each tessera samples the skin binding (4 bone indices +
+    weights) of the nearest vertex of its source triangle, plus its surface bind
+    position. Every frame we re-skin all tesserae on the CPU using the skeleton's
+    live bone matrices, then push the result as instance matrices. Orientation is
+    kept at the bind-pose normal (architecture test = attachment, not polish).
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 210px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>tessera-avatar</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">bones</span><span id="bones" class="v">—</span></div>
+    <div class="row"><span class="k">clip</span><span id="clip" class="v">—</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
+  </div>
+
+  <div id="note"><div id="model">loading…</div></div>
+
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
+    <div class="group" id="clip-group"><span class="label">CLIP</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+    const BASE = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/';
+    const MODELS = {
+      Soldier: BASE + 'Soldier.glb',
+      Robot:   BASE + 'RobotExpressive/RobotExpressive.glb',
+      Fox:     BASE + 'Fox/glTF-Binary/Fox.glb',
+    };
+    const COUNTS = [5000, 10000, 20000];
+    const DEFAULT_COUNT = 10000;
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07090d);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.6, 1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x4f7bff, 0.7); rim.position.set(-1, -0.4, -1); scene.add(rim);
+    const ground = new THREE.GridHelper(20, 20, 0x1b2533, 0x131b26); scene.add(ground);
+
+    // ---- state ----
+    let count = DEFAULT_COUNT;
+    let root = null, mixer = null, action = null, clips = [];
+    let skinned = null, skeleton = null;
+    let inst = null;
+    let target = new THREE.Vector3(), radius = 1;
+    let showOriginal = false;
+
+    // per-tessera skin data
+    let sp = null;          // Float32Array(3N): bindMatrix * bindPos
+    let bindQuat = null;    // Float32Array(4N): orientation aligning +Z to bind normal
+    let sIndex = null;      // Uint16Array(4N)
+    let sWeight = null;     // Float32Array(4N)
+
+    // reusable scratch
+    const _M = new THREE.Matrix4();
+    const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+
+    const clock = new THREE.Clock();
+
+    // ---- sampling + skin binding ----
+    function quatToNormal(nx, ny, nz, arr, off) {
+      let r = nz + 1, x, y, z;
+      if (r < 1e-6) { r = 0; x = 0; y = -1; z = 0; }
+      else { x = -ny; y = nx; z = 0; }           // cross(+Z, n)
+      const len = Math.hypot(x, y, z, r) || 1;
+      arr[off] = x/len; arr[off+1] = y/len; arr[off+2] = z/len; arr[off+3] = r/len;
+    }
+
+    function sampleSkinned(geo, n) {
+      const pos = geo.attributes.position;
+      let nrm = geo.attributes.normal;
+      if (!nrm) { geo.computeVertexNormals(); nrm = geo.attributes.normal; }
+      const si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
+      const index = geo.index ? geo.index.array : null;
+      const triN = index ? index.length / 3 : pos.count / 3;
+      const vtx = (t, c) => index ? index[t * 3 + c] : t * 3 + c;
+
+      // cumulative areas
+      const cum = new Float64Array(triN);
+      let running = 0;
+      const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), AB = new THREE.Vector3(), AC = new THREE.Vector3();
+      for (let t = 0; t < triN; t++) {
+        A.fromBufferAttribute(pos, vtx(t,0)); B.fromBufferAttribute(pos, vtx(t,1)); C.fromBufferAttribute(pos, vtx(t,2));
+        AB.subVectors(B, A); AC.subVectors(C, A);
+        running += 0.5 * AB.cross(AC).length();
+        cum[t] = running;
+      }
+      const total = running;
+      const pick = (r) => { let lo = 0, hi = triN - 1, x = r * total; while (lo < hi) { const md = (lo+hi)>>1; if (cum[md] < x) lo = md+1; else hi = md; } return lo; };
+
+      sp = new Float32Array(n * 3); bindQuat = new Float32Array(n * 4);
+      sIndex = new Uint16Array(n * 4); sWeight = new Float32Array(n * 4);
+
+      const Na = new THREE.Vector3(), Nb = new THREE.Vector3(), Nc = new THREE.Vector3(), N = new THREE.Vector3(), P = new THREE.Vector3();
+      const bindMatrix = skinned.bindMatrix;
+      for (let i = 0; i < n; i++) {
+        const t = pick(Math.random());
+        const ia = vtx(t,0), ib = vtx(t,1), ic = vtx(t,2);
+        let u = Math.random(), v = Math.random(); if (u + v > 1) { u = 1 - u; v = 1 - v; } const w = 1 - u - v;
+
+        A.fromBufferAttribute(pos, ia); B.fromBufferAttribute(pos, ib); C.fromBufferAttribute(pos, ic);
+        P.set(A.x*w + B.x*u + C.x*v, A.y*w + B.y*u + C.y*v, A.z*w + B.z*u + C.z*v);
+        // sp = bindMatrix * bindPos
+        P.applyMatrix4(bindMatrix);
+        sp[i*3] = P.x; sp[i*3+1] = P.y; sp[i*3+2] = P.z;
+
+        Na.fromBufferAttribute(nrm, ia); Nb.fromBufferAttribute(nrm, ib); Nc.fromBufferAttribute(nrm, ic);
+        N.set(Na.x*w + Nb.x*u + Nc.x*v, Na.y*w + Nb.y*u + Nc.y*v, Na.z*w + Nb.z*u + Nc.z*v).normalize();
+        quatToNormal(N.x, N.y, N.z, bindQuat, i*4);
+
+        // skin from the dominant vertex of the triangle
+        const dom = (w >= u && w >= v) ? ia : (u >= v ? ib : ic);
+        let ix = si.getX(dom), iy = si.getY(dom), iz = si.getZ(dom), iw = si.getW(dom);
+        let wx = sw.getX(dom), wy = sw.getY(dom), wz = sw.getZ(dom), ww = sw.getW(dom);
+        const ws = wx + wy + wz + ww || 1;
+        sIndex[i*4] = ix; sIndex[i*4+1] = iy; sIndex[i*4+2] = iz; sIndex[i*4+3] = iw;
+        sWeight[i*4] = wx/ws; sWeight[i*4+1] = wy/ws; sWeight[i*4+2] = wz/ws; sWeight[i*4+3] = ww/ws;
+      }
+    }
+
+    function buildInstances(n) {
+      if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); }
+      const size = (radius * 2) / Math.sqrt(n) * 1.7;
+      const geo = new RoundedBoxGeometry(size, size, size, 2, size * 0.28);
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.12, color: 0x9fb4cc });
+      inst = new THREE.InstancedMesh(geo, mat, n);
+      inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      inst.frustumCulled = false;
+      scene.add(inst);
+      document.getElementById('count').textContent = n.toLocaleString();
+    }
+
+    function rebuild() {
+      if (!skinned) return;
+      sampleSkinned(skinned.geometry, count);
+      buildInstances(count);
+    }
+
+    // ---- per-frame skinning ----
+    function skinTesserae() {
+      scene.updateMatrixWorld(true);
+      skeleton.update();
+      const bm = skeleton.boneMatrices;            // Float32Array, 16 per bone (column-major)
+      _M.multiplyMatrices(skinned.matrixWorld, skinned.bindMatrixInverse);
+      const e = _M.elements;
+
+      for (let i = 0; i < count; i++) {
+        const spx = sp[i*3], spy = sp[i*3+1], spz = sp[i*3+2];
+        let ax = 0, ay = 0, az = 0;
+        for (let k = 0; k < 4; k++) {
+          const wk = sWeight[i*4+k]; if (wk === 0) continue;
+          const o = sIndex[i*4+k] * 16;
+          ax += wk * (bm[o]   * spx + bm[o+4] * spy + bm[o+8]  * spz + bm[o+12]);
+          ay += wk * (bm[o+1] * spx + bm[o+5] * spy + bm[o+9]  * spz + bm[o+13]);
+          az += wk * (bm[o+2] * spx + bm[o+6] * spy + bm[o+10] * spz + bm[o+14]);
+        }
+        _p.set(
+          e[0]*ax + e[4]*ay + e[8] *az + e[12],
+          e[1]*ax + e[5]*ay + e[9] *az + e[13],
+          e[2]*ax + e[6]*ay + e[10]*az + e[14],
+        );
+        _q.set(bindQuat[i*4], bindQuat[i*4+1], bindQuat[i*4+2], bindQuat[i*4+3]);
+        _s.setScalar(1);
+        _m.compose(_p, _q, _s);
+        inst.setMatrixAt(i, _m);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function clear() {
+      if (root) { scene.remove(root); }
+      if (inst) { scene.remove(inst); inst = null; }
+      root = mixer = action = skinned = skeleton = null; clips = [];
+    }
+    function onLoad(gltf, label) {
+      clear();
+      root = gltf.scene; scene.add(root);
+      root.traverse((o) => { if (o.isSkinnedMesh && !skinned) { skinned = o; skeleton = o.skeleton; } });
+      root.traverse((o) => { if (o.isMesh) o.visible = showOriginal; });
+
+      if (!skinned) { document.getElementById('model').textContent = label + ' — no skinned mesh'; return; }
+
+      // frame
+      const box = new THREE.Box3().setFromObject(root);
+      const sph = box.getBoundingSphere(new THREE.Sphere());
+      target.copy(sph.center); radius = sph.radius || 1;
+      camera.near = radius / 100; camera.far = radius * 100; camera.updateProjectionMatrix();
+      ground.position.y = box.min.y; ground.scale.setScalar(radius / 5);
+
+      mixer = new THREE.AnimationMixer(root);
+      clips = gltf.animations || [];
+      buildClipButtons();
+      if (clips.length) playClip(0);
+
+      document.getElementById('bones').textContent = skeleton.bones.length;
+      document.getElementById('model').textContent = label;
+      rebuild();
+    }
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (g) => onLoad(g, name), undefined,
+        () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    function playClip(i) {
+      if (!mixer || !clips[i]) return;
+      if (action) action.fadeOut(0.2);
+      action = mixer.clipAction(clips[i]); action.reset().fadeIn(0.2).play();
+      document.getElementById('clip').textContent = clips[i].name || ('clip ' + i);
+      [...document.querySelectorAll('#clip-group button')].forEach((b, idx) => b.classList.toggle('active', idx === i));
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId);
+      const map = new Map();
+      for (const it of items) {
+        const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active');
+        group.appendChild(b); map.set(it, b);
+      }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
+    makeButtons('count-group', COUNTS, count, c => (c/1000) + 'k', c => { count = c; rebuild(); });
+
+    function buildClipButtons() {
+      const g = document.getElementById('clip-group');
+      [...g.querySelectorAll('button')].forEach(b => b.remove());
+      clips.forEach((c, i) => {
+        const b = document.createElement('button'); b.textContent = c.name || ('clip ' + i);
+        b.onclick = () => playClip(i); g.appendChild(b);
+      });
+    }
+
+    (function viewToggle() {
+      const b = document.createElement('button'); b.textContent = 'original: off';
+      b.onclick = () => {
+        showOriginal = !showOriginal;
+        b.textContent = 'original: ' + (showOriginal ? 'on' : 'off'); b.classList.toggle('active', showOriginal);
+        if (root) root.traverse((o) => { if (o.isMesh) o.visible = showOriginal; });
+      };
+      document.getElementById('view-group').appendChild(b);
+    })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      const dt = clock.getDelta();
+      acc += now - lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames * 1000) / acc;
+        smoothed = smoothed ? smoothed * 0.7 + fps * 0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      if (mixer) mixer.update(dt);
+      if (inst && skeleton) skinTesserae();
+
+      const a = now * 0.0002, d = radius * 2.8;
+      camera.position.set(target.x + Math.sin(a) * d, target.y + radius * 0.25, target.z + Math.cos(a) * d);
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    loadModel('Soldier');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

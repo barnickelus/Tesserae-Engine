@@ -22,7 +22,8 @@ Tesserae-Engine/
 ├── shaders/                  # GPU shader programs
 ├── examples/                 # Example scenes and demos
 │   ├── primitive-cloud.html  # GPU-instanced tesserae perf benchmark
-│   └── glb-sampler.html      # GLB → surface tesserae reconstruction
+│   ├── glb-sampler.html      # GLB → surface tesserae (form validation)
+│   └── tessera-avatar.html   # Animated GLB → bone-skinned tesserae
 └── assets/                   # Models, textures, and other resources
 ```
 

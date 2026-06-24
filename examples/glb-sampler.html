@@ -5,37 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Tesserae · glb-sampler</title>
   <!--
-    glb-sampler.html — the first reconstruction prototype.
+    glb-sampler.html — form-reconstruction validation tool.
 
     Pipeline:   GLB  ->  sample surface  ->  generate tesserae  ->  InstancedMesh
 
-    Load a GLB (DamagedHelmet by default, or drop your own), convert its surface
-    into 10k / 25k / 50k surface tesserae, and render them as a single instanced
-    draw call. No animation, no face plates, no optical blending yet — this just
-    proves we can reconstruct geometry out of Tesserae.
+    The question is NOT "how many cubes" — it's whether a tesserae cloud
+    reconstructs the FORM of a model. Use the inspection modes to answer:
+      · Does the silhouette hold?           -> ghost the original mesh and compare
+      · Do curved surfaces read correctly?  -> orbit; try sphere/rounded primitives
+      · Are normals oriented correctly?     -> NORMALS debug colours each tessera by normal
+      · Does it still feel like the model?  -> try uniform vs MIXED primitives
 
-    The sampling math here is a self-contained JS port of the canonical engine
-    modules in src/geometry/ (SurfaceSampler / TesseraGenerator). Those .ts files
-    are the source of truth; this prototype inlines an equivalent so it runs by
-    simply opening the file (no build step).
+    Primitive mixing (70% rounded / 20% sphere / 10% diamond) tests the core
+    hypothesis: mixed primitives may preserve *perception* better than uniform
+    ones, even when less geometrically faithful (the Chuck Close influence).
+
+    Sampling math mirrors src/geometry/SurfaceSampler.ts + TesseraGenerator.ts;
+    inlined here so the prototype runs by just opening the file (no build step).
   -->
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
       font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
-    #app { position: fixed; inset: 0; }
-    canvas { display: block; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
     #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
       border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
-      border: 1px solid rgba(255,255,255,.08); min-width: 210px; user-select: none; -webkit-user-select: none; }
+      border: 1px solid rgba(255,255,255,.08); min-width: 220px; user-select: none; -webkit-user-select: none; }
     #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
     .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
     .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
     #fps { font-size: 22px; font-weight: 700; }
     .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
     #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
-      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
     .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
       backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
     .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
@@ -57,14 +60,18 @@
     <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
     <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
     <div class="row"><span class="k">source tris</span><span id="srctris" class="v">—</span></div>
+    <div class="row"><span class="k">primitive</span><span id="prim" class="v">—</span></div>
     <div class="row"><span class="k">tessera size</span><span id="size" class="v">—</span></div>
-    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
   </div>
 
   <div id="note"><div id="model">loading model…</div></div>
 
   <div id="controls">
     <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
+    <div class="group" id="prim-group"><span class="label">PRIMITIVE</span></div>
+    <div class="group" id="size-group"><span class="label">SIZE</span></div>
+    <div class="group" id="debug-group"><span class="label">INSPECT</span></div>
     <div class="group" id="file-group"><span class="label">MODEL</span></div>
   </div>
 
@@ -80,11 +87,13 @@
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
     const COUNTS = [10000, 25000, 50000];
-    const DEFAULT_COUNT = 25000;
-    // KhronosGroup sample asset, served with CORS via jsDelivr. If it fails to
-    // load we fall back to a procedural model so the prototype always runs.
+    const PRIMS = ['rounded', 'cube', 'sphere', 'diamond', 'mix'];
+    const SIZES = { S: 1.1, M: 1.6, L: 2.3 };
+    // 70% rounded / 20% sphere / 10% diamond — the procedural mix under test.
+    const MIX = [['rounded', 0.7], ['sphere', 0.9], ['diamond', 1.0]];
     const DEFAULT_URL = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
 
     // ---- renderer / scene ----
@@ -100,27 +109,28 @@
     const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.4, 0.8); scene.add(key);
     const rim = new THREE.DirectionalLight(0x4f7bff, 0.7); rim.position.set(-1, -0.6, -1); scene.add(rim);
 
-    let count = DEFAULT_COUNT;
-    let mesh = null;
-    let surface = null;     // merged { positions, normals } triangle soup in world space
-    let radius = 1;         // bounding sphere radius, for framing + tessera size
+    // ---- state ----
+    let count = 25000, primitive = 'rounded', sizeMul = SIZES.M;
+    let normalsDebug = false, showGhost = false;
+    let meshes = [];                  // one InstancedMesh per primitive type in use
+    let ghost = null;                 // original model (wireframe)
+    let samples = null;               // cached { px, py, pz, qx..qw } per tessera
+    let srcTris = 0, radius = 1;
+    const center = new THREE.Vector3();
 
-    // ---- surface sampling (JS port of src/geometry/SurfaceSampler.ts) ----
-    function buildSurface(root) {
+    // ---- surface merge + sampling (port of src/geometry/SurfaceSampler.ts) ----
+    function mergeSurface(rootObj) {
       const chunks = [];
-      root.updateWorldMatrix(true, true);
-      root.traverse((obj) => {
-        if (!obj.isMesh || !obj.geometry) return;
-        let g = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry.clone();
-        g = g.clone();
-        g.applyMatrix4(obj.matrixWorld);
+      rootObj.updateWorldMatrix(true, true);
+      rootObj.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+        g = g.clone(); g.applyMatrix4(o.matrixWorld);
         if (!g.attributes.normal) g.computeVertexNormals();
         chunks.push(g);
       });
-      let total = 0;
-      for (const g of chunks) total += g.attributes.position.count;
-      const positions = new Float32Array(total * 3);
-      const normals = new Float32Array(total * 3);
+      let total = 0; for (const g of chunks) total += g.attributes.position.count;
+      const positions = new Float32Array(total * 3), normals = new Float32Array(total * 3);
       let off = 0;
       for (const g of chunks) {
         positions.set(g.attributes.position.array, off * 3);
@@ -130,160 +140,191 @@
       return { positions, normals };
     }
 
-    function cumulativeAreas(s) {
-      const tris = s.positions.length / 9;
-      const cum = new Float64Array(tris);
-      let running = 0;
-      for (let t = 0; t < tris; t++) {
+    function resample(surface, n) {
+      const p = surface.positions, nr = surface.normals, triN = p.length / 9;
+      const cum = new Float64Array(triN); let running = 0;
+      for (let t = 0; t < triN; t++) {
         const o = t * 9;
-        const abx = s.positions[o+3]-s.positions[o],   aby = s.positions[o+4]-s.positions[o+1], abz = s.positions[o+5]-s.positions[o+2];
-        const acx = s.positions[o+6]-s.positions[o],   acy = s.positions[o+7]-s.positions[o+1], acz = s.positions[o+8]-s.positions[o+2];
-        const cx = aby*acz-abz*acy, cy = abz*acx-abx*acz, cz = abx*acy-aby*acx;
-        running += 0.5 * Math.hypot(cx, cy, cz);
-        cum[t] = running;
+        const abx=p[o+3]-p[o], aby=p[o+4]-p[o+1], abz=p[o+5]-p[o+2];
+        const acx=p[o+6]-p[o], acy=p[o+7]-p[o+1], acz=p[o+8]-p[o+2];
+        const cx=aby*acz-abz*acy, cy=abz*acx-abx*acz, cz=abx*acy-aby*acx;
+        running += 0.5 * Math.hypot(cx, cy, cz); cum[t] = running;
       }
-      return cum;
+      const total = running;
+      const pick = (r) => { let lo=0, hi=triN-1, x=r*total; while (lo<hi){ const m=(lo+hi)>>1; if (cum[m]<x) lo=m+1; else hi=m; } return lo; };
+
+      const out = { px:new Float32Array(n), py:new Float32Array(n), pz:new Float32Array(n),
+                    qx:new Float32Array(n), qy:new Float32Array(n), qz:new Float32Array(n), qw:new Float32Array(n) };
+      for (let i = 0; i < n; i++) {
+        const t = pick(Math.random()), o = t * 9;
+        let u = Math.random(), v = Math.random(); if (u+v>1){u=1-u;v=1-v;} const w = 1-u-v;
+        out.px[i] = p[o]*w + p[o+3]*u + p[o+6]*v;
+        out.py[i] = p[o+1]*w + p[o+4]*u + p[o+7]*v;
+        out.pz[i] = p[o+2]*w + p[o+5]*u + p[o+8]*v;
+        let nx = nr[o]*w + nr[o+3]*u + nr[o+6]*v, ny = nr[o+1]*w + nr[o+4]*u + nr[o+7]*v, nz = nr[o+2]*w + nr[o+5]*u + nr[o+8]*v;
+        const nl = Math.hypot(nx,ny,nz)||1; nx/=nl; ny/=nl; nz/=nl;
+        // quaternion aligning +Z to normal
+        let r = nz + 1, x, y, z;
+        if (r < 1e-6) { r = 0; x = 0; y = -1; z = 0; } else { x = -ny; y = nx; z = 0; }
+        const ql = Math.hypot(x,y,z,r)||1;
+        out.qx[i]=x/ql; out.qy[i]=y/ql; out.qz[i]=z/ql; out.qw[i]=r/ql;
+      }
+      return out;
     }
 
-    function pickTri(cum, r) {
-      const target = r * cum[cum.length - 1];
-      let lo = 0, hi = cum.length - 1;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < target) lo = m + 1; else hi = m; }
-      return lo;
+    function makeGeometry(kind, s) {
+      switch (kind) {
+        case 'cube':    return new THREE.BoxGeometry(s, s, s);
+        case 'sphere':  return new THREE.IcosahedronGeometry(s * 0.62, 1);
+        case 'diamond': return new THREE.OctahedronGeometry(s * 0.72, 0);
+        default:        return new RoundedBoxGeometry(s, s, s, 2, s * 0.28);
+      }
+    }
+    function assignType(i) {
+      if (primitive !== 'mix') return primitive;
+      const r = (Math.sin(i * 12.9898) * 43758.5453) % 1; const rr = r < 0 ? r + 1 : r; // stable per-index
+      for (const [type, thresh] of MIX) if (rr < thresh) return type;
+      return 'rounded';
     }
 
-    // Shortest-arc quaternion from local +Z to the surface normal (mirrors TesseraGenerator).
-    function quatToNormal(nx, ny, nz, out) {
-      let r = nz + 1, x, y, z;
-      if (r < 1e-6) { r = 0; x = 0; y = -1; z = 0; }
-      else { x = -ny; y = nx; z = 0; } // cross([0,0,1],[nx,ny,nz]) = (-ny, nx, 0)
-      const len = Math.hypot(x, y, z, r) || 1;
-      out.set(x/len, y/len, z/len, r/len);
-    }
+    // ---- build instanced meshes ----
+    function clearMeshes() { for (const m of meshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } meshes = []; }
 
-    function reconstruct() {
-      if (!surface) return;
-      if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }
+    function rebuild() {
+      if (!samples) return;
+      clearMeshes();
+      const baseSize = (radius * 2) / Math.sqrt(count) * sizeMul;
 
-      const cum = cumulativeAreas(surface);
-      const tessSize = (radius * 2) / Math.sqrt(count) * 1.6; // roughly tile the surface
-      const geo = new THREE.BoxGeometry(tessSize, tessSize, tessSize);
-      const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.1 });
-      mesh = new THREE.InstancedMesh(geo, mat, count);
-
-      const m = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), one = new THREE.Vector3(1,1,1);
-      const p = surface.positions, n = surface.normals;
+      // bucket tesserae indices by primitive type
+      const buckets = new Map();
       for (let i = 0; i < count; i++) {
-        const t = pickTri(cum, Math.random());
-        const o = t * 9;
-        let u = Math.random(), v = Math.random();
-        if (u + v > 1) { u = 1 - u; v = 1 - v; }
-        const w = 1 - u - v;
-        pos.set(
-          p[o]*w + p[o+3]*u + p[o+6]*v,
-          p[o+1]*w + p[o+4]*u + p[o+7]*v,
-          p[o+2]*w + p[o+5]*u + p[o+8]*v,
-        );
-        let nx = n[o]*w + n[o+3]*u + n[o+6]*v;
-        let ny = n[o+1]*w + n[o+4]*u + n[o+7]*v;
-        let nz = n[o+2]*w + n[o+5]*u + n[o+8]*v;
-        const nl = Math.hypot(nx, ny, nz) || 1; nx/=nl; ny/=nl; nz/=nl;
-        quatToNormal(nx, ny, nz, quat);
-        m.compose(pos, quat, one);
-        mesh.setMatrixAt(i, m);
+        const type = assignType(i);
+        if (!buckets.has(type)) buckets.set(type, []);
+        buckets.get(type).push(i);
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      scene.add(mesh);
+
+      const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), col = new THREE.Color();
+      for (const [type, ids] of buckets) {
+        const geo = makeGeometry(type, baseSize);
+        const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.1, vertexColors: normalsDebug });
+        if (!normalsDebug) mat.color.set(0x9fb4cc);
+        const im = new THREE.InstancedMesh(geo, mat, ids.length);
+        im.frustumCulled = false;
+        for (let j = 0; j < ids.length; j++) {
+          const i = ids[j];
+          _p.set(samples.px[i], samples.py[i], samples.pz[i]);
+          _q.set(samples.qx[i], samples.qy[i], samples.qz[i], samples.qw[i]);
+          _s.setScalar(1); _m.compose(_p, _q, _s); im.setMatrixAt(j, _m);
+          if (normalsDebug) {
+            // colour by normal direction (re-derived from the orientation's +Z)
+            const nx = 2*(samples.qx[i]*samples.qz[i] + samples.qw[i]*samples.qy[i]);
+            const ny = 2*(samples.qy[i]*samples.qz[i] - samples.qw[i]*samples.qx[i]);
+            const nz = 1 - 2*(samples.qx[i]*samples.qx[i] + samples.qy[i]*samples.qy[i]);
+            col.setRGB(nx*0.5+0.5, ny*0.5+0.5, nz*0.5+0.5); im.setColorAt(j, col);
+          }
+        }
+        im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+        scene.add(im); meshes.push(im);
+      }
 
       document.getElementById('count').textContent = count.toLocaleString();
-      document.getElementById('srctris').textContent = (surface.positions.length / 9).toLocaleString();
-      document.getElementById('size').textContent = tessSize.toPrecision(3);
+      document.getElementById('srctris').textContent = srcTris.toLocaleString();
+      document.getElementById('prim').textContent = primitive;
+      document.getElementById('size').textContent = baseSize.toPrecision(3);
+      document.getElementById('calls').textContent = String(meshes.length);
     }
 
-    function frameModel(root) {
-      const box = new THREE.Box3().setFromObject(root);
-      const sphere = box.getBoundingSphere(new THREE.Sphere());
-      radius = sphere.radius || 1;
-      controlsTarget.copy(sphere.center);
-      camera.near = radius / 100; camera.far = radius * 100; camera.updateProjectionMatrix();
+    function resampleAndRebuild() {
+      if (!window._surface) return;
+      samples = resample(window._surface, count);
+      rebuild();
     }
 
     // ---- model loading ----
     const loader = new GLTFLoader();
-    function loadFromObject(root, label) {
-      const tmp = new THREE.Scene(); tmp.add(root);
-      frameModel(root);
-      surface = buildSurface(root);
-      reconstruct();
+    function setGhost(rootObj) {
+      if (ghost) { scene.remove(ghost); }
+      ghost = rootObj.clone(true);
+      ghost.traverse((o) => { if (o.isMesh) o.material = new THREE.MeshBasicMaterial({ color: 0x335577, wireframe: true, transparent: true, opacity: 0.5 }); });
+      ghost.visible = showGhost; scene.add(ghost);
+    }
+    function loadFromObject(rootObj, label) {
+      const box = new THREE.Box3().setFromObject(rootObj);
+      const sph = box.getBoundingSphere(new THREE.Sphere());
+      center.copy(sph.center); radius = sph.radius || 1;
+      camera.near = radius/100; camera.far = radius*100; camera.updateProjectionMatrix();
+
+      window._surface = mergeSurface(rootObj);
+      srcTris = window._surface.positions.length / 9;
+      setGhost(rootObj);
+      resampleAndRebuild();
       document.getElementById('model').textContent = label;
     }
     function loadURL(url, label) {
       document.getElementById('model').textContent = 'loading…';
-      loader.load(url, (gltf) => loadFromObject(gltf.scene, label), undefined, () => proceduralFallback());
+      loader.load(url, (g) => loadFromObject(g.scene, label), undefined, () => fallback());
     }
     function loadArrayBuffer(buf, label) {
-      loader.parse(buf, '', (gltf) => loadFromObject(gltf.scene, label), () => proceduralFallback());
+      loader.parse(buf, '', (g) => loadFromObject(g.scene, label), () => fallback());
     }
-    function proceduralFallback() {
+    function fallback() {
       const g = new THREE.TorusKnotGeometry(1, 0.32, 220, 36);
-      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
-      loadFromObject(m, 'procedural torus knot (GLB load failed)');
+      loadFromObject(new THREE.Mesh(g, new THREE.MeshStandardMaterial()), 'procedural torus knot (GLB load failed)');
     }
 
     // ---- controls ----
     function makeButtons(groupId, items, current, label, onPick) {
-      const group = document.getElementById(groupId);
-      const map = new Map();
+      const group = document.getElementById(groupId); const map = new Map();
       for (const it of items) {
         const b = document.createElement('button'); b.textContent = label(it);
         b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
-        if (it === current) b.classList.add('active');
-        group.appendChild(b); map.set(it, b);
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b);
       }
     }
-    makeButtons('count-group', COUNTS, count, c => (c/1000) + 'k', c => { count = c; reconstruct(); });
+    makeButtons('count-group', COUNTS, count, c => (c/1000)+'k', c => { count = c; resampleAndRebuild(); });
+    makeButtons('prim-group', PRIMS, primitive, p => p, p => { primitive = p; rebuild(); });
+    makeButtons('size-group', Object.keys(SIZES), 'M', k => k, k => { sizeMul = SIZES[k]; rebuild(); });
 
-    const fileBtn = document.createElement('button');
-    fileBtn.textContent = 'open .glb…';
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.glb,.gltf,model/gltf-binary'; input.style.display = 'none';
+    (function debugButtons() {
+      const g = document.getElementById('debug-group');
+      const nb = document.createElement('button'); nb.textContent = 'normals';
+      nb.onclick = () => { normalsDebug = !normalsDebug; nb.classList.toggle('active', normalsDebug); rebuild(); };
+      const gb = document.createElement('button'); gb.textContent = 'ghost mesh';
+      gb.onclick = () => { showGhost = !showGhost; gb.classList.toggle('active', showGhost); if (ghost) ghost.visible = showGhost; };
+      g.append(nb, gb);
+    })();
+
+    const fileBtn = document.createElement('button'); fileBtn.textContent = 'open .glb…';
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.glb,.gltf,model/gltf-binary'; input.style.display = 'none';
     input.onchange = () => { const f = input.files[0]; if (f) f.arrayBuffer().then((b) => loadArrayBuffer(b, f.name)); };
     fileBtn.onclick = () => input.click();
     document.getElementById('file-group').append(fileBtn, input);
 
-    // drag & drop
     const drop = document.getElementById('drop');
     window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('show'); });
     window.addEventListener('dragleave', (e) => { if (e.target === drop) drop.classList.remove('show'); });
-    window.addEventListener('drop', (e) => {
-      e.preventDefault(); drop.classList.remove('show');
-      const f = e.dataTransfer.files[0];
-      if (f) f.arrayBuffer().then((b) => loadArrayBuffer(b, f.name));
-    });
+    window.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('show');
+      const f = e.dataTransfer.files[0]; if (f) f.arrayBuffer().then((b) => loadArrayBuffer(b, f.name)); });
 
     // ---- loop ----
-    const controlsTarget = new THREE.Vector3();
     const fpsEl = document.getElementById('fps');
     let last = performance.now(), acc = 0, frames = 0, smoothed = 0;
     function tick(now) {
       acc += now - last; last = now; frames++;
       if (acc >= 250) {
-        const fps = (frames * 1000) / acc;
-        smoothed = smoothed ? smoothed * 0.7 + fps * 0.3 : fps;
+        const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
         fpsEl.textContent = smoothed.toFixed(0);
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
-      const t = now * 0.00025;
-      const d = radius * 2.6;
-      camera.position.set(controlsTarget.x + Math.sin(t) * d, controlsTarget.y + radius * 0.4, controlsTarget.z + Math.cos(t) * d);
-      camera.lookAt(controlsTarget);
+      const t = now * 0.00025, d = radius * 2.6;
+      camera.position.set(center.x + Math.sin(t)*d, center.y + radius*0.4, center.z + Math.cos(t)*d);
+      camera.lookAt(center);
       renderer.render(scene, camera);
       requestAnimationFrame(tick);
     }
-
     window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 

@@ -1,12 +1,19 @@
 # Roadmap
 
 > Planned milestones and features for Tesserae-Engine.
+>
+> **Guiding question:** not "can we build an engine?" but "can a tesserae cloud
+> do something visually and perceptually new — can it *replace a mesh*?"
+> Everything below is optimized toward answering that. Stay experimental,
+> stay prototype-focused.
 
 ## Milestones
 
 ### M0 — Foundations
-- [ ] Repository structure and documentation scaffolding
-- [ ] Project tooling / build setup
+- [x] Repository structure and documentation scaffolding
+- [ ] Project tooling / build setup — **deferred until it's a blocker.**
+      Vite, tsconfig, bundlers, CI, linting are infrastructure, not progress,
+      while the core hypothesis is unproven. Prototypes stay self-contained HTML.
 
 ### M1 — Performance Proof
 - [x] `examples/primitive-cloud.html` — GPU-instanced primitive benchmark
@@ -14,21 +21,41 @@
 - [ ] Measure max tesserae (static **and** animated) on M-series Mac, gaming PC, iPad Safari
 - [ ] Target: ~100k tesserae smooth on iPad Safari, ~500k+ on desktop
 
-### M2 — Geometry Reconstruction
+### M2 — Form Reconstruction (the first truly important milestone)
 - [x] `src/geometry/` — SurfaceSampler, TesseraGenerator, SpatialLOD
-- [x] `examples/glb-sampler.html` — GLB → 10k/25k/50k surface tesserae
-- [ ] Validate reconstruction fidelity across a few standard models
-- [ ] `examples/tessera-avatar.html` — sample a VRM/avatar mesh into Tesserae
+- [x] `examples/glb-sampler.html` — GLB → 10k/25k/50k surface tesserae, with
+      inspection modes for form validation (ghost mesh, normals debug, size)
+- [ ] **Validate reconstruction by perception, not instance count:**
+  - [ ] Does the silhouette hold?
+  - [ ] Do curved surfaces read correctly?
+  - [ ] Are normals oriented correctly?
+  - [ ] Does the reconstruction still *feel like* the original model?
 
-### M3 — Continuous Abstraction
-- [ ] Abstraction slider (1% → 100%) driven by `SpatialLOD` cell size
-- [ ] Tie face-plate complexity, glyph density, and optical blending to abstraction
-- [ ] See [continuous-abstraction.md](continuous-abstraction.md)
+### M3 — Animated Avatar (stress every system at once)
+- [x] `examples/tessera-avatar.html` — animated GLB → sample → bind tesserae to
+      bones → animate → instanced render (Soldier/Robot/Fox, no VRM yet)
+- [ ] Success criteria: skeletal model loads; tesserae stay attached through
+      animation; instanced; rounded cubes; ~10k animated tesserae; 60 FPS desktop
+- [ ] Then revisit VRM / true avatars
+
+### M4 — Primitive Mixing (visual language over geometric accuracy)
+- [x] Procedural primitive variation in `glb-sampler.html`
+      (≈70% rounded cubes / 20% spheres / 10% diamonds)
+- [ ] Test the hypothesis: **voxels preserve shape; Tesserae should preserve
+      *perception*.** A mixed primitive set (sphere/cube/diamond) may communicate
+      an object better than uniform cubes even when less faithful — where the
+      Chuck Close influence begins.
+
+### M5 — Optical Blending (future experiment)
+- [ ] `examples/optical-blend-face.html` — compare flat-color voxels
+      (1 voxel = 1 color) vs. tesserae (1 tessera = base color + accent + shape +
+      material), with near→far zoom, to test whether optical blending yields a
+      stronger *perceived* image. Build after glb-sampler and tessera-avatar are
+      solid.
 
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
   the metal; revisit only if benchmarking proves library overhead is the
   bottleneck (vs. instance count / fragment shading / glyph generation).
-- Surface sampling, face plates, optical blending, materials beyond the
-  first reconstruction milestone.
+- Face plates, materials, glyph generation beyond reconstruction.
