@@ -19,9 +19,16 @@
         Boots    -> largest tesserae
 
     Controls let you A/B the real question:
-        · SEMANTIC on/off  — same count, sized-by-region vs uniform
-        · TESSERAE count   — does "more tesserae" beat "smarter sizes"?
-        · REGIONS          — colour by region to verify the assignment
+        · SIZING semantic/uniform   — same tesserae, sized-by-region vs uniform
+        · SAMPLING even/semantic    — redistribute the SAME budget by region
+                                      (face oversampled, boots undersampled)
+        · CONTRAST 1x/2x/3x         — exaggerate the size spread
+        · TESSERAE count            — does "more tesserae" beat smart allocation?
+        · REGIONS                   — colour by region; HUD shows per-region counts
+
+    The strongest test of the hypothesis is SIZING=semantic + SAMPLING=semantic:
+    many small tesserae on the face, few large ones on the boots — smart
+    allocation of a fixed budget vs. simply raising the count.
 
     Built on the tessera-avatar skinning pipeline: sample surface, bind each
     tessera to the skeleton via the nearest vertex's skin weights, re-skin on the
@@ -65,6 +72,8 @@
     <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
     <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
     <div class="row"><span class="k">sizing</span><span id="sizing" class="v">semantic</span></div>
+    <div class="row"><span class="k">sampling</span><span id="sampling" class="v">even</span></div>
+    <div class="row"><span class="k">alloc F/H/C/B</span><span id="alloc" class="v">—</span></div>
     <div class="row"><span class="k">clip</span><span id="clip" class="v">—</span></div>
     <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
     <div id="legend">
@@ -79,6 +88,7 @@
 
   <div id="controls">
     <div class="group" id="semantic-group"><span class="label">SIZING</span></div>
+    <div class="group" id="sampling-group"><span class="label">SAMPLING</span></div>
     <div class="group" id="contrast-group"><span class="label">CONTRAST</span></div>
     <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
     <div class="group" id="clip-group"><span class="label">CLIP</span></div>
@@ -108,12 +118,16 @@
     // Semantic regions: id, vertical band [lo,hi) as a fraction of model height
     // (0 = feet, 1 = top of head), size multiplier, and a debug colour.
     // Manual assignment — tuned for the Soldier's standing bind pose.
+    // size    = per-region tessera size multiplier (Face smallest → Boots largest)
+    // density = per-region sampling weight per unit area, used by SEMANTIC DENSITY
+    //           mode to redistribute the SAME tessera budget (face oversampled,
+    //           boots undersampled) instead of pure area-weighted sampling.
     const FACE = 0, HAIR = 1, CLOTH = 2, BOOTS = 3;
     const REGIONS = [
-      { name: 'Face',     band: [0.80, 0.91], size: 0.45, color: 0xff7a59 },
-      { name: 'Hair',     band: [0.91, 1.01], size: 0.70, color: 0xb07aff },
-      { name: 'Clothing', band: [0.12, 0.80], size: 1.00, color: 0x4f9bff },
-      { name: 'Boots',    band: [-0.01, 0.12], size: 1.85, color: 0x5ad08a },
+      { name: 'Face',     band: [0.80, 0.91], size: 0.45, density: 6.0, color: 0xff7a59 },
+      { name: 'Hair',     band: [0.91, 1.01], size: 0.70, density: 2.5, color: 0xb07aff },
+      { name: 'Clothing', band: [0.12, 0.80], size: 1.00, density: 1.0, color: 0x4f9bff },
+      { name: 'Boots',    band: [-0.01, 0.12], size: 1.85, density: 0.4, color: 0x5ad08a },
     ];
     // Contrast exaggerates the spread of region sizes (multiplicative, so always
     // positive): effectiveSize = size ^ contrast. Clothing (size 1.0) is the
@@ -155,7 +169,8 @@
     }
 
     // ---- state ----
-    let count = DEFAULT_COUNT, semantic = true, regionsDebug = false, contrast = 2;
+    let count = DEFAULT_COUNT, semantic = true, regionsDebug = false, contrast = 2, densityMode = false;
+    const regionCounts = [0, 0, 0, 0];
     let root = null, mixer = null, action = null, clips = [];
     let skinned = null, skeleton = null, inst = null;
     let target = new THREE.Vector3(), radius = 1, baseSize = 1;
@@ -184,17 +199,24 @@
       const vtx = (t, c) => index ? index[t * 3 + c] : t * 3 + c;
       geo.computeBoundingBox(); const minY = geo.boundingBox.min.y, spanY = (geo.boundingBox.max.y - minY) || 1;
 
+      // Build the triangle sampling distribution. In EVEN mode the weight is
+      // pure area (uniform surface density). In SEMANTIC DENSITY mode each
+      // triangle's weight is area × its region's density, so the same total
+      // budget is redistributed toward high-density regions (e.g. the face).
       const cum = new Float64Array(triN); let running = 0;
       const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), AB = new THREE.Vector3(), AC = new THREE.Vector3();
       for (let t = 0; t < triN; t++) {
         A.fromBufferAttribute(pos, vtx(t,0)); B.fromBufferAttribute(pos, vtx(t,1)); C.fromBufferAttribute(pos, vtx(t,2));
-        AB.subVectors(B, A); AC.subVectors(C, A); running += 0.5 * AB.cross(AC).length(); cum[t] = running;
+        AB.subVectors(B, A); AC.subVectors(C, A);
+        let wgt = 0.5 * AB.cross(AC).length();
+        if (densityMode) { const cy = (A.y + B.y + C.y) / 3; wgt *= REGIONS[classify((cy - minY) / spanY)].density; }
+        running += wgt; cum[t] = running;
       }
       const total = running;
       const pick = (r) => { let lo=0, hi=triN-1, x=r*total; while (lo<hi){ const md=(lo+hi)>>1; if (cum[md]<x) lo=md+1; else hi=md; } return lo; };
 
       sp = new Float32Array(n*3); bindQuat = new Float32Array(n*4);
-      sIndex = new Uint16Array(n*4); sWeight = new Float32Array(n*4); region = new Uint8Array(n);
+      sIndex = new Uint16Array(n*4); sWeight = new Float32Array(n*4); region = new Uint8Array(n); regionCounts.fill(0);
       const Na = new THREE.Vector3(), Nb = new THREE.Vector3(), Nc = new THREE.Vector3(), N = new THREE.Vector3(), P = new THREE.Vector3();
       const bindMatrix = skinned.bindMatrix;
       for (let i = 0; i < n; i++) {
@@ -203,7 +225,7 @@
 
         A.fromBufferAttribute(pos, ia); B.fromBufferAttribute(pos, ib); C.fromBufferAttribute(pos, ic);
         P.set(A.x*w + B.x*u + C.x*v, A.y*w + B.y*u + C.y*v, A.z*w + B.z*u + C.z*v);
-        region[i] = classify((P.y - minY) / spanY);              // assign by bind-pose height
+        region[i] = classify((P.y - minY) / spanY); regionCounts[region[i]]++;   // assign by bind-pose height
         P.applyMatrix4(bindMatrix); sp[i*3]=P.x; sp[i*3+1]=P.y; sp[i*3+2]=P.z;
 
         Na.fromBufferAttribute(nrm, ia); Nb.fromBufferAttribute(nrm, ib); Nc.fromBufferAttribute(nrm, ic);
@@ -243,6 +265,8 @@
       }
       scene.add(inst);
       document.getElementById('count').textContent = n.toLocaleString();
+      document.getElementById('alloc').textContent =
+        regionCounts[FACE] + ' / ' + regionCounts[HAIR] + ' / ' + regionCounts[CLOTH] + ' / ' + regionCounts[BOOTS];
     }
 
     function rebuild() {
@@ -328,6 +352,18 @@
         document.getElementById('sizing').textContent = semantic ? 'semantic' : 'uniform'; };
       on.onclick = () => { semantic = true; sync(); }; off.onclick = () => { semantic = false; sync(); };
       g.append(on, off); sync();
+    })();
+
+    (function samplingToggle() {
+      const g = document.getElementById('sampling-group');
+      const even = document.createElement('button'), dens = document.createElement('button');
+      even.textContent = 'even'; dens.textContent = 'semantic';
+      const sync = () => { dens.classList.toggle('active', densityMode); even.classList.toggle('active', !densityMode);
+        document.getElementById('sampling').textContent = densityMode ? 'semantic' : 'even'; };
+      // changing the sampling distribution requires a resample
+      even.onclick = () => { densityMode = false; sync(); rebuild(); };
+      dens.onclick = () => { densityMode = true; sync(); rebuild(); };
+      g.append(even, dens); sync();
     })();
 
     (function regionsToggle() {
