@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · glb-sampler</title>
+  <!--
+    glb-sampler.html — the first reconstruction prototype.
+
+    Pipeline:   GLB  ->  sample surface  ->  generate tesserae  ->  InstancedMesh
+
+    Load a GLB (DamagedHelmet by default, or drop your own), convert its surface
+    into 10k / 25k / 50k surface tesserae, and render them as a single instanced
+    draw call. No animation, no face plates, no optical blending yet — this just
+    proves we can reconstruct geometry out of Tesserae.
+
+    The sampling math here is a self-contained JS port of the canonical engine
+    modules in src/geometry/ (SurfaceSampler / TesseraGenerator). Those .ts files
+    are the source of truth; this prototype inlines an equivalent so it runs by
+    simply opening the file (no build step).
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 210px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+    #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      background: rgba(7,9,13,.85); border: 2px dashed #2f6df0; z-index: 10; font-size: 18px; color: #cdd9e6; }
+    #drop.show { display: flex; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="drop">drop a .glb / .gltf to reconstruct</div>
+
+  <div id="hud">
+    <h1>glb-sampler</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">source tris</span><span id="srctris" class="v">—</span></div>
+    <div class="row"><span class="k">tessera size</span><span id="size" class="v">—</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
+  </div>
+
+  <div id="note"><div id="model">loading model…</div></div>
+
+  <div id="controls">
+    <div class="group" id="count-group"><span class="label">TESSERAE</span></div>
+    <div class="group" id="file-group"><span class="label">MODEL</span></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const COUNTS = [10000, 25000, 50000];
+    const DEFAULT_COUNT = 25000;
+    // KhronosGroup sample asset, served with CORS via jsDelivr. If it fails to
+    // load we fall back to a procedural model so the prototype always runs.
+    const DEFAULT_URL = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07090d);
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 5000);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.4, 0.8); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x4f7bff, 0.7); rim.position.set(-1, -0.6, -1); scene.add(rim);
+
+    let count = DEFAULT_COUNT;
+    let mesh = null;
+    let surface = null;     // merged { positions, normals } triangle soup in world space
+    let radius = 1;         // bounding sphere radius, for framing + tessera size
+
+    // ---- surface sampling (JS port of src/geometry/SurfaceSampler.ts) ----
+    function buildSurface(root) {
+      const chunks = [];
+      root.updateWorldMatrix(true, true);
+      root.traverse((obj) => {
+        if (!obj.isMesh || !obj.geometry) return;
+        let g = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry.clone();
+        g = g.clone();
+        g.applyMatrix4(obj.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
+        chunks.push(g);
+      });
+      let total = 0;
+      for (const g of chunks) total += g.attributes.position.count;
+      const positions = new Float32Array(total * 3);
+      const normals = new Float32Array(total * 3);
+      let off = 0;
+      for (const g of chunks) {
+        positions.set(g.attributes.position.array, off * 3);
+        normals.set(g.attributes.normal.array, off * 3);
+        off += g.attributes.position.count;
+      }
+      return { positions, normals };
+    }
+
+    function cumulativeAreas(s) {
+      const tris = s.positions.length / 9;
+      const cum = new Float64Array(tris);
+      let running = 0;
+      for (let t = 0; t < tris; t++) {
+        const o = t * 9;
+        const abx = s.positions[o+3]-s.positions[o],   aby = s.positions[o+4]-s.positions[o+1], abz = s.positions[o+5]-s.positions[o+2];
+        const acx = s.positions[o+6]-s.positions[o],   acy = s.positions[o+7]-s.positions[o+1], acz = s.positions[o+8]-s.positions[o+2];
+        const cx = aby*acz-abz*acy, cy = abz*acx-abx*acz, cz = abx*acy-aby*acx;
+        running += 0.5 * Math.hypot(cx, cy, cz);
+        cum[t] = running;
+      }
+      return cum;
+    }
+
+    function pickTri(cum, r) {
+      const target = r * cum[cum.length - 1];
+      let lo = 0, hi = cum.length - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < target) lo = m + 1; else hi = m; }
+      return lo;
+    }
+
+    // Shortest-arc quaternion from local +Z to the surface normal (mirrors TesseraGenerator).
+    function quatToNormal(nx, ny, nz, out) {
+      let r = nz + 1, x, y, z;
+      if (r < 1e-6) { r = 0; x = 0; y = -1; z = 0; }
+      else { x = -ny; y = nx; z = 0; } // cross([0,0,1],[nx,ny,nz]) = (-ny, nx, 0)
+      const len = Math.hypot(x, y, z, r) || 1;
+      out.set(x/len, y/len, z/len, r/len);
+    }
+
+    function reconstruct() {
+      if (!surface) return;
+      if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }
+
+      const cum = cumulativeAreas(surface);
+      const tessSize = (radius * 2) / Math.sqrt(count) * 1.6; // roughly tile the surface
+      const geo = new THREE.BoxGeometry(tessSize, tessSize, tessSize);
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.1 });
+      mesh = new THREE.InstancedMesh(geo, mat, count);
+
+      const m = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), one = new THREE.Vector3(1,1,1);
+      const p = surface.positions, n = surface.normals;
+      for (let i = 0; i < count; i++) {
+        const t = pickTri(cum, Math.random());
+        const o = t * 9;
+        let u = Math.random(), v = Math.random();
+        if (u + v > 1) { u = 1 - u; v = 1 - v; }
+        const w = 1 - u - v;
+        pos.set(
+          p[o]*w + p[o+3]*u + p[o+6]*v,
+          p[o+1]*w + p[o+4]*u + p[o+7]*v,
+          p[o+2]*w + p[o+5]*u + p[o+8]*v,
+        );
+        let nx = n[o]*w + n[o+3]*u + n[o+6]*v;
+        let ny = n[o+1]*w + n[o+4]*u + n[o+7]*v;
+        let nz = n[o+2]*w + n[o+5]*u + n[o+8]*v;
+        const nl = Math.hypot(nx, ny, nz) || 1; nx/=nl; ny/=nl; nz/=nl;
+        quatToNormal(nx, ny, nz, quat);
+        m.compose(pos, quat, one);
+        mesh.setMatrixAt(i, m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      scene.add(mesh);
+
+      document.getElementById('count').textContent = count.toLocaleString();
+      document.getElementById('srctris').textContent = (surface.positions.length / 9).toLocaleString();
+      document.getElementById('size').textContent = tessSize.toPrecision(3);
+    }
+
+    function frameModel(root) {
+      const box = new THREE.Box3().setFromObject(root);
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      radius = sphere.radius || 1;
+      controlsTarget.copy(sphere.center);
+      camera.near = radius / 100; camera.far = radius * 100; camera.updateProjectionMatrix();
+    }
+
+    // ---- model loading ----
+    const loader = new GLTFLoader();
+    function loadFromObject(root, label) {
+      const tmp = new THREE.Scene(); tmp.add(root);
+      frameModel(root);
+      surface = buildSurface(root);
+      reconstruct();
+      document.getElementById('model').textContent = label;
+    }
+    function loadURL(url, label) {
+      document.getElementById('model').textContent = 'loading…';
+      loader.load(url, (gltf) => loadFromObject(gltf.scene, label), undefined, () => proceduralFallback());
+    }
+    function loadArrayBuffer(buf, label) {
+      loader.parse(buf, '', (gltf) => loadFromObject(gltf.scene, label), () => proceduralFallback());
+    }
+    function proceduralFallback() {
+      const g = new THREE.TorusKnotGeometry(1, 0.32, 220, 36);
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
+      loadFromObject(m, 'procedural torus knot (GLB load failed)');
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId);
+      const map = new Map();
+      for (const it of items) {
+        const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active');
+        group.appendChild(b); map.set(it, b);
+      }
+    }
+    makeButtons('count-group', COUNTS, count, c => (c/1000) + 'k', c => { count = c; reconstruct(); });
+
+    const fileBtn = document.createElement('button');
+    fileBtn.textContent = 'open .glb…';
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.glb,.gltf,model/gltf-binary'; input.style.display = 'none';
+    input.onchange = () => { const f = input.files[0]; if (f) f.arrayBuffer().then((b) => loadArrayBuffer(b, f.name)); };
+    fileBtn.onclick = () => input.click();
+    document.getElementById('file-group').append(fileBtn, input);
+
+    // drag & drop
+    const drop = document.getElementById('drop');
+    window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('show'); });
+    window.addEventListener('dragleave', (e) => { if (e.target === drop) drop.classList.remove('show'); });
+    window.addEventListener('drop', (e) => {
+      e.preventDefault(); drop.classList.remove('show');
+      const f = e.dataTransfer.files[0];
+      if (f) f.arrayBuffer().then((b) => loadArrayBuffer(b, f.name));
+    });
+
+    // ---- loop ----
+    const controlsTarget = new THREE.Vector3();
+    const fpsEl = document.getElementById('fps');
+    let last = performance.now(), acc = 0, frames = 0, smoothed = 0;
+    function tick(now) {
+      acc += now - last; last = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames * 1000) / acc;
+        smoothed = smoothed ? smoothed * 0.7 + fps * 0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      const t = now * 0.00025;
+      const d = radius * 2.6;
+      camera.position.set(controlsTarget.x + Math.sin(t) * d, controlsTarget.y + radius * 0.4, controlsTarget.z + Math.cos(t) * d);
+      camera.lookAt(controlsTarget);
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    loadURL(DEFAULT_URL, 'DamagedHelmet.glb');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

@@ -14,12 +14,15 @@ Tesserae-Engine/
 │   ├── primitive-system.md   # Design of the core primitive system
 │   ├── face-plate-system.md  # Face-plate system design
 │   ├── style-packs.md        # Style-pack system design
-│   └── tessera-object-model.md # The Tessera primitive and its enums
+│   ├── tessera-object-model.md # The Tessera primitive and its enums
+│   └── continuous-abstraction.md # Abstraction slider (sculpture ↔ representation)
 ├── src/                      # Engine source code
-│   └── core/                 # Core types (Tessera + enums)
+│   ├── core/                 # Core types (Tessera + enums)
+│   └── geometry/             # Surface sampling → Tessera reconstruction
 ├── shaders/                  # GPU shader programs
 ├── examples/                 # Example scenes and demos
-│   └── primitive-cloud.html  # GPU-instanced tesserae perf benchmark
+│   ├── primitive-cloud.html  # GPU-instanced tesserae perf benchmark
+│   └── glb-sampler.html      # GLB → surface tesserae reconstruction
 └── assets/                   # Models, textures, and other resources
 ```
 
@@ -32,6 +35,7 @@ Tesserae-Engine/
 - [Face-Plate System](docs/face-plate-system.md)
 - [Style Packs](docs/style-packs.md)
 - [Tessera Object Model](docs/tessera-object-model.md)
+- [Continuous Abstraction](docs/continuous-abstraction.md)
 
 ## Getting Started
 

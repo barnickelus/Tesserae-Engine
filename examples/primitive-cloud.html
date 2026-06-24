@@ -72,6 +72,7 @@
     <div class="row"><span class="k">primitive</span><span id="prim" class="v">—</span></div>
     <div class="row"><span class="k">tris</span><span id="tris" class="v">—</span></div>
     <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
+    <div class="row"><span class="k">motion</span><span id="motion" class="v">static</span></div>
   </div>
 
   <div id="note">
@@ -81,6 +82,7 @@
   <div id="controls">
     <div class="group" id="count-group"><span class="label">COUNT</span></div>
     <div class="group" id="prim-group"><span class="label">SHAPE</span></div>
+    <div class="group" id="motion-group"><span class="label">MOTION</span></div>
   </div>
 
   <script type="importmap">
@@ -102,6 +104,12 @@
     const FIELD = 60;            // half-extent of the cube volume instances fill
     const DEFAULT_COUNT = 50000;
     const DEFAULT_PRIM = 'cube';
+
+    // "Animate Tesserae" is not for the final engine yet — it exists to measure
+    // the cost that matters for VRM avatars: GPU rasterization + per-instance
+    // animation. When on, every instance gets sin-wave position offsets,
+    // rotation offsets, and scale "breathing" recomputed on the CPU each frame.
+    const ANIM = { posAmp: 1.6, posFreq: 1.4, rotFreq: 0.6, scaleAmp: 0.18, scaleFreq: 2.0 };
 
     // ---- renderer / scene ------------------------------------------------
     const app = document.getElementById('app');
@@ -149,6 +157,47 @@
     let mesh = null;
     let primitive = DEFAULT_PRIM;
     let count = DEFAULT_COUNT;
+    let animate = false;
+
+    // Reused scratch objects — no per-frame allocation in the animation path.
+    const _m = new THREE.Matrix4();
+    const _pos = new THREE.Vector3(), _quat = new THREE.Quaternion(), _scl = new THREE.Vector3();
+    const _aEuler = new THREE.Euler(), _aQuat = new THREE.Quaternion();
+
+    function setStaticMatrices() {
+      for (let i = 0; i < count; i++) {
+        const o = i * 8;
+        _pos.set(seeds[o], seeds[o + 1], seeds[o + 2]);
+        _quat.set(seeds[o + 3], seeds[o + 4], seeds[o + 5], seeds[o + 6]);
+        const s = seeds[o + 7]; _scl.set(s, s, s);
+        _m.compose(_pos, _quat, _scl);
+        mesh.setMatrixAt(i, _m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Per-frame CPU update of every instance — this is the "animation cost" the
+    // toggle is meant to measure.
+    function animateMatrices(t) {
+      const a = ANIM;
+      for (let i = 0; i < count; i++) {
+        const o = i * 8;
+        const phase = seeds[o] + seeds[o + 1];          // per-instance phase
+        _pos.set(
+          seeds[o]     + Math.sin(t * a.posFreq + phase) * a.posAmp,
+          seeds[o + 1] + Math.cos(t * a.posFreq * 0.9 + phase * 1.3) * a.posAmp,
+          seeds[o + 2] + Math.sin(t * a.posFreq * 1.1 + phase * 0.7) * a.posAmp,
+        );
+        _aEuler.set(t * a.rotFreq + phase, t * a.rotFreq * 0.8, 0);
+        _aQuat.setFromEuler(_aEuler);
+        _quat.set(seeds[o + 3], seeds[o + 4], seeds[o + 5], seeds[o + 6]).multiply(_aQuat);
+        const s = seeds[o + 7] * (1 + a.scaleAmp * Math.sin(t * a.scaleFreq + phase));
+        _scl.set(s, s, s);
+        _m.compose(_pos, _quat, _scl);
+        mesh.setMatrixAt(i, _m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
 
     function build() {
       if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }
@@ -156,23 +205,15 @@
       const geo = makeGeometry(primitive);
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.1, vertexColors: true });
       mesh = new THREE.InstancedMesh(geo, mat, count);
-      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-      const m = new THREE.Matrix4();
-      const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
       const color = new THREE.Color();
       for (let i = 0; i < count; i++) {
-        const o = i * 8;
-        pos.set(seeds[o], seeds[o + 1], seeds[o + 2]);
-        quat.set(seeds[o + 3], seeds[o + 4], seeds[o + 5], seeds[o + 6]);
-        const s = seeds[o + 7]; scl.set(s, s, s);
-        m.compose(pos, quat, scl);
-        mesh.setMatrixAt(i, m);
         // hue from position — purely so the cloud reads as volume, not a perf factor
-        color.setHSL(0.55 + 0.12 * (seeds[o + 1] / FIELD), 0.5, 0.55);
+        color.setHSL(0.55 + 0.12 * (seeds[i * 8 + 1] / FIELD), 0.5, 0.55);
         mesh.setColorAt(i, color);
       }
-      mesh.instanceMatrix.needsUpdate = true;
+      setStaticMatrices();
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       scene.add(mesh);
 
@@ -204,6 +245,23 @@
     makeButtons('prim-group', PRIMITIVES, primitive, p => p,
       p => { primitive = p; build(); });
 
+    // Animate Tesserae toggle — flips per-frame CPU animation on/off.
+    (function motionToggle() {
+      const b = document.createElement('button');
+      const sync = () => {
+        b.textContent = animate ? 'animate: on' : 'animate: off';
+        b.classList.toggle('active', animate);
+        document.getElementById('motion').textContent = animate ? 'animated' : 'static';
+      };
+      b.onclick = () => {
+        animate = !animate;
+        if (!animate && mesh) setStaticMatrices();   // restore base pose
+        sync();
+      };
+      sync();
+      document.getElementById('motion-group').appendChild(b);
+    })();
+
     // ---- GPU label -------------------------------------------------------
     (function gpuInfo() {
       try {
@@ -230,6 +288,9 @@
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
+      // per-instance animation (CPU) — the cost we want to measure
+      if (animate && mesh) animateMatrices(now * 0.001);
+
       // slow auto-orbit so the full instance set is re-rasterized every frame
       const t = now * 0.0001;
       camera.position.x = Math.sin(t) * FIELD * 2.1;
