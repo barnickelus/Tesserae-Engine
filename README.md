@@ -11,8 +11,12 @@ Tesserae-Engine/
 │   ├── vision.md             # What the engine is and why it exists
 │   ├── architecture.md       # High-level technical architecture
 │   ├── roadmap.md            # Planned milestones and features
-│   └── primitive-system.md   # Design of the core primitive system
+│   ├── primitive-system.md   # Design of the core primitive system
+│   ├── face-plate-system.md  # Face-plate system design
+│   ├── style-packs.md        # Style-pack system design
+│   └── tessera-object-model.md # The Tessera primitive and its enums
 ├── src/                      # Engine source code
+│   └── core/                 # Core types (Tessera + enums)
 ├── shaders/                  # GPU shader programs
 ├── examples/                 # Example scenes and demos
 └── assets/                   # Models, textures, and other resources
@@ -24,6 +28,9 @@ Tesserae-Engine/
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Primitive System](docs/primitive-system.md)
+- [Face-Plate System](docs/face-plate-system.md)
+- [Style Packs](docs/style-packs.md)
+- [Tessera Object Model](docs/tessera-object-model.md)
 
 ## Getting Started
 
