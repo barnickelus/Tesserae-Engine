@@ -15,9 +15,12 @@
         full cell    -> 1 opacity (solid)
         edge cell    -> partial   (a soft, optically-blended boundary)
 
-    This keeps the form contiguous, resolves detail only where asked, and is the
-    natural bridge to optical blending. Static model (Soldier bind pose / helmet)
-    so the voxelization stays clear; animation can come later.
+    Detail is multi-level: each base cell gets a LEVEL (0..N-1) from a detail
+    field (surface curvature or height) and subdivides into an (L+1)³ grid, with
+    dithered level boundaries so detail ramps smoothly instead of a hard split.
+    The coverage scalar can drive alpha, a material colour ramp (tint), or
+    nothing (solid). Static model (Soldier / helmet) so it stays clear;
+    animation can come later.
   -->
   <style>
     :root { color-scheme: dark; }
@@ -52,8 +55,8 @@
     <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
     <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
     <div class="row"><span class="k">base grid</span><span id="grid" class="v">—</span></div>
-    <div class="row"><span class="k">detail grid</span><span id="fine" class="v">—</span></div>
-    <div class="row"><span class="k">opacity</span><span id="op" class="v">alpha</span></div>
+    <div class="row"><span class="k">levels · src</span><span id="fine" class="v">—</span></div>
+    <div class="row"><span class="k">scalar</span><span id="op" class="v">alpha</span></div>
     <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
   </div>
 
@@ -62,10 +65,10 @@
   <div id="controls">
     <div class="group" id="model-group"><span class="label">MODEL</span></div>
     <div class="group" id="res-group"><span class="label">RESOLUTION</span></div>
-    <div class="group" id="sub-group"><span class="label">SUBDIVIDE</span></div>
-    <div class="group" id="region-group"><span class="label">DETAIL</span></div>
+    <div class="group" id="sub-group"><span class="label">LEVELS</span></div>
+    <div class="group" id="region-group"><span class="label">SOURCE</span></div>
     <div class="group" id="thr-group"><span class="label">CULL</span></div>
-    <div class="group" id="opacity-group"><span class="label">OPACITY</span></div>
+    <div class="group" id="opacity-group"><span class="label">SCALAR</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
 
@@ -89,10 +92,13 @@
       Helmet:  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
     };
     const RES = [16, 22, 30];          // base grid cells along the largest axis
-    const SUBS = [1, 2, 3];            // subdivide a detail cell into N x N x N
+    const LEVELS = [1, 2, 3, 4];       // max detail levels (1 = uniform base grid)
+    const SOURCES = ['curvature', 'height'];   // what drives per-cell detail level
+    const SCALARS = ['alpha', 'tint', 'solid']; // what surface coverage maps to
     const CULL = { none: 0, low: 0.18, med: 0.35 };
-    const HEAD_BAND = 0.78;            // height fraction above which = "detail" region
-    const K = 160000;                  // surface samples used to estimate occupancy
+    const CURV_GAIN = 5.0;             // amplifies curvature into a [0,1] detail field
+    const K = 200000;                  // surface samples used to estimate occupancy
+    const RAMP_LO = new THREE.Color(0x3b73d6), RAMP_HI = new THREE.Color(0xffc06a); // tint ramp
 
     // ---- renderer / scene ----
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -121,7 +127,7 @@
     }
 
     // ---- state ----
-    let modelName = 'Soldier', baseRes = 22, sub = 2, region = 'head', cull = CULL.none, alpha = true;
+    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha';
     let surface = null, inst = null;
 
     // ---- surface merge + area-weighted point sampling ----
@@ -132,15 +138,22 @@
         if (!o.isMesh || !o.geometry) return;
         let g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
         g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
         chunks.push(g);
       });
       let total = 0; for (const g of chunks) total += g.attributes.position.count;
-      const positions = new Float32Array(total * 3); let off = 0;
-      for (const g of chunks) { positions.set(g.attributes.position.array, off * 3); off += g.attributes.position.count; }
-      return { positions };
+      const positions = new Float32Array(total * 3), normals = new Float32Array(total * 3); let off = 0;
+      for (const g of chunks) {
+        positions.set(g.attributes.position.array, off * 3);
+        normals.set(g.attributes.normal.array, off * 3);
+        off += g.attributes.position.count;
+      }
+      return { positions, normals };
     }
+    // Area-weighted surface points, with interpolated normals (used to estimate
+    // per-cell curvature for the detail field).
     function samplePoints(surf, n) {
-      const p = surf.positions, triN = p.length / 9;
+      const p = surf.positions, nr = surf.normals, triN = p.length / 9;
       const cum = new Float64Array(triN); let running = 0;
       for (let t = 0; t < triN; t++) {
         const o = t * 9;
@@ -151,65 +164,94 @@
       }
       const total = running;
       const pick = (r) => { let lo=0, hi=triN-1, x=r*total; while (lo<hi){ const m=(lo+hi)>>1; if (cum[m]<x) lo=m+1; else hi=m; } return lo; };
-      const out = new Float32Array(n * 3);
+      const out = new Float32Array(n * 3), on = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) {
         const t = pick(Math.random()), o = t * 9;
         let u = Math.random(), v = Math.random(); if (u+v>1){u=1-u;v=1-v;} const w = 1-u-v;
         out[i*3]   = p[o]*w   + p[o+3]*u + p[o+6]*v;
         out[i*3+1] = p[o+1]*w + p[o+4]*u + p[o+7]*v;
         out[i*3+2] = p[o+2]*w + p[o+5]*u + p[o+8]*v;
+        let nx = nr[o]*w + nr[o+3]*u + nr[o+6]*v, ny = nr[o+1]*w + nr[o+4]*u + nr[o+7]*v, nz = nr[o+2]*w + nr[o+5]*u + nr[o+8]*v;
+        const nl = Math.hypot(nx,ny,nz) || 1; on[i*3]=nx/nl; on[i*3+1]=ny/nl; on[i*3+2]=nz/nl;
       }
-      return out;
+      return { pts: out, nrm: on };
     }
 
-    // ---- voxel occupancy ----
-    function emit(map, cell, cullFrac, list) {
-      if (map.size === 0) return;
-      const counts = [...map.values()].map(c => c.n).sort((a, b) => a - b);
-      const p90 = counts[Math.floor(counts.length * 0.9)] || 1;
-      for (const c of map.values()) {
-        const frac = c.n / p90;
-        if (frac < cullFrac) continue;
-        const op = Math.min(1, Math.max(0.12, Math.sqrt(frac)));
-        list.push((c.ix + 0.5) * cell, (c.iy + 0.5) * cell, (c.iz + 0.5) * cell, cell * 0.92, op);
-      }
-    }
+    // ---- multi-level voxel occupancy ----
+    // Each base cell is assigned a detail LEVEL (0..maxLevel-1) from a detail
+    // field (surface curvature or height). Level L subdivides that cell into an
+    // (L+1)³ grid, so detail ramps across several levels instead of a binary
+    // coarse/fine split. The level threshold is dithered per base cell so the
+    // boundary between levels breaks up instead of forming a hard seam.
+    const cellHash = (a, b, c) => { let h = (a * 73856093) ^ (b * 19349663) ^ (c * 83492791); return ((h >>> 0) % 1024) / 1024; };
+
     function voxelize() {
-      const pts = samplePoints(surface, K);
+      const { pts, nrm } = samplePoints(surface, K);
       let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
       for (let i = 0; i < K; i++) { const x=pts[i*3],y=pts[i*3+1],z=pts[i*3+2];
         if(x<minx)minx=x; if(x>maxx)maxx=x; if(y<miny)miny=y; if(y>maxy)maxy=y; if(z<minz)minz=z; if(z>maxz)maxz=z; }
       const maxDim = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
       const baseCell = maxDim / baseRes;
-      const fineCell = baseCell / sub;
       const spanY = (maxy - miny) || 1;
 
-      const coarse = new Map(), fine = new Map();
-      const bin = (map, cell, x, y, z) => {
-        const ix = Math.floor(x/cell), iy = Math.floor(y/cell), iz = Math.floor(z/cell);
-        const k = ix + '_' + iy + '_' + iz; let e = map.get(k);
-        if (!e) { e = { ix, iy, iz, n: 0 }; map.set(k, e); } e.n++;
-      };
+      // pass 1: per base cell, accumulate mean normal (for curvature)
+      const stats = new Map();
       for (let i = 0; i < K; i++) {
         const x=pts[i*3], y=pts[i*3+1], z=pts[i*3+2];
-        const detail = sub > 1 && (region === 'all' || (y - miny) / spanY >= HEAD_BAND);
-        if (detail) bin(fine, fineCell, x, y, z); else bin(coarse, baseCell, x, y, z);
+        const ix=Math.floor(x/baseCell), iy=Math.floor(y/baseCell), iz=Math.floor(z/baseCell);
+        const k = ix + '_' + iy + '_' + iz; let e = stats.get(k);
+        if (!e) { e = { ix, iy, iz, n: 0, nx: 0, ny: 0, nz: 0, level: 0 }; stats.set(k, e); }
+        e.n++; e.nx += nrm[i*3]; e.ny += nrm[i*3+1]; e.nz += nrm[i*3+2];
       }
-
+      // assign a detail level to each base cell
+      for (const e of stats.values()) {
+        let d;
+        if (source === 'curvature') { const ml = Math.hypot(e.nx, e.ny, e.nz) / e.n; d = Math.min(1, (1 - ml) * CURV_GAIN); }
+        else { const cy = (e.iy + 0.5) * baseCell; d = Math.pow((cy - miny) / spanY, 1.3); }
+        e.level = Math.max(0, Math.min(maxLevel - 1, Math.floor(d * (maxLevel - 1) + cellHash(e.ix, e.iy, e.iz))));
+      }
+      // pass 2: bin each sample at its base cell's level resolution
+      const cells = new Map();
+      for (let i = 0; i < K; i++) {
+        const x=pts[i*3], y=pts[i*3+1], z=pts[i*3+2];
+        const bk = Math.floor(x/baseCell) + '_' + Math.floor(y/baseCell) + '_' + Math.floor(z/baseCell);
+        const st = stats.get(bk); const lvl = st ? st.level : 0;
+        const cell = baseCell / (lvl + 1);
+        const ix=Math.floor(x/cell), iy=Math.floor(y/cell), iz=Math.floor(z/cell);
+        const k = lvl + '|' + ix + '_' + iy + '_' + iz; let e = cells.get(k);
+        if (!e) { e = { lvl, ix, iy, iz, n: 0 }; cells.set(k, e); } e.n++;
+      }
+      // emit, normalising occupancy per level (cell volumes differ by level)
+      const byLevel = []; for (let L = 0; L < maxLevel; L++) byLevel.push([]);
+      for (const c of cells.values()) byLevel[c.lvl].push(c);
       const list = [];
-      emit(coarse, baseCell, cull, list);
-      emit(fine, fineCell, cull, list);
-      buildInstances(list, alpha);
+      for (let L = 0; L < maxLevel; L++) {
+        const arr = byLevel[L]; if (!arr.length) continue;
+        const counts = arr.map(c => c.n).sort((a, b) => a - b);
+        const p90 = counts[Math.floor(counts.length * 0.9)] || 1;
+        const cell = baseCell / (L + 1);
+        for (const c of arr) {
+          const frac = c.n / p90; if (frac < cull) continue;
+          const cov = Math.min(1, Math.max(0.12, Math.sqrt(frac)));
+          list.push((c.ix + 0.5) * cell, (c.iy + 0.5) * cell, (c.iz + 0.5) * cell, cell * 0.9, cov);
+        }
+      }
+      buildInstances(list);
 
       document.getElementById('grid').textContent = baseRes + '³';
-      document.getElementById('fine').textContent = (sub > 1) ? (baseRes * sub) + '³ · ' + region : 'off';
+      document.getElementById('fine').textContent = maxLevel + ' · ' + source;
       document.getElementById('count').textContent = (list.length / 5).toLocaleString();
     }
 
-    // ---- per-instance opacity material ----
+    // ---- per-instance scalar material ----
+    // The per-cell coverage scalar can drive transparency (alpha), a material
+    // colour ramp (tint — a stand-in for "how much of material X"), or nothing
+    // (solid). Opacity is injected per-instance into the standard material.
     function makeMaterial() {
-      const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.1, color: 0x9fb4cc });
-      mat.transparent = alpha; mat.depthWrite = true;
+      const tint = scalar === 'tint';
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.1, vertexColors: tint });
+      if (!tint) mat.color.set(0x9fb4cc);
+      mat.transparent = (scalar === 'alpha'); mat.depthWrite = true;
       mat.onBeforeCompile = (shader) => {
         shader.vertexShader = 'attribute float instanceOpacity;\nvarying float vOpacity;\n' +
           shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vOpacity = instanceOpacity;');
@@ -218,21 +260,24 @@
       };
       return mat;
     }
-    function buildInstances(list, useAlpha) {
+    function buildInstances(list) {
       if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); }
       const n = list.length / 5;
       const geo = new RoundedBoxGeometry(1, 1, 1, 2, 0.18);
       const opac = new Float32Array(n);
       inst = new THREE.InstancedMesh(geo, makeMaterial(), n);
       inst.frustumCulled = false;
-      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color();
       for (let i = 0; i < n; i++) {
+        const cov = list[i*5+4];
         p.set(list[i*5], list[i*5+1], list[i*5+2]); s.setScalar(list[i*5+3]);
         m.compose(p, q, s); inst.setMatrixAt(i, m);
-        opac[i] = useAlpha ? list[i*5+4] : 1;
+        opac[i] = (scalar === 'alpha') ? cov : 1;
+        if (scalar === 'tint') { col.copy(RAMP_LO).lerp(RAMP_HI, cov); inst.setColorAt(i, col); }
       }
       geo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(opac, 1));
       inst.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       scene.add(inst);
     }
 
@@ -263,11 +308,11 @@
     const reVoxel = () => { if (surface) voxelize(); };
     makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
     makeButtons('res-group', RES, baseRes, r => r + '³', r => { baseRes = r; reVoxel(); });
-    makeButtons('sub-group', SUBS, sub, s => (s === 1 ? 'off' : s + '×'), s => { sub = s; reVoxel(); });
-    makeButtons('region-group', ['head', 'all'], region, r => r, r => { region = r; reVoxel(); });
+    makeButtons('sub-group', LEVELS, maxLevel, L => (L === 1 ? 'flat' : L + ' lvl'), L => { maxLevel = L; reVoxel(); });
+    makeButtons('region-group', SOURCES, source, s => s, s => { source = s; reVoxel(); });
     makeButtons('thr-group', Object.keys(CULL), 'none', k => k, k => { cull = CULL[k]; reVoxel(); });
-    makeButtons('opacity-group', ['alpha', 'solid'], 'alpha', o => o, o => {
-      alpha = (o === 'alpha'); document.getElementById('op').textContent = o; reVoxel(); });
+    makeButtons('opacity-group', SCALARS, scalar, o => o, o => {
+      scalar = o; document.getElementById('op').textContent = o; reVoxel(); });
 
     (function viewButtons() {
       const g = document.getElementById('view-group');

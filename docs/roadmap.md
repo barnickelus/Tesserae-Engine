@@ -62,8 +62,18 @@
       **subdivide a tessera into an N³ cube of sub-tesserae** where detail is
       needed. Each cell's **opacity = surface coverage** (empty → 0, full → 1),
       so the form stays contiguous (no random gaps) and edges blend softly.
-- [ ] Decide whether occupancy+opacity (vs. point sampling) becomes the base
-      representation. This is also the natural substrate for optical blending.
+- [x] **Multi-level detail** (1–4 levels) from a detail field (surface curvature
+      or height), with dithered level boundaries — detail ramps across several
+      levels instead of a binary coarse/fine split.
+- [x] **Coverage scalar → material**: drive alpha, a colour ramp (tint, a
+      stand-in for material quantity), or solid.
+- [ ] **Interlocking primitives per cell** — fill a cell with complementary
+      shapes whose union tiles it (marching-cubes-style), choosing the in-cell
+      shape from the local occupancy pattern, so the surface reads smoother than
+      stacked cubes.
+- [ ] Decide whether occupancy+opacity becomes the base representation (vs. point
+      sampling). Natural substrate for optical blending; animate via bind-pose
+      voxelization + bone skinning of cells.
 
 ### M6 — Optical Blending (only after M5)
 - [ ] `examples/optical-blend-face.html` — compare flat-color voxels
