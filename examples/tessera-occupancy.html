@@ -19,8 +19,10 @@
     field (surface curvature or height) and subdivides into an (L+1)³ grid, with
     dithered level boundaries so detail ramps smoothly instead of a hard split.
     The coverage scalar can drive alpha, a material colour ramp (tint), or
-    nothing (solid). Static model (Soldier / helmet) so it stays clear;
-    animation can come later.
+    nothing (solid). SHAPE = interlock picks a primitive per cell from its 6
+    face-neighbour occupancy (flat → rounded cube, edge → sphere, tip → diamond)
+    so pieces interlock along the form. Static model (Soldier / helmet) so it
+    stays clear; animation can come later.
   -->
   <style>
     :root { color-scheme: dark; }
@@ -67,6 +69,7 @@
     <div class="group" id="res-group"><span class="label">RESOLUTION</span></div>
     <div class="group" id="sub-group"><span class="label">LEVELS</span></div>
     <div class="group" id="region-group"><span class="label">SOURCE</span></div>
+    <div class="group" id="shape-group"><span class="label">SHAPE</span></div>
     <div class="group" id="thr-group"><span class="label">CULL</span></div>
     <div class="group" id="opacity-group"><span class="label">SCALAR</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
@@ -95,6 +98,7 @@
     const LEVELS = [1, 2, 3, 4];       // max detail levels (1 = uniform base grid)
     const SOURCES = ['curvature', 'height'];   // what drives per-cell detail level
     const SCALARS = ['alpha', 'tint', 'solid']; // what surface coverage maps to
+    const SHAPES = ['interlock', 'cube'];        // per-cell shape selection
     const CULL = { none: 0, low: 0.18, med: 0.35 };
     const CURV_GAIN = 5.0;             // amplifies curvature into a [0,1] detail field
     const K = 200000;                  // surface samples used to estimate occupancy
@@ -127,8 +131,8 @@
     }
 
     // ---- state ----
-    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha';
-    let surface = null, inst = null;
+    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'interlock';
+    let surface = null; let insts = [];
 
     // ---- surface merge + area-weighted point sampling ----
     function mergeSurface(root) {
@@ -221,7 +225,10 @@
         const k = lvl + '|' + ix + '_' + iy + '_' + iz; let e = cells.get(k);
         if (!e) { e = { lvl, ix, iy, iz, n: 0 }; cells.set(k, e); } e.n++;
       }
-      // emit, normalising occupancy per level (cell volumes differ by level)
+      // emit, normalising occupancy per level (cell volumes differ by level).
+      // In INTERLOCK mode each cell picks a shape from how many of its 6 face
+      // neighbours are occupied: flat cells (few exposed faces) → rounded cube,
+      // edges → sphere, tips/corners → diamond, so pieces interlock along the form.
       const byLevel = []; for (let L = 0; L < maxLevel; L++) byLevel.push([]);
       for (const c of cells.values()) byLevel[c.lvl].push(c);
       const list = [];
@@ -230,17 +237,30 @@
         const counts = arr.map(c => c.n).sort((a, b) => a - b);
         const p90 = counts[Math.floor(counts.length * 0.9)] || 1;
         const cell = baseCell / (L + 1);
+        const set = (shapeMode === 'interlock') ? new Set(arr.map(c => c.ix + '_' + c.iy + '_' + c.iz)) : null;
         for (const c of arr) {
           const frac = c.n / p90; if (frac < cull) continue;
           const cov = Math.min(1, Math.max(0.12, Math.sqrt(frac)));
-          list.push((c.ix + 0.5) * cell, (c.iy + 0.5) * cell, (c.iz + 0.5) * cell, cell * 0.9, cov);
+          let shape = 0;
+          if (set) {
+            let solid = 0;
+            if (set.has((c.ix+1)+'_'+c.iy+'_'+c.iz)) solid++;
+            if (set.has((c.ix-1)+'_'+c.iy+'_'+c.iz)) solid++;
+            if (set.has(c.ix+'_'+(c.iy+1)+'_'+c.iz)) solid++;
+            if (set.has(c.ix+'_'+(c.iy-1)+'_'+c.iz)) solid++;
+            if (set.has(c.ix+'_'+c.iy+'_'+(c.iz+1))) solid++;
+            if (set.has(c.ix+'_'+c.iy+'_'+(c.iz-1))) solid++;
+            const exposed = 6 - solid;
+            shape = exposed <= 2 ? 0 : (exposed === 3 ? 1 : 2);
+          }
+          list.push((c.ix + 0.5) * cell, (c.iy + 0.5) * cell, (c.iz + 0.5) * cell, cell * 0.95, cov, shape);
         }
       }
       buildInstances(list);
 
       document.getElementById('grid').textContent = baseRes + '³';
       document.getElementById('fine').textContent = maxLevel + ' · ' + source;
-      document.getElementById('count').textContent = (list.length / 5).toLocaleString();
+      document.getElementById('count').textContent = (list.length / 6).toLocaleString();
     }
 
     // ---- per-instance scalar material ----
@@ -260,25 +280,42 @@
       };
       return mat;
     }
+    // 0 = rounded cube (flat), 1 = sphere (edge), 2 = diamond (tip)
+    function makeShapeGeo(shape) {
+      if (shape === 1) return new THREE.IcosahedronGeometry(0.52, 2);
+      if (shape === 2) return new THREE.OctahedronGeometry(0.62, 0);
+      return new RoundedBoxGeometry(1, 1, 1, 2, 0.18);
+    }
+    function clearInsts() {
+      for (const im of insts) { scene.remove(im); im.geometry.dispose(); im.material.dispose(); }
+      insts = [];
+    }
     function buildInstances(list) {
-      if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); }
-      const n = list.length / 5;
-      const geo = new RoundedBoxGeometry(1, 1, 1, 2, 0.18);
-      const opac = new Float32Array(n);
-      inst = new THREE.InstancedMesh(geo, makeMaterial(), n);
-      inst.frustumCulled = false;
+      clearInsts();
+      const recs = list.length / 6;
+      const groups = [[], [], []];                 // one bucket per shape family
+      for (let i = 0; i < recs; i++) groups[list[i*6+5]].push(i);
+
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color();
-      for (let i = 0; i < n; i++) {
-        const cov = list[i*5+4];
-        p.set(list[i*5], list[i*5+1], list[i*5+2]); s.setScalar(list[i*5+3]);
-        m.compose(p, q, s); inst.setMatrixAt(i, m);
-        opac[i] = (scalar === 'alpha') ? cov : 1;
-        if (scalar === 'tint') { col.copy(RAMP_LO).lerp(RAMP_HI, cov); inst.setColorAt(i, col); }
+      for (let shape = 0; shape < 3; shape++) {
+        const ids = groups[shape]; if (!ids.length) continue;
+        const geo = makeShapeGeo(shape);
+        const im = new THREE.InstancedMesh(geo, makeMaterial(), ids.length);
+        im.frustumCulled = false;
+        const opac = new Float32Array(ids.length);
+        for (let j = 0; j < ids.length; j++) {
+          const i = ids[j], cov = list[i*6+4];
+          p.set(list[i*6], list[i*6+1], list[i*6+2]); s.setScalar(list[i*6+3]);
+          m.compose(p, q, s); im.setMatrixAt(j, m);
+          opac[j] = (scalar === 'alpha') ? cov : 1;
+          if (scalar === 'tint') { col.copy(RAMP_LO).lerp(RAMP_HI, cov); im.setColorAt(j, col); }
+        }
+        geo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(opac, 1));
+        im.instanceMatrix.needsUpdate = true;
+        if (im.instanceColor) im.instanceColor.needsUpdate = true;
+        scene.add(im); insts.push(im);
       }
-      geo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(opac, 1));
-      inst.instanceMatrix.needsUpdate = true;
-      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-      scene.add(inst);
+      document.getElementById('calls').textContent = String(insts.length || 1);
     }
 
     // ---- loading ----
@@ -310,6 +347,7 @@
     makeButtons('res-group', RES, baseRes, r => r + '³', r => { baseRes = r; reVoxel(); });
     makeButtons('sub-group', LEVELS, maxLevel, L => (L === 1 ? 'flat' : L + ' lvl'), L => { maxLevel = L; reVoxel(); });
     makeButtons('region-group', SOURCES, source, s => s, s => { source = s; reVoxel(); });
+    makeButtons('shape-group', SHAPES, shapeMode, x => x, x => { shapeMode = x; reVoxel(); });
     makeButtons('thr-group', Object.keys(CULL), 'none', k => k, k => { cull = CULL[k]; reVoxel(); });
     makeButtons('opacity-group', SCALARS, scalar, o => o, o => {
       scalar = o; document.getElementById('op').textContent = o; reVoxel(); });

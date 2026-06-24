@@ -67,10 +67,12 @@
       levels instead of a binary coarse/fine split.
 - [x] **Coverage scalar → material**: drive alpha, a colour ramp (tint, a
       stand-in for material quantity), or solid.
-- [ ] **Interlocking primitives per cell** — fill a cell with complementary
-      shapes whose union tiles it (marching-cubes-style), choosing the in-cell
-      shape from the local occupancy pattern, so the surface reads smoother than
-      stacked cubes.
+- [x] **Interlocking primitives per cell** — each cell picks a primitive from
+      its 6 face-neighbour occupancy (flat → rounded cube, edge → sphere, tip →
+      diamond), so the surface reads as varied interlocking pieces rather than
+      stacked cubes. One InstancedMesh per shape family (≤3 draw calls).
+- [ ] Refine toward full marching-cubes corner classification + oriented pieces
+      if the neighbour-count heuristic proves too coarse.
 - [ ] Decide whether occupancy+opacity becomes the base representation (vs. point
       sampling). Natural substrate for optical blending; animate via bind-pose
       voxelization + bone skinning of cells.
