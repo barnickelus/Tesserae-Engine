@@ -19,11 +19,12 @@
     field (surface curvature or height) and subdivides into an (L+1)³ grid, with
     dithered level boundaries so detail ramps smoothly instead of a hard split.
     The coverage scalar can drive alpha, a material colour ramp (tint), or
-    nothing (solid). SHAPE: joined = rounded-box tesserae linked by bowtie/
-    hourglass connectors across shared faces (interlocking joints); composite =
-    a centre sphere + 8 corner diamonds nested inside each cell; interlock =
-    one primitive per cell from neighbour occupancy; cube = a single rounded box.
-    Static model (Soldier / helmet) so it stays clear; animation can come later.
+    nothing (solid). SHAPE: packed = spheres at cell centres + concave star
+    "plugs" nested into the negative space where spheres meet (a complementary
+    two-shape dynamic); joined = boxes linked by bowtie connectors; composite =
+    sphere + 8 corner diamonds per cell; interlock = one primitive per cell from
+    neighbour occupancy; cube = a single rounded box. Static model (Soldier /
+    helmet) so it stays clear; animation can come later.
   -->
   <style>
     :root { color-scheme: dark; }
@@ -99,7 +100,7 @@
     const LEVELS = [1, 2, 3, 4];       // max detail levels (1 = uniform base grid)
     const SOURCES = ['curvature', 'height'];   // what drives per-cell detail level
     const SCALARS = ['alpha', 'tint', 'solid']; // what surface coverage maps to
-    const SHAPES = ['joined', 'composite', 'interlock', 'cube']; // per-cell shape selection
+    const SHAPES = ['packed', 'joined', 'composite', 'interlock', 'cube']; // per-cell shape selection
     const CULL = { none: 0, low: 0.18, med: 0.35 };
     const CURV_GAIN = 5.0;             // amplifies curvature into a [0,1] detail field
     const K = 200000;                  // surface samples used to estimate occupancy
@@ -133,7 +134,7 @@
     }
 
     // ---- state ----
-    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'joined';
+    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'packed';
     let surface = null; let insts = [];
     // hourglass / bowtie connector profile (revolved around +Y): wide ends, narrow waist
     const BOWTIE_PROFILE = [[0,-0.5],[0.5,-0.5],[0.16,0],[0.5,0.5],[0,0.5]].map(q => new THREE.Vector2(q[0], q[1]));
@@ -235,8 +236,8 @@
       // edges → sphere, tips/corners → diamond, so pieces interlock along the form.
       const byLevel = []; for (let L = 0; L < maxLevel; L++) byLevel.push([]);
       for (const c of cells.values()) byLevel[c.lvl].push(c);
-      const list = [], conns = [];
-      const joined = shapeMode === 'joined';
+      const list = [], conns = [], plugs = [];
+      const joined = shapeMode === 'joined', packed = shapeMode === 'packed';
       for (let L = 0; L < maxLevel; L++) {
         const arr = byLevel[L]; if (!arr.length) continue;
         const counts = arr.map(c => c.n).sort((a, b) => a - b);
@@ -269,8 +270,25 @@
             if (set.has(c.ix+'_'+c.iy+'_'+(c.iz+1))) conns.push(cx, cy, cz + 0.5*cell, len, rad, 2, cov);
           }
         }
+        // packed: place a concave plug at each grid corner surrounded by spheres
+        if (packed) {
+          const cmap = new Map();
+          for (const c of arr) {
+            for (let dx = 0; dx < 2; dx++) for (let dy = 0; dy < 2; dy++) for (let dz = 0; dz < 2; dz++) {
+              const kk = (c.ix+dx) + '_' + (c.iy+dy) + '_' + (c.iz+dz);
+              cmap.set(kk, (cmap.get(kk) || 0) + 1);
+            }
+          }
+          for (const [kk, cnt] of cmap) {
+            if (cnt < 4) continue;                       // only corners well-surrounded by spheres
+            const parts = kk.split('_');
+            plugs.push(+parts[0]*cell, +parts[1]*cell, +parts[2]*cell, cell * 0.62, Math.min(1, cnt / 8 + 0.2));
+          }
+        }
       }
-      if (joined) buildJoined(list, conns); else buildInstances(list);
+      if (packed) buildPacked(list, plugs);
+      else if (joined) buildJoined(list, conns);
+      else buildInstances(list);
 
       document.getElementById('grid').textContent = baseRes + '³';
       document.getElementById('fine').textContent = maxLevel + ' · ' + source;
@@ -294,6 +312,24 @@
       };
       return mat;
     }
+    // Concave 6-point star — the negative space between packed spheres. Six axis
+    // tips at radius R with eight indented vertices pulled toward the centre, so
+    // the faces cave inward and the shape plugs the gap where spheres meet.
+    function makeStarGeo() {
+      const R = 0.5, a = 0.17;
+      const verts = [R,0,0, -R,0,0, 0,R,0, 0,-R,0, 0,0,R, 0,0,-R];
+      const idx = []; let vi = 6;
+      for (const sx of [1,-1]) for (const sy of [1,-1]) for (const sz of [1,-1]) {
+        verts.push(sx*a, sy*a, sz*a); const ind = vi++;
+        const tx = sx > 0 ? 0 : 1, ty = sy > 0 ? 2 : 3, tz = sz > 0 ? 4 : 5;
+        idx.push(tx, ty, ind, ty, tz, ind, tz, tx, ind);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      g.setIndex(idx); g.computeVertexNormals();
+      return g;
+    }
+
     // 0 = rounded cube (flat), 1 = sphere (edge), 2 = diamond (tip)
     function makeShapeGeo(shape) {
       if (shape === 1) return new THREE.IcosahedronGeometry(0.52, 2);
@@ -341,6 +377,45 @@
       if (corn.instanceColor) corn.instanceColor.needsUpdate = true;
       scene.add(core); scene.add(corn); insts.push(core, corn);
       document.getElementById('calls').textContent = '2';
+    }
+
+    // PACKED: a two-shape complementary dynamic — spheres at cell centres plus
+    // concave star "plugs" at the grid corners they surround, so the plug nests
+    // into the negative space where spheres meet. Two InstancedMeshes.
+    function buildPacked(list, plugs) {
+      clearInsts();
+      const recs = list.length / 6;
+      const sgeo = new THREE.IcosahedronGeometry(0.5, 2);
+      const sm = new THREE.InstancedMesh(sgeo, makeMaterial(), recs);
+      sm.frustumCulled = false;
+      const sop = new Float32Array(recs);
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), s = new THREE.Vector3(), I = new THREE.Quaternion();
+      for (let i = 0; i < recs; i++) {
+        const cov = list[i*6+4];
+        p.set(list[i*6], list[i*6+1], list[i*6+2]); s.setScalar(list[i*6+3] * 1.04);
+        m.compose(p, I, s); sm.setMatrixAt(i, m);
+        sop[i] = (scalar === 'alpha') ? cov : 1;
+      }
+      sgeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(sop, 1));
+      sm.instanceMatrix.needsUpdate = true; scene.add(sm); insts.push(sm);
+
+      const pn = plugs.length / 5;
+      if (pn > 0) {
+        const pgeo = makeStarGeo();
+        const pmat = makeMaterial(); pmat.side = THREE.DoubleSide;
+        const pm = new THREE.InstancedMesh(pgeo, pmat, pn);
+        pm.frustumCulled = false;
+        const pop = new Float32Array(pn);
+        for (let j = 0; j < pn; j++) {
+          const cov = plugs[j*5+4];
+          p.set(plugs[j*5], plugs[j*5+1], plugs[j*5+2]); s.setScalar(plugs[j*5+3]);
+          m.compose(p, I, s); pm.setMatrixAt(j, m);
+          pop[j] = (scalar === 'alpha') ? cov : 1;
+        }
+        pgeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(pop, 1));
+        pm.instanceMatrix.needsUpdate = true; scene.add(pm); insts.push(pm);
+      }
+      document.getElementById('calls').textContent = String(insts.length);
     }
 
     // JOINED: rounded-box tesserae linked by bowtie/hourglass connectors across

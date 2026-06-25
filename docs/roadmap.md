@@ -76,8 +76,11 @@
       "circle inscribed in a square + corner fills"); corners can carry a
       separate accent material → previews the base + accent face-plate idea.
 - [x] **Joined cells** — rounded-box tesserae linked by bowtie/hourglass
-      connectors across shared faces (interlocking joints, per sketch), so the
-      structure reads as constructed rather than stacked.
+      connectors across shared faces (interlocking joints, per sketch). Read as
+      protruding pegs rather than joints; superseded by the packed approach.
+- [x] **Packed cells (complementary two-shape)** — spheres at cell centres + a
+      concave star "plug" nested into the negative space where spheres meet
+      (the interstitial shape of sphere packing). True complementary interlock.
 - [ ] **Material recipes + careful edges** (next) — assign skin / hair / cloth /
       boots by region with per-material colour & finish, and **boost detail at
       material boundaries** so seams like a hairline stay crisp.
