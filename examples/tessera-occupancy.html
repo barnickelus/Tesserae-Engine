@@ -19,10 +19,10 @@
     field (surface curvature or height) and subdivides into an (L+1)³ grid, with
     dithered level boundaries so detail ramps smoothly instead of a hard split.
     The coverage scalar can drive alpha, a material colour ramp (tint), or
-    nothing (solid). SHAPE = composite fills each cell with a centre sphere + 8
-    corner diamonds that nest into it (interlocking parts whose union fills the
-    cell, the 3D version of "circle + corner fills"); interlock picks one
-    primitive per cell from neighbour occupancy; cube is a single rounded box.
+    nothing (solid). SHAPE: joined = rounded-box tesserae linked by bowtie/
+    hourglass connectors across shared faces (interlocking joints); composite =
+    a centre sphere + 8 corner diamonds nested inside each cell; interlock =
+    one primitive per cell from neighbour occupancy; cube = a single rounded box.
     Static model (Soldier / helmet) so it stays clear; animation can come later.
   -->
   <style>
@@ -99,7 +99,7 @@
     const LEVELS = [1, 2, 3, 4];       // max detail levels (1 = uniform base grid)
     const SOURCES = ['curvature', 'height'];   // what drives per-cell detail level
     const SCALARS = ['alpha', 'tint', 'solid']; // what surface coverage maps to
-    const SHAPES = ['composite', 'interlock', 'cube']; // per-cell shape selection
+    const SHAPES = ['joined', 'composite', 'interlock', 'cube']; // per-cell shape selection
     const CULL = { none: 0, low: 0.18, med: 0.35 };
     const CURV_GAIN = 5.0;             // amplifies curvature into a [0,1] detail field
     const K = 200000;                  // surface samples used to estimate occupancy
@@ -133,8 +133,10 @@
     }
 
     // ---- state ----
-    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'composite';
+    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'joined';
     let surface = null; let insts = [];
+    // hourglass / bowtie connector profile (revolved around +Y): wide ends, narrow waist
+    const BOWTIE_PROFILE = [[0,-0.5],[0.5,-0.5],[0.16,0],[0.5,0.5],[0,0.5]].map(q => new THREE.Vector2(q[0], q[1]));
 
     // ---- surface merge + area-weighted point sampling ----
     function mergeSurface(root) {
@@ -233,18 +235,21 @@
       // edges → sphere, tips/corners → diamond, so pieces interlock along the form.
       const byLevel = []; for (let L = 0; L < maxLevel; L++) byLevel.push([]);
       for (const c of cells.values()) byLevel[c.lvl].push(c);
-      const list = [];
+      const list = [], conns = [];
+      const joined = shapeMode === 'joined';
       for (let L = 0; L < maxLevel; L++) {
         const arr = byLevel[L]; if (!arr.length) continue;
         const counts = arr.map(c => c.n).sort((a, b) => a - b);
         const p90 = counts[Math.floor(counts.length * 0.9)] || 1;
         const cell = baseCell / (L + 1);
-        const set = (shapeMode === 'interlock') ? new Set(arr.map(c => c.ix + '_' + c.iy + '_' + c.iz)) : null;
+        const needSet = shapeMode === 'interlock' || joined;
+        const set = needSet ? new Set(arr.map(c => c.ix + '_' + c.iy + '_' + c.iz)) : null;
         for (const c of arr) {
           const frac = c.n / p90; if (frac < cull) continue;
           const cov = Math.min(1, Math.max(0.12, Math.sqrt(frac)));
+          const cx = (c.ix + 0.5) * cell, cy = (c.iy + 0.5) * cell, cz = (c.iz + 0.5) * cell;
           let shape = 0;
-          if (set) {
+          if (set && shapeMode === 'interlock') {
             let solid = 0;
             if (set.has((c.ix+1)+'_'+c.iy+'_'+c.iz)) solid++;
             if (set.has((c.ix-1)+'_'+c.iy+'_'+c.iz)) solid++;
@@ -255,10 +260,17 @@
             const exposed = 6 - solid;
             shape = exposed <= 2 ? 0 : (exposed === 3 ? 1 : 2);
           }
-          list.push((c.ix + 0.5) * cell, (c.iy + 0.5) * cell, (c.iz + 0.5) * cell, cell * 0.95, cov, shape);
+          list.push(cx, cy, cz, cell * 0.95, cov, shape);
+          // joined: bowtie connectors across shared faces with the +x/+y/+z neighbour
+          if (joined) {
+            const rad = cell * 0.26, len = cell;
+            if (set.has((c.ix+1)+'_'+c.iy+'_'+c.iz)) conns.push(cx + 0.5*cell, cy, cz, len, rad, 0, cov);
+            if (set.has(c.ix+'_'+(c.iy+1)+'_'+c.iz)) conns.push(cx, cy + 0.5*cell, cz, len, rad, 1, cov);
+            if (set.has(c.ix+'_'+c.iy+'_'+(c.iz+1))) conns.push(cx, cy, cz + 0.5*cell, len, rad, 2, cov);
+          }
         }
       }
-      buildInstances(list);
+      if (joined) buildJoined(list, conns); else buildInstances(list);
 
       document.getElementById('grid').textContent = baseRes + '³';
       document.getElementById('fine').textContent = maxLevel + ' · ' + source;
@@ -329,6 +341,50 @@
       if (corn.instanceColor) corn.instanceColor.needsUpdate = true;
       scene.add(core); scene.add(corn); insts.push(core, corn);
       document.getElementById('calls').textContent = '2';
+    }
+
+    // JOINED: rounded-box tesserae linked by bowtie/hourglass connectors across
+    // shared faces — the interlocking joint from the sketch. Two InstancedMeshes
+    // (boxes + connectors).
+    const JOIN_AX = [[1,0,0],[0,1,0],[0,0,1]];
+    function buildJoined(list, conns) {
+      clearInsts();
+      const recs = list.length / 6;
+      const boxGeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.16);
+      const box = new THREE.InstancedMesh(boxGeo, makeMaterial(), recs);
+      box.frustumCulled = false;
+      const boxOp = new Float32Array(recs);
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      const I = new THREE.Quaternion();
+      for (let i = 0; i < recs; i++) {
+        const cov = list[i*6+4];
+        p.set(list[i*6], list[i*6+1], list[i*6+2]); s.setScalar(list[i*6+3] * 0.72);
+        m.compose(p, I, s); box.setMatrixAt(i, m);
+        boxOp[i] = (scalar === 'alpha') ? cov : 1;
+      }
+      boxGeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(boxOp, 1));
+      box.instanceMatrix.needsUpdate = true;
+      scene.add(box); insts.push(box);
+
+      const cn = conns.length / 7;
+      if (cn > 0) {
+        const cgeo = new THREE.LatheGeometry(BOWTIE_PROFILE, 12);
+        const cm = new THREE.InstancedMesh(cgeo, makeMaterial(), cn);
+        cm.frustumCulled = false;
+        const cop = new Float32Array(cn);
+        const up = new THREE.Vector3(0, 1, 0), dir = new THREE.Vector3();
+        for (let j = 0; j < cn; j++) {
+          const ax = conns[j*7+5];
+          dir.set(JOIN_AX[ax][0], JOIN_AX[ax][1], JOIN_AX[ax][2]); q.setFromUnitVectors(up, dir);
+          s.set(conns[j*7+4], conns[j*7+3], conns[j*7+4]); p.set(conns[j*7], conns[j*7+1], conns[j*7+2]);
+          m.compose(p, q, s); cm.setMatrixAt(j, m);
+          cop[j] = (scalar === 'alpha') ? conns[j*7+6] : 1;
+        }
+        cgeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(cop, 1));
+        cm.instanceMatrix.needsUpdate = true;
+        scene.add(cm); insts.push(cm);
+      }
+      document.getElementById('calls').textContent = String(insts.length);
     }
 
     function buildInstances(list) {

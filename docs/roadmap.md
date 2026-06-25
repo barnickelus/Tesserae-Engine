@@ -75,6 +75,12 @@
       that nest into it (parts interlocking *within* a cell, the 3D version of
       "circle inscribed in a square + corner fills"); corners can carry a
       separate accent material → previews the base + accent face-plate idea.
+- [x] **Joined cells** — rounded-box tesserae linked by bowtie/hourglass
+      connectors across shared faces (interlocking joints, per sketch), so the
+      structure reads as constructed rather than stacked.
+- [ ] **Material recipes + careful edges** (next) — assign skin / hair / cloth /
+      boots by region with per-material colour & finish, and **boost detail at
+      material boundaries** so seams like a hairline stay crisp.
 - [ ] Refine toward full marching-cubes corner classification + oriented pieces
       if the neighbour-count heuristic proves too coarse.
 - [ ] Decide whether occupancy+opacity becomes the base representation (vs. point
