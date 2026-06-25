@@ -19,10 +19,11 @@
     field (surface curvature or height) and subdivides into an (L+1)³ grid, with
     dithered level boundaries so detail ramps smoothly instead of a hard split.
     The coverage scalar can drive alpha, a material colour ramp (tint), or
-    nothing (solid). SHAPE = interlock picks a primitive per cell from its 6
-    face-neighbour occupancy (flat → rounded cube, edge → sphere, tip → diamond)
-    so pieces interlock along the form. Static model (Soldier / helmet) so it
-    stays clear; animation can come later.
+    nothing (solid). SHAPE = composite fills each cell with a centre sphere + 8
+    corner diamonds that nest into it (interlocking parts whose union fills the
+    cell, the 3D version of "circle + corner fills"); interlock picks one
+    primitive per cell from neighbour occupancy; cube is a single rounded box.
+    Static model (Soldier / helmet) so it stays clear; animation can come later.
   -->
   <style>
     :root { color-scheme: dark; }
@@ -98,11 +99,12 @@
     const LEVELS = [1, 2, 3, 4];       // max detail levels (1 = uniform base grid)
     const SOURCES = ['curvature', 'height'];   // what drives per-cell detail level
     const SCALARS = ['alpha', 'tint', 'solid']; // what surface coverage maps to
-    const SHAPES = ['interlock', 'cube'];        // per-cell shape selection
+    const SHAPES = ['composite', 'interlock', 'cube']; // per-cell shape selection
     const CULL = { none: 0, low: 0.18, med: 0.35 };
     const CURV_GAIN = 5.0;             // amplifies curvature into a [0,1] detail field
     const K = 200000;                  // surface samples used to estimate occupancy
     const RAMP_LO = new THREE.Color(0x3b73d6), RAMP_HI = new THREE.Color(0xffc06a); // tint ramp
+    const ACCENT = new THREE.Color(0xff8a5c); // composite corner accent (tint mode)
 
     // ---- renderer / scene ----
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -131,7 +133,7 @@
     }
 
     // ---- state ----
-    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'interlock';
+    let modelName = 'Soldier', baseRes = 22, maxLevel = 3, source = 'curvature', cull = CULL.none, scalar = 'alpha', shapeMode = 'composite';
     let surface = null; let insts = [];
 
     // ---- surface merge + area-weighted point sampling ----
@@ -290,8 +292,48 @@
       for (const im of insts) { scene.remove(im); im.geometry.dispose(); im.material.dispose(); }
       insts = [];
     }
+    // COMPOSITE: one tessera = a centre sphere + 8 corner diamonds that nest
+    // into the corners the sphere can't reach (the 3D version of "circle
+    // inscribed in a square + corner fills"). The parts interlock within the
+    // cell and can carry separate material (corners = accent), previewing the
+    // base + accent face-plate idea. Rendered as 2 InstancedMeshes.
+    const CORNERS = [];
+    for (const dx of [-1, 1]) for (const dy of [-1, 1]) for (const dz of [-1, 1]) CORNERS.push([dx*0.30, dy*0.30, dz*0.30]);
+    function buildComposite(list) {
+      const recs = list.length / 6;
+      const coreGeo = new THREE.IcosahedronGeometry(0.5, 2);
+      const cornGeo = new THREE.OctahedronGeometry(0.5, 0);
+      const core = new THREE.InstancedMesh(coreGeo, makeMaterial(), recs);
+      const corn = new THREE.InstancedMesh(cornGeo, makeMaterial(), recs * 8);
+      core.frustumCulled = corn.frustumCulled = false;
+      const coreOp = new Float32Array(recs), cornOp = new Float32Array(recs * 8);
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color();
+      let ci = 0;
+      for (let i = 0; i < recs; i++) {
+        const x=list[i*6], y=list[i*6+1], z=list[i*6+2], size=list[i*6+3], cov=list[i*6+4];
+        p.set(x, y, z); s.setScalar(size * 0.66); m.compose(p, q, s); core.setMatrixAt(i, m);
+        coreOp[i] = (scalar === 'alpha') ? cov : 1;
+        if (scalar === 'tint') { col.copy(RAMP_LO).lerp(RAMP_HI, cov); core.setColorAt(i, col); }
+        for (const d of CORNERS) {
+          p.set(x + d[0]*size, y + d[1]*size, z + d[2]*size); s.setScalar(size * 0.5);
+          m.compose(p, q, s); corn.setMatrixAt(ci, m);
+          cornOp[ci] = (scalar === 'alpha') ? cov * 0.85 : 1;
+          if (scalar === 'tint') corn.setColorAt(ci, ACCENT);
+          ci++;
+        }
+      }
+      coreGeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(coreOp, 1));
+      cornGeo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(cornOp, 1));
+      core.instanceMatrix.needsUpdate = corn.instanceMatrix.needsUpdate = true;
+      if (core.instanceColor) core.instanceColor.needsUpdate = true;
+      if (corn.instanceColor) corn.instanceColor.needsUpdate = true;
+      scene.add(core); scene.add(corn); insts.push(core, corn);
+      document.getElementById('calls').textContent = '2';
+    }
+
     function buildInstances(list) {
       clearInsts();
+      if (shapeMode === 'composite') return buildComposite(list);
       const recs = list.length / 6;
       const groups = [[], [], []];                 // one bucket per shape family
       for (let i = 0; i < recs; i++) groups[list[i*6+5]].push(i);

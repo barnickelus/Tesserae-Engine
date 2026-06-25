@@ -71,6 +71,10 @@
       its 6 face-neighbour occupancy (flat → rounded cube, edge → sphere, tip →
       diamond), so the surface reads as varied interlocking pieces rather than
       stacked cubes. One InstancedMesh per shape family (≤3 draw calls).
+- [x] **Composite cell** — one tessera = a centre sphere + 8 corner diamonds
+      that nest into it (parts interlocking *within* a cell, the 3D version of
+      "circle inscribed in a square + corner fills"); corners can carry a
+      separate accent material → previews the base + accent face-plate idea.
 - [ ] Refine toward full marching-cubes corner classification + oriented pieces
       if the neighbour-count heuristic proves too coarse.
 - [ ] Decide whether occupancy+opacity becomes the base representation (vs. point
