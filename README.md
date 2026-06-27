@@ -27,7 +27,8 @@ Tesserae-Engine/
 │   ├── semantic-tesserae.html # Region-based semantic sizing experiment
 │   ├── tessera-occupancy.html # Adaptive sparse-voxel tesserae with opacity
 │   ├── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
-│   └── tessera-materials.html # Primitive shape + faceplate as a material language
+│   ├── tessera-materials.html # Primitive shape + faceplate as a material language
+│   └── tessera-volume.html   # Solid volume fill + transparency by accumulation
 └── assets/                   # Models, textures, and other resources
 ```
 

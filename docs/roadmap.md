@@ -114,8 +114,13 @@
       assemblies rather than place isolated pieces.
 - [ ] **Adaptive per-tessera decisions** — subdivide / grow / change primitive /
       become bridge / corner / plug / rotate / swap faceplate.
+- [x] **Solid volume + transparency by accumulation** — `examples/tessera-volume.html`:
+      voxelize the surface, **flood-fill the exterior**, treat everything else as
+      solid (no more hollow shell, no gaps), and render semi-transparent so thin
+      regions read translucent and thick regions accumulate to opaque. The two
+      answers to the hollow-shell problem are space-filling (`packed`) and this.
 - [ ] **Stem tesserae & matter** — differentiate material/state; phase changes;
-      transparency by accumulation; inside-out volumetric growth.
+      transparency by accumulation over a real density field; inside-out growth.
 - [ ] **Growth blueprint** — infer structure and grow a plausible object from a
       procedural description rather than copying the mesh.
 - [ ] **Viewer-adaptive** importance field (head position / distance).

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · volume</title>
+  <!--
+    tessera-volume.html — solid volume, not a hollow shell.
+
+    Every previous prototype sampled the SURFACE, leaving gaps between primitives
+    and nothing behind them. This one fills SPACE:
+
+      1. Voxelize the surface into a grid (shell cells).
+      2. Flood-fill the exterior from the grid boundary.
+      3. Everything not exterior is SOLID (shell + interior) — the object now has
+         matter inside, no hollow.
+
+    Then it tests "transparency by accumulation": each tessera is semi-transparent,
+    so thin regions read translucent and thick regions build up to opaque — skin,
+    glass and fog emerge from density rather than special effects.
+
+      RENDER opaque      — proves it is solid (surface shell only, fast)
+      RENDER translucent — accumulation: low alpha, full volume, density = opacity
+
+    Static model (Soldier / helmet). One InstancedMesh.
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 215px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>tessera-volume</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">interior</span><span id="inner" class="v">—</span></div>
+    <div class="row"><span class="k">render</span><span id="rmode" class="v">opaque</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">1</span></div>
+  </div>
+
+  <div id="note"><div id="model">loading…</div></div>
+
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="res-group"><span class="label">RESOLUTION</span></div>
+    <div class="group" id="render-group"><span class="label">RENDER</span></div>
+    <div class="group" id="alpha-group"><span class="label">ALPHA</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const MODELS = {
+      Soldier: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb',
+      Helmet:  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+    };
+    const RES = [32, 48, 64];
+    const ALPHAS = { low: 0.06, mid: 0.14, high: 0.30 };
+    const KSURF = 320000;              // dense surface samples to close the shell
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07090d);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(1, 1.5, 1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x6f8fff, 0.7); rim.position.set(-1, -0.3, -1); scene.add(rim);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
+    const center = new THREE.Vector3(); let radius = 1;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
+
+    // ---- state ----
+    let baseRes = 48, rmode = 'opaque', alpha = ALPHAS.mid;
+    let surface = null, voxels = null;
+    let inst = null;
+
+    function mergeSurface(root) {
+      const chunks = [];
+      root.updateWorldMatrix(true, true);
+      root.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+        g = g.clone(); g.applyMatrix4(o.matrixWorld); chunks.push(g);
+      });
+      let total = 0; for (const g of chunks) total += g.attributes.position.count;
+      const positions = new Float32Array(total*3); let off = 0;
+      for (const g of chunks) { positions.set(g.attributes.position.array, off*3); off += g.attributes.position.count; }
+      return { positions };
+    }
+    function samplePoints(surf, n) {
+      const p = surf.positions, triN = p.length/9, cum = new Float64Array(triN); let run = 0;
+      for (let t=0;t<triN;t++){ const o=t*9;
+        const abx=p[o+3]-p[o],aby=p[o+4]-p[o+1],abz=p[o+5]-p[o+2], acx=p[o+6]-p[o],acy=p[o+7]-p[o+1],acz=p[o+8]-p[o+2];
+        const cx=aby*acz-abz*acy,cy=abz*acx-abx*acz,cz=abx*acy-aby*acx; run+=0.5*Math.hypot(cx,cy,cz); cum[t]=run; }
+      const total=run; const pick=(r)=>{let lo=0,hi=triN-1,x=r*total;while(lo<hi){const m=(lo+hi)>>1;if(cum[m]<x)lo=m+1;else hi=m;}return lo;};
+      const out = new Float32Array(n*3);
+      for (let i=0;i<n;i++){ const t=pick(Math.random()), o=t*9; let u=Math.random(),v=Math.random(); if(u+v>1){u=1-u;v=1-v;} const w=1-u-v;
+        out[i*3]=p[o]*w+p[o+3]*u+p[o+6]*v; out[i*3+1]=p[o+1]*w+p[o+4]*u+p[o+7]*v; out[i*3+2]=p[o+2]*w+p[o+5]*u+p[o+8]*v; }
+      return out;
+    }
+
+    // ---- voxelize to a SOLID via flood-filled exterior ----
+    function voxelize() {
+      const pts = samplePoints(surface, KSURF);
+      let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+      for (let i=0;i<KSURF;i++){ const x=pts[i*3],y=pts[i*3+1],z=pts[i*3+2];
+        if(x<minx)minx=x;if(x>maxx)maxx=x;if(y<miny)miny=y;if(y>maxy)maxy=y;if(z<minz)minz=z;if(z>maxz)maxz=z; }
+      const maxDim = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
+      const cell = maxDim / baseRes;
+      // pad by 1 cell so the exterior fully surrounds the object
+      const nx = Math.ceil((maxx-minx)/cell)+3, ny = Math.ceil((maxy-miny)/cell)+3, nz = Math.ceil((maxz-minz)/cell)+3;
+      const ox = minx - cell, oy = miny - cell, oz = minz - cell;
+      const N = nx*ny*nz;
+      const SHELL = 1, EXT = 2;
+      const grid = new Uint8Array(N);
+      const idx = (x,y,z) => x + nx*(y + ny*z);
+      for (let i=0;i<KSURF;i++){
+        const cx=Math.floor((pts[i*3]-ox)/cell), cy=Math.floor((pts[i*3+1]-oy)/cell), cz=Math.floor((pts[i*3+2]-oz)/cell);
+        grid[idx(cx,cy,cz)] = SHELL;
+      }
+      // flood fill exterior from a corner (guaranteed empty by padding)
+      const stack = [0]; grid[0] |= EXT;
+      const push = (x,y,z) => { if(x<0||y<0||z<0||x>=nx||y>=ny||z>=nz) return; const k=idx(x,y,z); if(grid[k]&SHELL || grid[k]&EXT) return; grid[k]|=EXT; stack.push(k); };
+      while (stack.length) {
+        const k = stack.pop(); const z = (k/(nx*ny))|0, r = k - z*nx*ny, y = (r/nx)|0, x = r - y*nx;
+        push(x+1,y,z); push(x-1,y,z); push(x,y+1,z); push(x,y-1,z); push(x,y,z+1); push(x,y,z-1);
+      }
+      // collect solid cells (not exterior); flag surface (solid touching exterior)
+      const solid = []; let interior = 0;
+      const isExt = (x,y,z) => (x<0||y<0||z<0||x>=nx||y>=ny||z>=nz) ? true : !!(grid[idx(x,y,z)] & EXT);
+      for (let z=0;z<nz;z++) for (let y=0;y<ny;y++) for (let x=0;x<nx;x++) {
+        const k = idx(x,y,z); if (grid[k] & EXT) continue;            // exterior
+        const surf = isExt(x+1,y,z)||isExt(x-1,y,z)||isExt(x,y+1,z)||isExt(x,y-1,z)||isExt(x,y,z+1)||isExt(x,y,z-1);
+        if (!surf) interior++;
+        solid.push(ox+(x+0.5)*cell, oy+(y+0.5)*cell, oz+(z+0.5)*cell, surf ? 1 : 0);
+      }
+      voxels = { solid, cell, total: solid.length/4, interior };
+      build();
+    }
+
+    function build() {
+      if (!voxels) return;
+      if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); inst = null; }
+      const arr = voxels.solid, count = voxels.total, cell = voxels.cell;
+      const translucent = rmode === 'translucent';
+      // opaque mode renders the surface shell only (interior is hidden anyway, and cheap)
+      const render = [];
+      for (let i = 0; i < count; i++) { if (translucent || arr[i*4+3] === 1) render.push(i); }
+
+      const geo = new THREE.IcosahedronGeometry(0.5, 2);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x9fb4cc, roughness: 0.7, metalness: 0.05,
+        transparent: translucent, opacity: translucent ? alpha : 1, depthWrite: !translucent,
+      });
+      inst = new THREE.InstancedMesh(geo, mat, render.length);
+      inst.frustumCulled = false;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      const sz = cell * (translucent ? 1.25 : 1.18);                  // overlap to leave no gaps
+      s.setScalar(sz);
+      const col = new THREE.Color();
+      for (let j = 0; j < render.length; j++) {
+        const i = render[j];
+        p.set(arr[i*4], arr[i*4+1], arr[i*4+2]); m.compose(p, q, s); inst.setMatrixAt(j, m);
+        if (translucent) { col.setHSL(0.6, 0.4, 0.55); inst.setColorAt(j, col); }
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      scene.add(inst);
+
+      document.getElementById('count').textContent = render.length.toLocaleString();
+      document.getElementById('inner').textContent = voxels.interior.toLocaleString();
+      document.getElementById('rmode').textContent = rmode;
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const sph = box.getBoundingSphere(new THREE.Sphere());
+        center.copy(sph.center); radius = sph.radius || 1;
+        surface = mergeSurface(gltf.scene); voxelize(); frameView();
+        document.getElementById('model').textContent = name + ' (static)';
+      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId); const map = new Map();
+      for (const it of items) {
+        const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b);
+      }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
+    makeButtons('res-group', RES, baseRes, r => r + '³', r => { baseRes = r; if (surface) voxelize(); });
+    makeButtons('render-group', ['opaque', 'translucent'], rmode, x => x, x => { rmode = x; build(); });
+    makeButtons('alpha-group', Object.keys(ALPHAS), 'mid', k => k, k => { alpha = ALPHAS[k]; if (rmode === 'translucent') build(); });
+    (function viewButtons() {
+      const g = document.getElementById('view-group');
+      const reframe = document.createElement('button'); reframe.textContent = 'reframe'; reframe.onclick = () => frameView();
+      const spin = document.createElement('button'); spin.textContent = 'auto-spin'; spin.classList.add('active');
+      spin.onclick = () => { controls.autoRotate = !controls.autoRotate; spin.classList.toggle('active', controls.autoRotate); };
+      g.append(reframe, spin);
+    })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      acc += now - lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
+    });
+
+    loadModel('Soldier');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
