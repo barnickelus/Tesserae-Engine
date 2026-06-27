@@ -67,6 +67,8 @@
     <div class="group" id="model-group"><span class="label">MODEL</span></div>
     <div class="group" id="res-group"><span class="label">RESOLUTION</span></div>
     <div class="group" id="render-group"><span class="label">RENDER</span></div>
+    <div class="group" id="pack-group"><span class="label">PACKING</span></div>
+    <div class="group" id="vary-group"><span class="label">VARIETY</span></div>
     <div class="group" id="alpha-group"><span class="label">ALPHA</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
@@ -120,7 +122,7 @@
     }
 
     // ---- state ----
-    let baseRes = 48, rmode = 'opaque', alpha = ALPHAS.mid;
+    let baseRes = 48, rmode = 'opaque', alpha = ALPHAS.mid, packing = 'hex', vary = true;
     let surface = null, voxels = null;
     let inst = null;
 
@@ -182,9 +184,10 @@
         const k = idx(x,y,z); if (grid[k] & EXT) continue;            // exterior
         const surf = isExt(x+1,y,z)||isExt(x-1,y,z)||isExt(x,y+1,z)||isExt(x,y-1,z)||isExt(x,y,z+1)||isExt(x,y,z-1);
         if (!surf) interior++;
-        solid.push(ox+(x+0.5)*cell, oy+(y+0.5)*cell, oz+(z+0.5)*cell, surf ? 1 : 0);
+        // store world centre, surface flag, layer parity (for hex offset), and a per-cell random (for variety)
+        solid.push(ox+(x+0.5)*cell, oy+(y+0.5)*cell, oz+(z+0.5)*cell, surf ? 1 : 0, y & 1, Math.random());
       }
-      voxels = { solid, cell, total: solid.length/4, interior };
+      voxels = { solid, cell, total: solid.length/6, interior };
       build();
     }
 
@@ -193,30 +196,54 @@
       if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); inst = null; }
       const arr = voxels.solid, count = voxels.total, cell = voxels.cell;
       const translucent = rmode === 'translucent';
+      const hex = packing === 'hex';
       // opaque mode renders the surface shell only (interior is hidden anyway, and cheap)
       const render = [];
-      for (let i = 0; i < count; i++) { if (translucent || arr[i*4+3] === 1) render.push(i); }
+      for (let i = 0; i < count; i++) { if (translucent || arr[i*6+3] === 1) render.push(i); }
+      const n = render.length;
 
       const geo = new THREE.IcosahedronGeometry(0.5, 2);
+      // per-instance opacity attribute so variety can give each tessera its own alpha
+      const opac = new Float32Array(n);
       const mat = new THREE.MeshStandardMaterial({
-        color: 0x9fb4cc, roughness: 0.7, metalness: 0.05,
-        transparent: translucent, opacity: translucent ? alpha : 1, depthWrite: !translucent,
+        color: 0x9fb4cc, roughness: 0.7, metalness: 0.05, vertexColors: vary,
+        transparent: translucent, opacity: 1, depthWrite: !translucent,
       });
-      inst = new THREE.InstancedMesh(geo, mat, render.length);
+      mat.onBeforeCompile = (sh) => {
+        sh.vertexShader = 'attribute float iOpacity;\nvarying float vO;\n' +
+          sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vO = iOpacity;');
+        sh.fragmentShader = 'varying float vO;\n' +
+          sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\n gl_FragColor.a *= vO;');
+      };
+      inst = new THREE.InstancedMesh(geo, mat, n);
       inst.frustumCulled = false;
-      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-      const sz = cell * (translucent ? 1.25 : 1.18);                  // overlap to leave no gaps
-      s.setScalar(sz);
-      const col = new THREE.Color();
-      for (let j = 0; j < render.length; j++) {
-        const i = render[j];
-        p.set(arr[i*4], arr[i*4+1], arr[i*4+2]); m.compose(p, q, s); inst.setMatrixAt(j, m);
-        if (translucent) { col.setHSL(0.6, 0.4, 0.55); inst.setColorAt(j, col); }
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color();
+      // hex packing nestles spheres closer (diagonal neighbours), so a smaller radius still overlaps
+      const baseSz = cell * (hex ? 0.82 : (translucent ? 1.25 : 1.18));
+      const h = cell * 0.5;
+      for (let j = 0; j < n; j++) {
+        const i = render[j], par = arr[i*6+4], rnd = arr[i*6+5];
+        // hex close-pack: stagger odd layers diagonally so they sit over the gaps below
+        let x = arr[i*6], y = arr[i*6+1], z = arr[i*6+2];
+        if (hex && par) { x += h; z += h; }
+        const sz = vary ? baseSz * (0.8 + rnd * 0.5) : baseSz;
+        p.set(x, y, z); s.setScalar(sz); m.compose(p, q, s); inst.setMatrixAt(j, m);
+        if (vary) {
+          // amalgamation: jittered hue/lightness, an occasional warm grain
+          const warm = rnd > 0.88;
+          col.setHSL(warm ? 0.07 : 0.6 + (rnd - 0.5) * 0.16, warm ? 0.5 : 0.42, 0.42 + rnd * 0.22);
+          inst.setColorAt(j, col);
+          opac[j] = translucent ? Math.min(1, alpha * (0.4 + rnd * 1.5)) : 1;
+        } else {
+          opac[j] = translucent ? alpha : 1;
+        }
       }
+      geo.setAttribute('iOpacity', new THREE.InstancedBufferAttribute(opac, 1));
       inst.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       scene.add(inst);
 
-      document.getElementById('count').textContent = render.length.toLocaleString();
+      document.getElementById('count').textContent = n.toLocaleString();
       document.getElementById('inner').textContent = voxels.interior.toLocaleString();
       document.getElementById('rmode').textContent = rmode;
     }
@@ -246,6 +273,8 @@
     makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
     makeButtons('res-group', RES, baseRes, r => r + '³', r => { baseRes = r; if (surface) voxelize(); });
     makeButtons('render-group', ['opaque', 'translucent'], rmode, x => x, x => { rmode = x; build(); });
+    makeButtons('pack-group', ['cubic', 'hex'], packing, x => x, x => { packing = x; build(); });
+    makeButtons('vary-group', ['uniform', 'varied'], 'varied', x => x, x => { vary = (x === 'varied'); build(); });
     makeButtons('alpha-group', Object.keys(ALPHAS), 'mid', k => k, k => { alpha = ALPHAS[k]; if (rmode === 'translucent') build(); });
     (function viewButtons() {
       const g = document.getElementById('view-group');
