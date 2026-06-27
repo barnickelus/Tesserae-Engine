@@ -13,6 +13,12 @@ reading distance.
 That sentence is the north star. Everything else — voxels, glyphs, Chuck Close
 influence, avatars, style packs — should flow from that idea.
 
+**Tesserae-Engine is a perception engine, not a voxel renderer.** The goal is not
+to copy geometry, polygons, or voxels — it is to preserve *human perception*. The
+engine asks "what information does the visual system need to recognize this
+object?" and grows intelligent, adaptive tesserae to supply exactly that. See
+[perception-engine.md](perception-engine.md) for the full architecture.
+
 ## Goals
 
 - _Goal 1_

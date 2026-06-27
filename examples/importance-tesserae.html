@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · importance</title>
+  <!--
+    importance-tesserae.html — first "intelligent tessera" prototype.
+
+    A step away from voxel demos toward the perception engine (see
+    docs/perception-engine.md). Each tessera ADAPTS by perceptual importance
+    rather than geometry:
+
+      1. Build an IMPORTANCE MAP over the surface (curvature + semantic region).
+      2. Allocate tesserae by importance — dense + small where it matters
+         (hairline / head / high curvature), sparse + large where it doesn't.
+      3. Each tessera chooses a FACEPLATE glyph by its importance band
+         (flat → circle → ring → cross), oriented to the surface — a Chuck-Close
+         optical layer that blends at distance and is detailed up close.
+      4. A CONTINUOUS ABSTRACTION slider morphs from a few large symbolic
+         tesserae (1%) to many small detailed ones (100%).
+
+    Static model (Soldier / helmet). GPU-instanced: one mesh for bodies + one
+    per faceplate glyph.
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 215px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>importance-tesserae</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">abstraction</span><span id="abs" class="v">—</span></div>
+    <div class="row"><span class="k">faceplates</span><span id="fp" class="v">on</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
+  </div>
+
+  <div id="note"><div id="model">loading…</div></div>
+
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
+    <div class="group" id="fp-group"><span class="label">FACEPLATES</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const MODELS = {
+      Soldier: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb',
+      Helmet:  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+    };
+    // abstraction % -> tessera budget
+    const ABS = [1, 5, 20, 50, 100];
+    const BUDGET = a => Math.round(400 + 60000 * Math.pow(a / 100, 1.5));
+    const KIMP = 140000;               // samples used to estimate the importance field
+    const IMP_RES = 26;                // importance grid resolution
+    const GLYPHS = ['flat', 'circle', 'ring', 'cross'];
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07090d);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(1, 1.5, 1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x4f7bff, 0.6); rim.position.set(-1, -0.4, -1); scene.add(rim);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
+    const center = new THREE.Vector3(); let radius = 1;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
+
+    // ---- state ----
+    let abstraction = 20, faceplates = true, impDebug = false;
+    let surface = null, impGrid = null, impCell = 1, impMin = new THREE.Vector3();
+    let bodies = null, plates = [];
+
+    // ---- faceplate glyph textures (canvas) ----
+    function glyphTexture(kind) {
+      const s = 128, cv = document.createElement('canvas'); cv.width = cv.height = s;
+      const g = cv.getContext('2d'); g.clearRect(0, 0, s, s);
+      g.strokeStyle = '#ffffff'; g.fillStyle = '#ffffff'; g.lineWidth = 12; const c = s / 2, r = s * 0.32;
+      if (kind === 'circle') { g.beginPath(); g.arc(c, c, r, 0, 7); g.fill(); }
+      else if (kind === 'ring') { g.beginPath(); g.arc(c, c, r, 0, 7); g.stroke(); }
+      else if (kind === 'cross') { g.beginPath(); g.moveTo(c, c-r); g.lineTo(c, c+r); g.moveTo(c-r, c); g.lineTo(c+r, c); g.stroke(); }
+      else { return null; }            // 'flat' = no faceplate
+      const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; return t;
+    }
+    const GLYPH_TEX = { circle: glyphTexture('circle'), ring: glyphTexture('ring'), cross: glyphTexture('cross') };
+
+    // ---- surface + sampling ----
+    function mergeSurface(root) {
+      const chunks = [];
+      root.updateWorldMatrix(true, true);
+      root.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+        g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
+        chunks.push(g);
+      });
+      let total = 0; for (const g of chunks) total += g.attributes.position.count;
+      const positions = new Float32Array(total * 3), normals = new Float32Array(total * 3); let off = 0;
+      for (const g of chunks) {
+        positions.set(g.attributes.position.array, off * 3);
+        normals.set(g.attributes.normal.array, off * 3); off += g.attributes.position.count;
+      }
+      return { positions, normals };
+    }
+    function buildCumulative(surf) {
+      const p = surf.positions, triN = p.length / 9, cum = new Float64Array(triN); let run = 0;
+      for (let t = 0; t < triN; t++) {
+        const o = t * 9;
+        const abx=p[o+3]-p[o], aby=p[o+4]-p[o+1], abz=p[o+5]-p[o+2];
+        const acx=p[o+6]-p[o], acy=p[o+7]-p[o+1], acz=p[o+8]-p[o+2];
+        const cx=aby*acz-abz*acy, cy=abz*acx-abx*acz, cz=abx*acy-aby*acx;
+        run += 0.5 * Math.hypot(cx, cy, cz); cum[t] = run;
+      }
+      surf.cum = cum; surf.area = run; surf.triN = triN;
+    }
+    function pickTri(surf, r) {
+      const cum = surf.cum; let lo = 0, hi = surf.triN - 1, x = r * surf.area;
+      while (lo < hi) { const m = (lo+hi)>>1; if (cum[m] < x) lo = m+1; else hi = m; } return lo;
+    }
+    function sampleAt(surf, t, out, nrmOut) {
+      const p = surf.positions, n = surf.normals, o = t * 9;
+      let u = Math.random(), v = Math.random(); if (u+v>1){u=1-u;v=1-v;} const w = 1-u-v;
+      out.set(p[o]*w+p[o+3]*u+p[o+6]*v, p[o+1]*w+p[o+4]*u+p[o+7]*v, p[o+2]*w+p[o+5]*u+p[o+8]*v);
+      nrmOut.set(n[o]*w+n[o+3]*u+n[o+6]*v, n[o+1]*w+n[o+4]*u+n[o+7]*v, n[o+2]*w+n[o+5]*u+n[o+8]*v).normalize();
+    }
+
+    // ---- importance map: curvature + semantic region ----
+    function buildImportance(surf) {
+      const P = new THREE.Vector3(), N = new THREE.Vector3();
+      let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+      const pts = new Float32Array(KIMP*3), nrm = new Float32Array(KIMP*3);
+      for (let i = 0; i < KIMP; i++) {
+        sampleAt(surf, pickTri(surf, Math.random()), P, N);
+        pts[i*3]=P.x; pts[i*3+1]=P.y; pts[i*3+2]=P.z; nrm[i*3]=N.x; nrm[i*3+1]=N.y; nrm[i*3+2]=N.z;
+        if(P.x<minx)minx=P.x; if(P.x>maxx)maxx=P.x; if(P.y<miny)miny=P.y; if(P.y>maxy)maxy=P.y; if(P.z<minz)minz=P.z; if(P.z>maxz)maxz=P.z;
+      }
+      const maxDim = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
+      impCell = maxDim / IMP_RES; impMin.set(minx, miny, minz);
+      const spanY = (maxy-miny) || 1;
+      const grid = new Map();
+      const keyOf = (x,y,z) => Math.floor((x-minx)/impCell)+'_'+Math.floor((y-miny)/impCell)+'_'+Math.floor((z-minz)/impCell);
+      for (let i = 0; i < KIMP; i++) {
+        const k = keyOf(pts[i*3], pts[i*3+1], pts[i*3+2]);
+        let e = grid.get(k); if (!e) { e = { n:0, nx:0, ny:0, nz:0, sy:0 }; grid.set(k, e); }
+        e.n++; e.nx+=nrm[i*3]; e.ny+=nrm[i*3+1]; e.nz+=nrm[i*3+2]; e.sy+=pts[i*3+1];
+      }
+      // importance = curvature (mean-normal dispersion) + semantic region (head/top high)
+      for (const e of grid.values()) {
+        const curv = Math.min(1, (1 - Math.hypot(e.nx,e.ny,e.nz)/e.n) * 5.0);
+        const yFrac = ((e.sy/e.n) - miny) / spanY;
+        const region = yFrac > 0.82 ? 1.0 : (yFrac > 0.12 ? 0.32 : 0.18);   // head high, body mid, boots low
+        e.imp = Math.min(1, 0.62*curv + 0.55*region);
+      }
+      surf.impPts = pts; surf.impNrm = nrm;
+      impGrid = grid;
+    }
+    function importanceAt(x, y, z) {
+      const k = Math.floor((x-impMin.x)/impCell)+'_'+Math.floor((y-impMin.y)/impCell)+'_'+Math.floor((z-impMin.z)/impCell);
+      const e = impGrid.get(k); return e ? e.imp : 0.3;
+    }
+
+    // ---- placement: allocate tesserae by importance (weighted, without replacement) ----
+    function place() {
+      const budget = BUDGET(abstraction);
+      const cand = Math.min(budget * 4, 200000);
+      const P = new THREE.Vector3(), N = new THREE.Vector3();
+      // Efraimidis weighted sampling: key = rand^(1/importance); keep top `budget`
+      const heap = [];   // {key,x,y,z,nx,ny,nz,imp}
+      for (let i = 0; i < cand; i++) {
+        sampleAt(surface, pickTri(surface, Math.random()), P, N);
+        const imp = Math.max(0.05, importanceAt(P.x, P.y, P.z));
+        const k = Math.pow(Math.random(), 1 / imp);
+        heap.push({ k, x:P.x, y:P.y, z:P.z, nx:N.x, ny:N.y, nz:N.z, imp });
+      }
+      heap.sort((a, b) => b.k - a.k);
+      const chosen = heap.slice(0, budget);
+
+      const baseSize = (radius * 2) / Math.sqrt(budget) * 1.5;
+      buildTesserae(chosen, baseSize);
+      document.getElementById('count').textContent = chosen.length.toLocaleString();
+      document.getElementById('abs').textContent = abstraction + '%';
+    }
+
+    function glyphFor(imp) {
+      if (imp < 0.32) return 0;        // flat
+      if (imp < 0.55) return 1;        // circle
+      if (imp < 0.78) return 2;        // ring
+      return 3;                        // cross
+    }
+
+    function clearTesserae() {
+      if (bodies) { scene.remove(bodies); bodies.geometry.dispose(); bodies.material.dispose(); bodies = null; }
+      for (const pl of plates) { scene.remove(pl); pl.geometry.dispose(); pl.material.dispose(); } plates = [];
+    }
+
+    const UPZ = new THREE.Vector3(0, 0, 1);
+    function buildTesserae(list, baseSize) {
+      clearTesserae();
+      const n = list.length;
+      // bodies: rounded box oriented so +Z faces the surface normal (gives a face for the plate)
+      const bgeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.2);
+      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.08, vertexColors: impDebug });
+      if (!impDebug) bmat.color.set(0x9fb4cc);
+      bodies = new THREE.InstancedMesh(bgeo, bmat, n); bodies.frustumCulled = false;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
+
+      // group faceplate instances by glyph
+      const groups = { 1: [], 2: [], 3: [] };
+      for (let i = 0; i < n; i++) {
+        const c = list[i];
+        nv.set(c.nx, c.ny, c.nz); if (nv.lengthSq() < 1e-6) nv.set(0,0,1); nv.normalize();
+        q.setFromUnitVectors(UPZ, nv);
+        // higher importance -> smaller tessera
+        const size = baseSize * (1.7 - 1.15 * c.imp);
+        p.set(c.x, c.y, c.z); s.set(size, size, size * 0.72);
+        m.compose(p, q, s); bodies.setMatrixAt(i, m);
+        if (impDebug) { col.setHSL(0.62 - 0.62 * c.imp, 0.7, 0.5); bodies.setColorAt(i, col); }
+        if (faceplates) { const gi = glyphFor(c.imp); if (gi > 0) groups[gi].push({ c, size, q: q.clone() }); }
+      }
+      bodies.instanceMatrix.needsUpdate = true; if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+      scene.add(bodies);
+
+      // faceplates: a glyph quad on the outward face, one InstancedMesh per glyph
+      if (faceplates) {
+        for (let gi = 1; gi <= 3; gi++) {
+          const arr = groups[gi]; if (!arr.length) continue;
+          const tex = GLYPH_TEX[GLYPHS[gi]];
+          const pmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+          const pm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), pmat, arr.length);
+          pm.frustumCulled = false;
+          for (let j = 0; j < arr.length; j++) {
+            const { c, size, q: qq } = arr[j];
+            nv.set(c.nx, c.ny, c.nz).normalize();
+            p.set(c.x + nv.x * size * 0.38, c.y + nv.y * size * 0.38, c.z + nv.z * size * 0.38);
+            s.set(size * 0.82, size * 0.82, 1);
+            m.compose(p, qq, s); pm.setMatrixAt(j, m);
+          }
+          pm.instanceMatrix.needsUpdate = true; scene.add(pm); plates.push(pm);
+        }
+      }
+      document.getElementById('calls').textContent = String(1 + plates.length);
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const sph = box.getBoundingSphere(new THREE.Sphere());
+        center.copy(sph.center); radius = sph.radius || 1;
+        surface = mergeSurface(gltf.scene); buildCumulative(surface); buildImportance(surface);
+        place(); frameView();
+        document.getElementById('model').textContent = name + ' (static)';
+      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId); const map = new Map();
+      for (const it of items) {
+        const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b);
+      }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
+    makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (surface) place(); });
+    (function fpToggle() {
+      const g = document.getElementById('fp-group');
+      const on = document.createElement('button'), dbg = document.createElement('button');
+      on.textContent = 'glyphs'; dbg.textContent = 'importance';
+      const sync = () => { on.classList.toggle('active', faceplates && !impDebug); dbg.classList.toggle('active', impDebug);
+        document.getElementById('fp').textContent = impDebug ? 'importance' : (faceplates ? 'on' : 'off'); };
+      on.onclick = () => { faceplates = !faceplates; impDebug = false; sync(); if (surface) place(); };
+      dbg.onclick = () => { impDebug = !impDebug; sync(); if (surface) place(); };
+      g.append(on, dbg); sync();
+    })();
+    (function viewButtons() {
+      const g = document.getElementById('view-group');
+      const reframe = document.createElement('button'); reframe.textContent = 'reframe'; reframe.onclick = () => frameView();
+      const spin = document.createElement('button'); spin.textContent = 'auto-spin'; spin.classList.add('active');
+      spin.onclick = () => { controls.autoRotate = !controls.autoRotate; spin.classList.toggle('active', controls.autoRotate); };
+      g.append(reframe, spin);
+    })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      acc += now - lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
+    });
+
+    loadModel('Soldier');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

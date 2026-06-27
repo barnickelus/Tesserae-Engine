@@ -96,6 +96,25 @@
       material), with near→far zoom, to test whether optical blending yields a
       stronger *perceived* image. The Chuck Close-inspired face-plate system.
 
+### M7 — Perception Engine (the paradigm shift)
+> Tesserae-Engine is **not a voxel renderer** — it is a perception-driven engine.
+> See [perception-engine.md](perception-engine.md). Prioritize prototypes that
+> test intelligent, adaptive tesserae over polishing voxel demos.
+- [x] **Importance-driven rendering** — `examples/importance-tesserae.html`:
+      build an importance map (curvature + semantic region), allocate tesserae by
+      importance (dense+small where it matters), per-tessera **faceplate glyph**
+      by importance band, and a **continuous abstraction** slider (1%→100%).
+- [ ] Tessera **families** with dedicated plug pieces that completely fill space.
+- [ ] **Connection grammar** (ports + signatures) + Affinity Matrix; grow
+      assemblies rather than place isolated pieces.
+- [ ] **Adaptive per-tessera decisions** — subdivide / grow / change primitive /
+      become bridge / corner / plug / rotate / swap faceplate.
+- [ ] **Stem tesserae & matter** — differentiate material/state; phase changes;
+      transparency by accumulation; inside-out volumetric growth.
+- [ ] **Growth blueprint** — infer structure and grow a plausible object from a
+      procedural description rather than copying the mesh.
+- [ ] **Viewer-adaptive** importance field (head position / distance).
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to

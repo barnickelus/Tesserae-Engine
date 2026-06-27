@@ -25,7 +25,8 @@ Tesserae-Engine/
 │   ├── glb-sampler.html      # GLB → surface tesserae (form validation)
 │   ├── tessera-avatar.html   # Animated GLB → bone-skinned tesserae
 │   ├── semantic-tesserae.html # Region-based semantic sizing experiment
-│   └── tessera-occupancy.html # Adaptive sparse-voxel tesserae with opacity
+│   ├── tessera-occupancy.html # Adaptive sparse-voxel tesserae with opacity
+│   └── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
 └── assets/                   # Models, textures, and other resources
 ```
 
@@ -39,6 +40,7 @@ Tesserae-Engine/
 - [Style Packs](docs/style-packs.md)
 - [Tessera Object Model](docs/tessera-object-model.md)
 - [Continuous Abstraction](docs/continuous-abstraction.md)
+- [Perception Engine](docs/perception-engine.md) — the paradigm direction
 
 ## Getting Started
 
