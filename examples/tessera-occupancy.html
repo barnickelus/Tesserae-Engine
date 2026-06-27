@@ -282,7 +282,7 @@
           for (const [kk, cnt] of cmap) {
             if (cnt < 4) continue;                       // only corners well-surrounded by spheres
             const parts = kk.split('_');
-            plugs.push(+parts[0]*cell, +parts[1]*cell, +parts[2]*cell, cell * 0.62, Math.min(1, cnt / 8 + 0.2));
+            plugs.push(+parts[0]*cell, +parts[1]*cell, +parts[2]*cell, cell, Math.min(1, cnt / 8 + 0.2));
           }
         }
       }
@@ -312,21 +312,33 @@
       };
       return mat;
     }
-    // Concave 6-point star — the negative space between packed spheres. Six axis
-    // tips at radius R with eight indented vertices pulled toward the centre, so
-    // the faces cave inward and the shape plugs the gap where spheres meet.
-    function makeStarGeo() {
-      const R = 0.5, a = 0.17;
-      const verts = [R,0,0, -R,0,0, 0,R,0, 0,-R,0, 0,0,R, 0,0,-R];
-      const idx = []; let vi = 6;
-      for (const sx of [1,-1]) for (const sy of [1,-1]) for (const sz of [1,-1]) {
-        verts.push(sx*a, sy*a, sz*a); const ind = vi++;
-        const tx = sx > 0 ? 0 : 1, ty = sy > 0 ? 2 : 3, tz = sz > 0 ? 4 : 5;
-        idx.push(tx, ty, ind, ty, tz, ind, tz, tx, ind);
+    // Concave plug — the true negative space between packed spheres. Start from a
+    // unit sphere of directions and, for each direction, march out from the corner
+    // until the ray first enters one of the 8 surrounding spheres (radius Rs at
+    // ±0.5 in cell units). The resulting faces are concave spherical surfaces that
+    // match each neighbouring sphere's curvature, so the plug seats flush; toward
+    // the axis gaps (no sphere blocks) it spikes out to a cap where plugs meet.
+    const PLUG_RS = 0.494;   // neighbour sphere radius in cell units (matches packed spheres)
+    const PLUG_CAP = 0.5;    // max plug radius — plugs meet at face/edge midpoints
+    function makeStarGeo(Rs) {
+      const g = new THREE.IcosahedronGeometry(1, 4);   // unit directions
+      const pos = g.attributes.position;
+      const C = [];
+      for (const sx of [0.5,-0.5]) for (const sy of [0.5,-0.5]) for (const sz of [0.5,-0.5]) C.push([sx,sy,sz]);
+      for (let i = 0; i < pos.count; i++) {
+        const ux = pos.getX(i), uy = pos.getY(i), uz = pos.getZ(i);   // already unit length
+        let t = PLUG_CAP;
+        for (const c of C) {
+          const dot = ux*c[0] + uy*c[1] + uz*c[2];
+          if (dot <= 0) continue;                                     // sphere behind this direction
+          const disc = dot*dot - (c[0]*c[0]+c[1]*c[1]+c[2]*c[2] - Rs*Rs);
+          if (disc <= 0) continue;                                    // ray misses this sphere
+          const tt = dot - Math.sqrt(disc);                           // near intersection
+          if (tt > 0 && tt < t) t = tt;
+        }
+        pos.setXYZ(i, ux*t, uy*t, uz*t);
       }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-      g.setIndex(idx); g.computeVertexNormals();
+      pos.needsUpdate = true; g.computeVertexNormals();
       return g;
     }
 
@@ -401,7 +413,7 @@
 
       const pn = plugs.length / 5;
       if (pn > 0) {
-        const pgeo = makeStarGeo();
+        const pgeo = makeStarGeo(PLUG_RS);
         const pmat = makeMaterial(); pmat.side = THREE.DoubleSide;
         const pm = new THREE.InstancedMesh(pgeo, pmat, pn);
         pm.frustumCulled = false;
