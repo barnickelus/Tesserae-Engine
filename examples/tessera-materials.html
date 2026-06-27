@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · materials</title>
+  <!--
+    tessera-materials.html — primitive vocabulary as a MATERIAL language.
+
+    Tests the idea that a material is not a texture but a RECIPE of
+    shape + faceplate + finish:
+
+      material  = { primitive, faceplate glyph, colour, roughness, metalness,
+                    per-axis shaping, opacity }
+
+    e.g. skin = flat lens discs, soft warm, pore stipple;  metal = rounded cubes,
+    high metalness, rivets;  cloth = pebbles, rough, weave;  hair = elongated
+    capsules (fur);  glass = translucent lenses;  stone = rough pebbles, cracks.
+
+    Modes:
+      · explore — apply ONE material to the whole model to see its character
+      · region  — assign materials by body band (skin / hair / cloth / boots)
+
+    GPU-instanced: one body mesh + one faceplate mesh per material in use.
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 215px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>tessera-materials</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">mode</span><span id="mode" class="v">explore</span></div>
+    <div class="row"><span class="k">material</span><span id="mat" class="v">skin</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
+  </div>
+
+  <div id="note"><div id="model">loading…</div></div>
+
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="mode-group"><span class="label">MODE</span></div>
+    <div class="group" id="mat-group"><span class="label">MATERIAL</span></div>
+    <div class="group" id="dens-group"><span class="label">DENSITY</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const MODELS = {
+      Soldier: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb',
+      Helmet:  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+    };
+    const DENS = { sparse: 8000, medium: 18000, dense: 35000 };
+
+    // A material = primitive shape + faceplate glyph + finish + per-axis shaping.
+    // shape: sphere | lens | cube | pebble | capsule | diamond
+    // plate: none | pores | rivets | weave | cracks
+    const MATERIALS = {
+      skin:  { shape: 'lens',    plate: 'pores',  color: 0xc89a78, rough: 0.72, metal: 0.0,  axis: [1,1,0.45], fill: 1.05, op: 1 },
+      metal: { shape: 'cube',    plate: 'rivets', color: 0x9aa3b0, rough: 0.28, metal: 0.9,  axis: [1,1,0.8],  fill: 1.0,  op: 1 },
+      cloth: { shape: 'pebble',  plate: 'weave',  color: 0x47566b, rough: 0.96, metal: 0.0,  axis: [1,1,1],    fill: 1.08, op: 1 },
+      hair:  { shape: 'capsule', plate: 'none',   color: 0x2c2420, rough: 0.55, metal: 0.0,  axis: [0.45,1.7,0.45], fill: 1.0, op: 1 },
+      glass: { shape: 'lens',    plate: 'none',   color: 0xa7cce4, rough: 0.05, metal: 0.0,  axis: [1,1,0.4],  fill: 1.05, op: 0.45 },
+      stone: { shape: 'pebble',  plate: 'cracks', color: 0x7d7b76, rough: 1.0,  metal: 0.05, axis: [1,1,1],    fill: 1.06, op: 1 },
+    };
+    const MAT_NAMES = Object.keys(MATERIALS);
+    // region mode: body band (height fraction) -> material
+    const REGION_BANDS = [[0.91, 'hair'], [0.80, 'skin'], [0.12, 'cloth'], [-1, 'metal']];
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0e14);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(1, 1.5, 1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x6f8fff, 0.8); rim.position.set(-1, -0.3, -1); scene.add(rim);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
+    const center = new THREE.Vector3(); let radius = 1;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
+
+    // ---- state ----
+    let mode = 'explore', material = 'skin', density = DENS.medium;
+    let surface = null, samples = null, bbY = [0, 1];
+    let meshes = [];
+
+    // ---- faceplate textures ----
+    function plateTexture(kind) {
+      const s = 128, cv = document.createElement('canvas'); cv.width = cv.height = s;
+      const g = cv.getContext('2d'); g.clearRect(0, 0, s, s); g.fillStyle = '#fff'; g.strokeStyle = '#fff';
+      const c = s/2;
+      if (kind === 'pores') { for (let i=0;i<14;i++){ g.beginPath(); g.arc(Math.random()*s, Math.random()*s, 3+Math.random()*4, 0, 7); g.fill(); } }
+      else if (kind === 'rivets') { for (const [x,y] of [[28,28],[100,28],[28,100],[100,100]]){ g.beginPath(); g.arc(x,y,9,0,7); g.fill(); } }
+      else if (kind === 'weave') { g.lineWidth=7; for(let i=16;i<s;i+=24){ g.beginPath(); g.moveTo(i,0); g.lineTo(i,s); g.moveTo(0,i); g.lineTo(s,i); g.stroke(); } }
+      else if (kind === 'cracks') { g.lineWidth=4; for(let i=0;i<5;i++){ g.beginPath(); let x=Math.random()*s,y=Math.random()*s; g.moveTo(x,y); for(let k=0;k<3;k++){ x+=(Math.random()-0.5)*60; y+=(Math.random()-0.5)*60; g.lineTo(x,y);} g.stroke(); } }
+      else return null;
+      const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; return t;
+    }
+    const PLATE_TEX = {};
+    for (const k of ['pores','rivets','weave','cracks']) PLATE_TEX[k] = plateTexture(k);
+
+    // ---- primitive geometry vocabulary ----
+    let PEBBLE = null;
+    function pebbleGeo() {
+      if (PEBBLE) return PEBBLE;
+      const g = new THREE.IcosahedronGeometry(0.5, 3); const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x=pos.getX(i), y=pos.getY(i), z=pos.getZ(i), l=Math.hypot(x,y,z)||1;
+        const f = 1 + (Math.sin(x*40)+Math.cos(y*37)+Math.sin(z*41)) * 0.04;
+        pos.setXYZ(i, x/l*0.5*f, y/l*0.5*f, z/l*0.5*f);
+      }
+      g.computeVertexNormals(); PEBBLE = g; return g;
+    }
+    function shapeGeo(shape) {
+      switch (shape) {
+        case 'lens':    return new THREE.IcosahedronGeometry(0.5, 2);
+        case 'cube':    return new RoundedBoxGeometry(1, 1, 1, 2, 0.18);
+        case 'pebble':  return pebbleGeo().clone();
+        case 'capsule': return new THREE.CapsuleGeometry(0.32, 0.7, 4, 8);
+        case 'diamond': return new THREE.OctahedronGeometry(0.6, 0);
+        default:        return new THREE.IcosahedronGeometry(0.5, 2);
+      }
+    }
+
+    // ---- surface sampling ----
+    function mergeSurface(root) {
+      const chunks = [];
+      root.updateWorldMatrix(true, true);
+      root.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+        g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
+        chunks.push(g);
+      });
+      let total = 0; for (const g of chunks) total += g.attributes.position.count;
+      const positions = new Float32Array(total*3), normals = new Float32Array(total*3); let off = 0;
+      for (const g of chunks) { positions.set(g.attributes.position.array, off*3); normals.set(g.attributes.normal.array, off*3); off += g.attributes.position.count; }
+      return { positions, normals };
+    }
+    function sampleSurface(surf, n) {
+      const p = surf.positions, nr = surf.normals, triN = p.length/9;
+      const cum = new Float64Array(triN); let run = 0;
+      for (let t=0;t<triN;t++){ const o=t*9;
+        const abx=p[o+3]-p[o],aby=p[o+4]-p[o+1],abz=p[o+5]-p[o+2], acx=p[o+6]-p[o],acy=p[o+7]-p[o+1],acz=p[o+8]-p[o+2];
+        const cx=aby*acz-abz*acy,cy=abz*acx-abx*acz,cz=abx*acy-aby*acx; run+=0.5*Math.hypot(cx,cy,cz); cum[t]=run; }
+      const total=run; const pick=(r)=>{let lo=0,hi=triN-1,x=r*total;while(lo<hi){const m=(lo+hi)>>1;if(cum[m]<x)lo=m+1;else hi=m;}return lo;};
+      const out = { x:new Float32Array(n), y:new Float32Array(n), z:new Float32Array(n), nx:new Float32Array(n), ny:new Float32Array(n), nz:new Float32Array(n) };
+      let minY=Infinity, maxY=-Infinity;
+      for (let i=0;i<n;i++){ const t=pick(Math.random()), o=t*9;
+        let u=Math.random(),v=Math.random(); if(u+v>1){u=1-u;v=1-v;} const w=1-u-v;
+        const X=p[o]*w+p[o+3]*u+p[o+6]*v, Y=p[o+1]*w+p[o+4]*u+p[o+7]*v, Z=p[o+2]*w+p[o+5]*u+p[o+8]*v;
+        let nx=nr[o]*w+nr[o+3]*u+nr[o+6]*v, ny=nr[o+1]*w+nr[o+4]*u+nr[o+7]*v, nz=nr[o+2]*w+nr[o+5]*u+nr[o+8]*v;
+        const nl=Math.hypot(nx,ny,nz)||1;
+        out.x[i]=X; out.y[i]=Y; out.z[i]=Z; out.nx[i]=nx/nl; out.ny[i]=ny/nl; out.nz[i]=nz/nl;
+        if(Y<minY)minY=Y; if(Y>maxY)maxY=Y;
+      }
+      bbY = [minY, maxY]; return out;
+    }
+    function regionMat(yFrac) { for (const [b, m] of REGION_BANDS) if (yFrac >= b) return m; return 'cloth'; }
+
+    // ---- build ----
+    const UPZ = new THREE.Vector3(0, 0, 1);
+    function clearMeshes() { for (const m of meshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } meshes = []; }
+
+    function build() {
+      if (!samples) return;
+      clearMeshes();
+      const n = samples.x.length;
+      const baseSize = (radius * 2) / Math.sqrt(n) * 1.6;
+      const spanY = (bbY[1] - bbY[0]) || 1;
+
+      // group sample indices by material
+      const groups = new Map();
+      for (let i = 0; i < n; i++) {
+        const mn = (mode === 'region') ? regionMat((samples.y[i] - bbY[0]) / spanY) : material;
+        if (!groups.has(mn)) groups.set(mn, []);
+        groups.get(mn).push(i);
+      }
+
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3();
+      for (const [mn, ids] of groups) {
+        const rec = MATERIALS[mn];
+        // bodies
+        const bgeo = shapeGeo(rec.shape);
+        const bmat = new THREE.MeshStandardMaterial({ color: rec.color, roughness: rec.rough, metalness: rec.metal,
+          transparent: rec.op < 1, opacity: rec.op });
+        const bm = new THREE.InstancedMesh(bgeo, bmat, ids.length); bm.frustumCulled = false;
+        for (let j = 0; j < ids.length; j++) {
+          const i = ids[j];
+          nv.set(samples.nx[i], samples.ny[i], samples.nz[i]); if (nv.lengthSq() < 1e-6) nv.set(0,0,1);
+          q.setFromUnitVectors(UPZ, nv);
+          p.set(samples.x[i], samples.y[i], samples.z[i]);
+          s.set(baseSize*rec.fill*rec.axis[0], baseSize*rec.fill*rec.axis[1], baseSize*rec.fill*rec.axis[2]);
+          m.compose(p, q, s); bm.setMatrixAt(j, m);
+        }
+        bm.instanceMatrix.needsUpdate = true; scene.add(bm); meshes.push(bm);
+
+        // faceplate
+        const tex = PLATE_TEX[rec.plate];
+        if (tex) {
+          const pmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0.9 });
+          const pm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), pmat, ids.length); pm.frustumCulled = false;
+          for (let j = 0; j < ids.length; j++) {
+            const i = ids[j];
+            nv.set(samples.nx[i], samples.ny[i], samples.nz[i]).normalize();
+            q.setFromUnitVectors(UPZ, nv);
+            const off = baseSize * rec.fill * Math.max(rec.axis[2], 0.4) * 0.55;
+            p.set(samples.x[i] + nv.x*off, samples.y[i] + nv.y*off, samples.z[i] + nv.z*off);
+            s.set(baseSize*rec.fill*0.9, baseSize*rec.fill*0.9, 1);
+            m.compose(p, q, s); pm.setMatrixAt(j, m);
+          }
+          pm.instanceMatrix.needsUpdate = true; scene.add(pm); meshes.push(pm);
+        }
+      }
+      document.getElementById('count').textContent = n.toLocaleString();
+      document.getElementById('calls').textContent = String(meshes.length);
+      document.getElementById('mode').textContent = mode;
+      document.getElementById('mat').textContent = (mode === 'region') ? 'by region' : material;
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const sph = box.getBoundingSphere(new THREE.Sphere());
+        center.copy(sph.center); radius = sph.radius || 1;
+        surface = mergeSurface(gltf.scene); samples = sampleSurface(surface, density);
+        build(); frameView();
+        document.getElementById('model').textContent = name + ' (static)';
+      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId); const map = new Map();
+      for (const it of items) {
+        const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b);
+      }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
+    makeButtons('mode-group', ['explore', 'region'], mode, x => x, x => { mode = x; build(); });
+    makeButtons('mat-group', MAT_NAMES, material, x => x, x => { material = x; if (mode === 'explore') build(); else { mode='explore'; build(); document.querySelectorAll('#mode-group button').forEach(b=>b.classList.toggle('active', b.textContent==='explore')); } });
+    makeButtons('dens-group', Object.keys(DENS), 'medium', k => k, k => { density = DENS[k]; if (surface) { samples = sampleSurface(surface, density); build(); } });
+    (function viewButtons() {
+      const g = document.getElementById('view-group');
+      const reframe = document.createElement('button'); reframe.textContent = 'reframe'; reframe.onclick = () => frameView();
+      const spin = document.createElement('button'); spin.textContent = 'auto-spin'; spin.classList.add('active');
+      spin.onclick = () => { controls.autoRotate = !controls.autoRotate; spin.classList.toggle('active', controls.autoRotate); };
+      g.append(reframe, spin);
+    })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      acc += now - lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
+    });
+
+    loadModel('Soldier');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

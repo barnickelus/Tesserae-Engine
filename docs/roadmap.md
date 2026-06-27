@@ -104,6 +104,11 @@
       build an importance map (curvature + semantic region), allocate tesserae by
       importance (dense+small where it matters), per-tessera **faceplate glyph**
       by importance band, and a **continuous abstraction** slider (1%→100%).
+- [x] **Primitive vocabulary as material language** — `examples/tessera-materials.html`:
+      each material is a recipe of primitive shape + faceplate + finish (skin =
+      lens + pores, metal = cube + rivets, cloth = pebble + weave, hair =
+      capsule, glass = translucent lens, stone = pebble + cracks), applied whole
+      (explore) or mixed by region.
 - [ ] Tessera **families** with dedicated plug pieces that completely fill space.
 - [ ] **Connection grammar** (ports + signatures) + Affinity Matrix; grow
       assemblies rather than place isolated pieces.

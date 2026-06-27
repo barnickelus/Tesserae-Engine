@@ -26,7 +26,8 @@ Tesserae-Engine/
 │   ├── tessera-avatar.html   # Animated GLB → bone-skinned tesserae
 │   ├── semantic-tesserae.html # Region-based semantic sizing experiment
 │   ├── tessera-occupancy.html # Adaptive sparse-voxel tesserae with opacity
-│   └── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
+│   ├── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
+│   └── tessera-materials.html # Primitive shape + faceplate as a material language
 └── assets/                   # Models, textures, and other resources
 ```
 
