@@ -391,14 +391,17 @@
       document.getElementById('calls').textContent = '2';
     }
 
-    // PACKED: a two-shape complementary dynamic — spheres at cell centres plus
-    // concave star "plugs" at the grid corners they surround, so the plug nests
-    // into the negative space where spheres meet. Two InstancedMeshes.
+    // PACKED: a two-shape complementary dynamic that interlocks via FLAT FACES
+    // instead of matching a curve. The sphere is FACETED (low-poly, soccer-ball
+    // facets) and the plug is a flat OCTAHEDRON diamond whose 8 faces point along
+    // the diagonals — straight at the 8 surrounding sphere centres — so they seat
+    // flat-to-flat. Both flat-shaded. Two InstancedMeshes.
     function buildPacked(list, plugs) {
       clearInsts();
       const recs = list.length / 6;
-      const sgeo = new THREE.IcosahedronGeometry(0.5, 2);
-      const sm = new THREE.InstancedMesh(sgeo, makeMaterial(), recs);
+      const sgeo = new THREE.IcosahedronGeometry(0.5, 1);   // faceted sphere
+      const smat = makeMaterial(); smat.flatShading = true;
+      const sm = new THREE.InstancedMesh(sgeo, smat, recs);
       sm.frustumCulled = false;
       const sop = new Float32Array(recs);
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), s = new THREE.Vector3(), I = new THREE.Quaternion();
@@ -413,8 +416,8 @@
 
       const pn = plugs.length / 5;
       if (pn > 0) {
-        const pgeo = makeStarGeo(PLUG_RS);
-        const pmat = makeMaterial(); pmat.side = THREE.DoubleSide;
+        const pgeo = new THREE.OctahedronGeometry(0.62, 0);  // flat diamond, faces toward spheres
+        const pmat = makeMaterial(); pmat.flatShading = true;
         const pm = new THREE.InstancedMesh(pgeo, pmat, pn);
         pm.frustumCulled = false;
         const pop = new Float32Array(pn);

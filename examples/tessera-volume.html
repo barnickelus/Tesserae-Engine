@@ -68,7 +68,9 @@
     <div class="group" id="res-group"><span class="label">RESOLUTION</span></div>
     <div class="group" id="render-group"><span class="label">RENDER</span></div>
     <div class="group" id="pack-group"><span class="label">PACKING</span></div>
+    <div class="group" id="plug-group"><span class="label">PLUGS</span></div>
     <div class="group" id="vary-group"><span class="label">VARIETY</span></div>
+    <div class="group" id="plate-group"><span class="label">FACEPLATE</span></div>
     <div class="group" id="alpha-group"><span class="label">ALPHA</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
@@ -122,9 +124,22 @@
     }
 
     // ---- state ----
-    let baseRes = 48, rmode = 'opaque', alpha = ALPHAS.mid, packing = 'hex', vary = true;
+    let baseRes = 48, rmode = 'opaque', alpha = ALPHAS.mid, packing = 'hex', vary = true, plugsOn = true, plate = 'none';
     let surface = null, voxels = null;
-    let inst = null;
+    let vmeshes = [];
+
+    // ---- faceplate glyph textures (white on transparent; tinted per instance) ----
+    function glyphTex(kind) {
+      const s = 128, cv = document.createElement('canvas'); cv.width = cv.height = s;
+      const g = cv.getContext('2d'); g.clearRect(0,0,s,s); g.fillStyle = '#fff'; g.strokeStyle = '#fff';
+      if (kind === 'pores') { for (let i=0;i<14;i++){ g.beginPath(); g.arc(Math.random()*s,Math.random()*s,3+Math.random()*4,0,7); g.fill(); } }
+      else if (kind === 'weave') { g.lineWidth=7; for(let i=16;i<s;i+=24){ g.beginPath(); g.moveTo(i,0); g.lineTo(i,s); g.moveTo(0,i); g.lineTo(s,i); g.stroke(); } }
+      else if (kind === 'ring') { g.lineWidth=12; g.beginPath(); g.arc(s/2,s/2,s*0.32,0,7); g.stroke(); }
+      else return null;
+      const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; return t;
+    }
+    const GLYPH = { pores: glyphTex('pores'), weave: glyphTex('weave'), ring: glyphTex('ring') };
+    function clearVol() { for (const m of vmeshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } vmeshes = []; }
 
     function mergeSurface(root) {
       const chunks = [];
@@ -177,75 +192,126 @@
         const k = stack.pop(); const z = (k/(nx*ny))|0, r = k - z*nx*ny, y = (r/nx)|0, x = r - y*nx;
         push(x+1,y,z); push(x-1,y,z); push(x,y+1,z); push(x,y-1,z); push(x,y,z+1); push(x,y,z-1);
       }
-      // collect solid cells (not exterior); flag surface (solid touching exterior)
+      // collect solid cells (not exterior); flag surface, store outward normal,
+      // and accumulate grid corners touched by surface cells (interstitial plugs)
       const solid = []; let interior = 0;
       const isExt = (x,y,z) => (x<0||y<0||z<0||x>=nx||y>=ny||z>=nz) ? true : !!(grid[idx(x,y,z)] & EXT);
+      const corner = new Map();
       for (let z=0;z<nz;z++) for (let y=0;y<ny;y++) for (let x=0;x<nx;x++) {
         const k = idx(x,y,z); if (grid[k] & EXT) continue;            // exterior
-        const surf = isExt(x+1,y,z)||isExt(x-1,y,z)||isExt(x,y+1,z)||isExt(x,y-1,z)||isExt(x,y,z+1)||isExt(x,y,z-1);
+        const exp=isExt(x+1,y,z), exn=isExt(x-1,y,z), eyp=isExt(x,y+1,z), eyn=isExt(x,y-1,z), ezp=isExt(x,y,z+1), ezn=isExt(x,y,z-1);
+        const surf = exp||exn||eyp||eyn||ezp||ezn;
         if (!surf) interior++;
-        // store world centre, surface flag, layer parity (for hex offset), and a per-cell random (for variety)
-        solid.push(ox+(x+0.5)*cell, oy+(y+0.5)*cell, oz+(z+0.5)*cell, surf ? 1 : 0, y & 1, Math.random());
+        let nx2 = (exp?1:0)-(exn?1:0), ny2 = (eyp?1:0)-(eyn?1:0), nz2 = (ezp?1:0)-(ezn?1:0);
+        const nl = Math.hypot(nx2,ny2,nz2); if (nl>0){ nx2/=nl; ny2/=nl; nz2/=nl; } else { ny2 = 1; }
+        solid.push(ox+(x+0.5)*cell, oy+(y+0.5)*cell, oz+(z+0.5)*cell, surf?1:0, y&1, Math.random(), nx2, ny2, nz2);
+        if (surf) for (let dx=0;dx<2;dx++) for (let dy=0;dy<2;dy++) for (let dz=0;dz<2;dz++) {
+          const ck = (x+dx)+'_'+(y+dy)+'_'+(z+dz); corner.set(ck, (corner.get(ck)||0)+1);
+        }
       }
-      voxels = { solid, cell, total: solid.length/6, interior };
+      // interstitial plug positions: corners shared by several surface cells (a gap)
+      const plugs = [];
+      for (const [ck, cnt] of corner) { if (cnt < 3) continue; const a = ck.split('_'); plugs.push(ox+ +a[0]*cell, oy+ +a[1]*cell, oz+ +a[2]*cell, Math.random()); }
+      voxels = { solid, plugs, cell, total: solid.length/9, interior };
       build();
     }
 
-    function build() {
-      if (!voxels) return;
-      if (inst) { scene.remove(inst); inst.geometry.dispose(); inst.material.dispose(); inst = null; }
-      const arr = voxels.solid, count = voxels.total, cell = voxels.cell;
-      const translucent = rmode === 'translucent';
-      const hex = packing === 'hex';
-      // opaque mode renders the surface shell only (interior is hidden anyway, and cheap)
-      const render = [];
-      for (let i = 0; i < count; i++) { if (translucent || arr[i*6+3] === 1) render.push(i); }
-      const n = render.length;
-
-      const geo = new THREE.IcosahedronGeometry(0.5, 2);
-      // per-instance opacity attribute so variety can give each tessera its own alpha
-      const opac = new Float32Array(n);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x9fb4cc, roughness: 0.7, metalness: 0.05, vertexColors: vary,
-        transparent: translucent, opacity: 1, depthWrite: !translucent,
-      });
+    const UPZ = new THREE.Vector3(0, 0, 1);
+    function tesseraColor(rnd, col) {
+      const warm = rnd > 0.88;
+      col.setHSL(warm ? 0.07 : 0.6 + (rnd - 0.5) * 0.16, warm ? 0.5 : 0.42, 0.42 + rnd * 0.22);
+      return col;
+    }
+    function opacityMaterial(opts) {
+      const mat = new THREE.MeshStandardMaterial(opts);
       mat.onBeforeCompile = (sh) => {
         sh.vertexShader = 'attribute float iOpacity;\nvarying float vO;\n' +
           sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vO = iOpacity;');
         sh.fragmentShader = 'varying float vO;\n' +
           sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\n gl_FragColor.a *= vO;');
       };
-      inst = new THREE.InstancedMesh(geo, mat, n);
-      inst.frustumCulled = false;
-      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color();
-      // hex packing nestles spheres closer (diagonal neighbours), so a smaller radius still overlaps
-      const baseSz = cell * (hex ? 0.82 : (translucent ? 1.25 : 1.18));
+      return mat;
+    }
+
+    function build() {
+      if (!voxels) return;
+      clearVol();
+      const arr = voxels.solid, count = voxels.total, cell = voxels.cell;
+      const translucent = rmode === 'translucent';
+      const hex = packing === 'hex';
       const h = cell * 0.5;
+      // opaque mode renders the surface shell only (interior is hidden anyway, and cheap)
+      const render = [];
+      for (let i = 0; i < count; i++) { if (translucent || arr[i*9+3] === 1) render.push(i); }
+      const n = render.length;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color(), nv = new THREE.Vector3();
+
+      // 1) faceted-sphere bodies
+      const geo = new THREE.IcosahedronGeometry(0.5, 1);          // faceted (soccer-ball facets)
+      const opac = new Float32Array(n);
+      const mat = opacityMaterial({ color: 0x9fb4cc, roughness: 0.7, metalness: 0.05, vertexColors: vary,
+        flatShading: true, transparent: translucent, opacity: 1, depthWrite: !translucent });
+      const bodies = new THREE.InstancedMesh(geo, mat, n); bodies.frustumCulled = false;
+      const baseSz = cell * (hex ? 0.9 : (translucent ? 1.2 : 1.12));
       for (let j = 0; j < n; j++) {
-        const i = render[j], par = arr[i*6+4], rnd = arr[i*6+5];
-        // hex close-pack: stagger odd layers diagonally so they sit over the gaps below
-        let x = arr[i*6], y = arr[i*6+1], z = arr[i*6+2];
+        const i = render[j], par = arr[i*9+4], rnd = arr[i*9+5];
+        let x = arr[i*9], y = arr[i*9+1], z = arr[i*9+2];
         if (hex && par) { x += h; z += h; }
         const sz = vary ? baseSz * (0.8 + rnd * 0.5) : baseSz;
-        p.set(x, y, z); s.setScalar(sz); m.compose(p, q, s); inst.setMatrixAt(j, m);
-        if (vary) {
-          // amalgamation: jittered hue/lightness, an occasional warm grain
-          const warm = rnd > 0.88;
-          col.setHSL(warm ? 0.07 : 0.6 + (rnd - 0.5) * 0.16, warm ? 0.5 : 0.42, 0.42 + rnd * 0.22);
-          inst.setColorAt(j, col);
-          opac[j] = translucent ? Math.min(1, alpha * (0.4 + rnd * 1.5)) : 1;
-        } else {
-          opac[j] = translucent ? alpha : 1;
-        }
+        p.set(x, y, z); s.setScalar(sz); m.compose(p, q, s); bodies.setMatrixAt(j, m);
+        if (vary) bodies.setColorAt(j, tesseraColor(rnd, col));
+        opac[j] = vary ? (translucent ? Math.min(1, alpha*(0.4+rnd*1.5)) : 1) : (translucent ? alpha : 1);
       }
       geo.setAttribute('iOpacity', new THREE.InstancedBufferAttribute(opac, 1));
-      inst.instanceMatrix.needsUpdate = true;
-      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-      scene.add(inst);
+      bodies.instanceMatrix.needsUpdate = true; if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+      scene.add(bodies); vmeshes.push(bodies);
+
+      // 2) interstitial diamond plugs (flat octahedra) fill the gaps between spheres
+      const plg = voxels.plugs; const pn = plg ? plg.length/4 : 0;
+      if (plugsOn && pn > 0) {
+        const pgeo = new THREE.OctahedronGeometry(0.5, 0);
+        const popac = new Float32Array(pn);
+        const pmat = opacityMaterial({ color: 0x8aa0bc, roughness: 0.75, metalness: 0.05, vertexColors: vary,
+          flatShading: true, transparent: translucent, opacity: 1, depthWrite: !translucent });
+        const plugMesh = new THREE.InstancedMesh(pgeo, pmat, pn); plugMesh.frustumCulled = false;
+        for (let j = 0; j < pn; j++) {
+          const rnd = plg[j*4+3];
+          let x = plg[j*4], y = plg[j*4+1], z = plg[j*4+2];
+          if (hex) { x += h*0.0; }                                  // plugs already sit at grid corners
+          p.set(x, y, z); s.setScalar(cell * 0.78); m.compose(p, q, s); plugMesh.setMatrixAt(j, m);
+          if (vary) plugMesh.setColorAt(j, tesseraColor(rnd, col).offsetHSL(0, 0, -0.05));
+          popac[j] = translucent ? Math.min(1, alpha*(vary?(0.4+rnd*1.2):1)) : 1;
+        }
+        pgeo.setAttribute('iOpacity', new THREE.InstancedBufferAttribute(popac, 1));
+        plugMesh.instanceMatrix.needsUpdate = true; if (plugMesh.instanceColor) plugMesh.instanceColor.needsUpdate = true;
+        scene.add(plugMesh); vmeshes.push(plugMesh);
+      }
+
+      // 3) colored faceplate glyphs on the surface tesserae
+      if (plate !== 'none') {
+        const surfIds = render.filter(i => arr[i*9+3] === 1);
+        const tex = GLYPH[plate];
+        const fmat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+        const fm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1), fmat, surfIds.length); fm.frustumCulled = false;
+        for (let j = 0; j < surfIds.length; j++) {
+          const i = surfIds[j], rnd = arr[i*9+5];
+          let x = arr[i*9], y = arr[i*9+1], z = arr[i*9+2];
+          if (hex && arr[i*9+4]) { x += h; z += h; }
+          nv.set(arr[i*9+6], arr[i*9+7], arr[i*9+8]); if (nv.lengthSq() < 1e-6) nv.set(0,0,1);
+          q.setFromUnitVectors(UPZ, nv);
+          const sz = (vary ? baseSz*(0.8+rnd*0.5) : baseSz);
+          p.set(x + nv.x*sz*0.5, y + nv.y*sz*0.5, z + nv.z*sz*0.5);
+          s.set(sz*1.05, sz*1.05, 1); m.compose(p, q, s); fm.setMatrixAt(j, m);
+          fm.setColorAt(j, vary ? tesseraColor(rnd, col).offsetHSL(0,0,0.15) : col.setHSL(0.58,0.4,0.7));
+        }
+        fm.instanceMatrix.needsUpdate = true; if (fm.instanceColor) fm.instanceColor.needsUpdate = true;
+        scene.add(fm); vmeshes.push(fm);
+      }
 
       document.getElementById('count').textContent = n.toLocaleString();
       document.getElementById('inner').textContent = voxels.interior.toLocaleString();
       document.getElementById('rmode').textContent = rmode;
+      document.getElementById('calls').textContent = String(vmeshes.length);
     }
 
     // ---- loading ----
@@ -274,7 +340,9 @@
     makeButtons('res-group', RES, baseRes, r => r + '³', r => { baseRes = r; if (surface) voxelize(); });
     makeButtons('render-group', ['opaque', 'translucent'], rmode, x => x, x => { rmode = x; build(); });
     makeButtons('pack-group', ['cubic', 'hex'], packing, x => x, x => { packing = x; build(); });
+    makeButtons('plug-group', ['on', 'off'], 'on', x => x, x => { plugsOn = (x === 'on'); build(); });
     makeButtons('vary-group', ['uniform', 'varied'], 'varied', x => x, x => { vary = (x === 'varied'); build(); });
+    makeButtons('plate-group', ['none', 'pores', 'weave', 'ring'], 'none', x => x, x => { plate = x; build(); });
     makeButtons('alpha-group', Object.keys(ALPHAS), 'mid', k => k, k => { alpha = ALPHAS[k]; if (rmode === 'translucent') build(); });
     (function viewButtons() {
       const g = document.getElementById('view-group');
