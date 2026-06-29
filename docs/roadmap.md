@@ -104,6 +104,12 @@
       build an importance map (curvature + semantic region), allocate tesserae by
       importance (dense+small where it matters), per-tessera **faceplate glyph**
       by importance band, and a **continuous abstraction** slider (1%→100%).
+- [x] **Colour from source + combined preview** — `examples/tessera-preview.html`:
+      sample each mesh's albedo texture per tessera (interpolated UV → texel,
+      sRGB-decoded) so tesserae take the model's **real colours**, combined with
+      importance-driven density/size, faceted bodies, colour faceplates, and the
+      continuous abstraction slider in one page. Neutral white lighting (no blue
+      cast). The step that turns abstract fields into a recognisable likeness.
 - [x] **Primitive vocabulary as material language** — `examples/tessera-materials.html`:
       each material is a recipe of primitive shape + faceplate + finish (skin =
       lens + pores, metal = cube + rivets, cloth = pebble + weave, hair =

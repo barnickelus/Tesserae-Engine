@@ -28,7 +28,8 @@ Tesserae-Engine/
 │   ├── tessera-occupancy.html # Adaptive sparse-voxel tesserae with opacity
 │   ├── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
 │   ├── tessera-materials.html # Primitive shape + faceplate as a material language
-│   └── tessera-volume.html   # Solid volume fill + transparency by accumulation
+│   ├── tessera-volume.html   # Solid volume fill + transparency by accumulation
+│   └── tessera-preview.html  # Combined preview: source colour + importance + faceplates
 └── assets/                   # Models, textures, and other resources
 ```
 

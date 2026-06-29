@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · preview</title>
+  <!--
+    tessera-preview.html — the combined preview.
+
+    Pulls the pieces from the other prototypes into one page, and adds the part
+    that was always missing: COLOUR FROM THE SOURCE. Each mesh's albedo texture is
+    drawn to a canvas and sampled per tessera by interpolated UV, so tesserae take
+    on the model's real colours — a recognisable likeness, not an abstract field.
+
+    Combines:
+      · colour from source (new)          · importance-driven density + size
+      · faceted-sphere bodies + variety   · colour/importance/flat colour modes
+      · colour faceplate glyphs           · continuous abstraction (1%-100%)
+
+    GPU-instanced. Static model (Soldier / helmet).
+  -->
+  <style>
+    :root { color-scheme: dark; } * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 215px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <h1>tessera-preview</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">abstraction</span><span id="abs" class="v">—</span></div>
+    <div class="row"><span class="k">colour</span><span id="cmode" class="v">source</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
+  </div>
+  <div id="note"><div id="model">loading…</div></div>
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
+    <div class="group" id="color-group"><span class="label">COLOUR</span></div>
+    <div class="group" id="fp-group"><span class="label">FACEPLATE</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const MODELS = {
+      Soldier: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb',
+      Helmet:  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+    };
+    const ABS = [1, 5, 20, 50, 100];
+    const BUDGET = a => Math.round(500 + 55000 * Math.pow(a / 100, 1.5));
+    const KIMP = 120000, IMP_RES = 26;
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0c0f15);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    // neutral white lighting so source colour reads true (no blue cast)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4); key.position.set(1, 1.5, 1.2); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.5); fill.position.set(-1, 0.2, -0.8); scene.add(fill);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
+    const center = new THREE.Vector3(); let radius = 1;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
+
+    // ---- state ----
+    let abstraction = 20, colorMode = 'source', faceplates = true;
+    let sampler = null, impGrid = null, impCell = 1, impMin = new THREE.Vector3();
+    let bodies = null, plate = null;
+
+    // ---- faceplate texture ----
+    function ringTex() {
+      const s = 128, cv = document.createElement('canvas'); cv.width = cv.height = s;
+      const g = cv.getContext('2d'); g.strokeStyle = '#fff'; g.lineWidth = 14; g.beginPath(); g.arc(s/2, s/2, s*0.3, 0, 7); g.stroke();
+      const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; return t;
+    }
+    const RING = ringTex();
+
+    // ---- source sampler: positions, normals, and per-point colour from the albedo texture ----
+    function buildSampler(root) {
+      root.updateWorldMatrix(true, true);
+      const parts = [];
+      root.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
+        const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+        const base = new THREE.Color(0xb9c2cf); if (mat && mat.color) base.copy(mat.color);
+        let img = null;
+        const tex = mat && (mat.map || mat.emissiveMap);
+        if (tex && tex.image) {
+          try {
+            const im = tex.image, cv = document.createElement('canvas');
+            cv.width = im.width || im.videoWidth; cv.height = im.height || im.videoHeight;
+            const cx = cv.getContext('2d'); cx.drawImage(im, 0, 0, cv.width, cv.height);
+            img = Object.assign(cx.getImageData(0, 0, cv.width, cv.height), { w: cv.width, h: cv.height });
+          } catch (e) { img = null; }
+        }
+        parts.push({
+          pos: g.attributes.position.array, nrm: g.attributes.normal.array,
+          uv: g.attributes.uv ? g.attributes.uv.array : null,
+          img, base: [base.r, base.g, base.b], triN: g.attributes.position.count / 3,
+        });
+      });
+      // global area-weighted cumulative across all triangles
+      let triTotal = 0; for (const p of parts) triTotal += p.triN;
+      const cum = new Float64Array(triTotal), partOf = new Int32Array(triTotal), startOf = [];
+      let gi = 0, run = 0;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const P = parts[pi].pos; startOf[pi] = gi - 0; const tris = parts[pi].triN; const off = gi;
+        for (let t = 0; t < tris; t++) {
+          const o = t * 9;
+          const abx=P[o+3]-P[o],aby=P[o+4]-P[o+1],abz=P[o+5]-P[o+2], acx=P[o+6]-P[o],acy=P[o+7]-P[o+1],acz=P[o+8]-P[o+2];
+          const cx=aby*acz-abz*acy,cy=abz*acx-abx*acz,cz=abx*acy-aby*acx; run += 0.5*Math.hypot(cx,cy,cz);
+          cum[off + t] = run; partOf[off + t] = pi;
+        }
+        gi += tris;
+      }
+      return { parts, cum, partOf, startOf, area: run, triTotal };
+    }
+    function sampleTexel(part, u, v, out) {
+      const img = part.img;
+      if (!img) { out[0]=part.base[0]; out[1]=part.base[1]; out[2]=part.base[2]; return; }
+      let uu = u - Math.floor(u), vv = v - Math.floor(v);           // wrap
+      const px = Math.min(img.w-1, Math.max(0, (uu*img.w)|0));
+      const py = Math.min(img.h-1, Math.max(0, ((1-vv)*img.h)|0));  // flip V
+      const k = (py*img.w + px)*4, d = img.data;
+      // de-gamma (sRGB -> linear) so it matches three's colour management
+      out[0] = Math.pow(d[k]/255, 2.2); out[1] = Math.pow(d[k+1]/255, 2.2); out[2] = Math.pow(d[k+2]/255, 2.2);
+    }
+    // pick a triangle (area-weighted), return interpolated pos/normal/colour
+    const _o3 = [0,0,0];
+    function sampleSurface(s, out) {
+      let lo = 0, hi = s.triTotal - 1, x = Math.random() * s.area;
+      while (lo < hi) { const m = (lo+hi)>>1; if (s.cum[m] < x) lo = m+1; else hi = m; }
+      const pi = s.partOf[lo], part = s.parts[pi], lt = lo - s.startOf[pi], o = lt * 9;
+      let u = Math.random(), v = Math.random(); if (u+v>1){u=1-u;v=1-v;} const w = 1-u-v;
+      const P = part.pos, N = part.nrm;
+      out.x = P[o]*w+P[o+3]*u+P[o+6]*v; out.y = P[o+1]*w+P[o+4]*u+P[o+7]*v; out.z = P[o+2]*w+P[o+5]*u+P[o+8]*v;
+      let nx=N[o]*w+N[o+3]*u+N[o+6]*v, ny=N[o+1]*w+N[o+4]*u+N[o+7]*v, nz=N[o+2]*w+N[o+5]*u+N[o+8]*v;
+      const nl=Math.hypot(nx,ny,nz)||1; out.nx=nx/nl; out.ny=ny/nl; out.nz=nz/nl;
+      if (part.uv) {
+        const U = part.uv, uo = lt * 6;
+        const tu = U[uo]*w+U[uo+2]*u+U[uo+4]*v, tv = U[uo+1]*w+U[uo+3]*u+U[uo+5]*v;
+        sampleTexel(part, tu, tv, _o3);
+      } else { _o3[0]=part.base[0]; _o3[1]=part.base[1]; _o3[2]=part.base[2]; }
+      out.r=_o3[0]; out.g=_o3[1]; out.b=_o3[2];
+    }
+
+    // ---- importance map (curvature + semantic region) ----
+    function buildImportance(s) {
+      const sp = { x:0,y:0,z:0,nx:0,ny:0,nz:0,r:0,g:0,b:0 };
+      let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+      const pts = new Float32Array(KIMP*3), nrm = new Float32Array(KIMP*3);
+      for (let i=0;i<KIMP;i++){ sampleSurface(s, sp);
+        pts[i*3]=sp.x;pts[i*3+1]=sp.y;pts[i*3+2]=sp.z; nrm[i*3]=sp.nx;nrm[i*3+1]=sp.ny;nrm[i*3+2]=sp.nz;
+        if(sp.x<minx)minx=sp.x;if(sp.x>maxx)maxx=sp.x;if(sp.y<miny)miny=sp.y;if(sp.y>maxy)maxy=sp.y;if(sp.z<minz)minz=sp.z;if(sp.z>maxz)maxz=sp.z; }
+      const maxDim = Math.max(maxx-minx,maxy-miny,maxz-minz)||1; impCell = maxDim/IMP_RES; impMin.set(minx,miny,minz);
+      const spanY=(maxy-miny)||1, grid=new Map();
+      for (let i=0;i<KIMP;i++){ const k=Math.floor((pts[i*3]-minx)/impCell)+'_'+Math.floor((pts[i*3+1]-miny)/impCell)+'_'+Math.floor((pts[i*3+2]-minz)/impCell);
+        let e=grid.get(k); if(!e){e={n:0,nx:0,ny:0,nz:0,sy:0};grid.set(k,e);} e.n++; e.nx+=nrm[i*3];e.ny+=nrm[i*3+1];e.nz+=nrm[i*3+2]; e.sy+=pts[i*3+1]; }
+      for (const e of grid.values()){ const curv=Math.min(1,(1-Math.hypot(e.nx,e.ny,e.nz)/e.n)*5);
+        const yf=((e.sy/e.n)-miny)/spanY; const region=yf>0.82?1:(yf>0.12?0.32:0.18); e.imp=Math.min(1,0.6*curv+0.55*region); }
+      impGrid = grid;
+    }
+    function importanceAt(x,y,z){ const e=impGrid.get(Math.floor((x-impMin.x)/impCell)+'_'+Math.floor((y-impMin.y)/impCell)+'_'+Math.floor((z-impMin.z)/impCell)); return e?e.imp:0.3; }
+
+    // ---- placement ----
+    function place() {
+      const budget = BUDGET(abstraction), cand = Math.min(budget*4, 180000);
+      const sp = { x:0,y:0,z:0,nx:0,ny:0,nz:0,r:0,g:0,b:0 };
+      const heap = [];
+      for (let i=0;i<cand;i++){ sampleSurface(sampler, sp);
+        const imp = Math.max(0.05, importanceAt(sp.x,sp.y,sp.z));
+        heap.push({ k: Math.pow(Math.random(), 1/imp), x:sp.x,y:sp.y,z:sp.z,nx:sp.nx,ny:sp.ny,nz:sp.nz,r:sp.r,g:sp.g,b:sp.b,imp });
+      }
+      heap.sort((a,b)=>b.k-a.k);
+      const chosen = heap.slice(0, budget);
+      const baseSize = (radius*2)/Math.sqrt(budget)*1.5;
+      buildTesserae(chosen, baseSize);
+      document.getElementById('count').textContent = chosen.length.toLocaleString();
+      document.getElementById('abs').textContent = abstraction + '%';
+    }
+
+    const UPZ = new THREE.Vector3(0,0,1);
+    function colorFor(c, col) {
+      if (colorMode === 'source') return col.setRGB(c.r, c.g, c.b);
+      if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*c.imp, 0.7, 0.52);
+      return col.setRGB(0.62, 0.7, 0.8);
+    }
+    function clearT() {
+      if (bodies){ scene.remove(bodies); bodies.geometry.dispose(); bodies.material.dispose(); bodies=null; }
+      if (plate){ scene.remove(plate); plate.geometry.dispose(); plate.material.dispose(); plate=null; }
+    }
+    function buildTesserae(list, baseSize) {
+      clearT();
+      const n = list.length;
+      const bgeo = new THREE.IcosahedronGeometry(0.5, 1);            // faceted sphere
+      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.04, vertexColors: true, flatShading: true });
+      bodies = new THREE.InstancedMesh(bgeo, bmat, n); bodies.frustumCulled = false;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
+      const fp = [];
+      for (let i=0;i<n;i++){ const c=list[i];
+        nv.set(c.nx,c.ny,c.nz); if(nv.lengthSq()<1e-6) nv.set(0,0,1); nv.normalize(); q.setFromUnitVectors(UPZ, nv);
+        const size = baseSize * (1.65 - 1.1*c.imp);                 // important = smaller
+        p.set(c.x,c.y,c.z); s.setScalar(size); m.compose(p,q,s); bodies.setMatrixAt(i,m);
+        bodies.setColorAt(i, colorFor(c, col));
+        if (faceplates && c.imp > 0.5) fp.push({ c, size, q: q.clone() });
+      }
+      bodies.instanceMatrix.needsUpdate = true; if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+      scene.add(bodies);
+
+      if (faceplates && fp.length) {
+        const pmat = new THREE.MeshBasicMaterial({ map: RING, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+        plate = new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1), pmat, fp.length); plate.frustumCulled = false;
+        for (let j=0;j<fp.length;j++){ const {c,size,q:qq}=fp[j];
+          nv.set(c.nx,c.ny,c.nz).normalize();
+          p.set(c.x+nv.x*size*0.5, c.y+nv.y*size*0.5, c.z+nv.z*size*0.5); s.set(size*0.95,size*0.95,1);
+          m.compose(p,qq,s); plate.setMatrixAt(j,m);
+          plate.setColorAt(j, colorFor(c, col).offsetHSL(0,0,0.18));
+        }
+        plate.instanceMatrix.needsUpdate = true; if (plate.instanceColor) plate.instanceColor.needsUpdate = true;
+        scene.add(plate);
+      }
+      document.getElementById('calls').textContent = String(plate ? 2 : 1);
+      document.getElementById('cmode').textContent = colorMode;
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const sph = box.getBoundingSphere(new THREE.Sphere());
+        center.copy(sph.center); radius = sph.radius || 1;
+        sampler = buildSampler(gltf.scene); buildImportance(sampler); place(); frameView();
+        document.getElementById('model').textContent = name + ' (static)';
+      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId); const map = new Map();
+      for (const it of items) { const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b); }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Soldier', m => m, m => loadModel(m));
+    makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (sampler) place(); });
+    makeButtons('color-group', ['source','importance','flat'], colorMode, x => x, x => { colorMode = x; if (sampler) place(); });
+    makeButtons('fp-group', ['on','off'], 'on', x => x, x => { faceplates = (x==='on'); if (sampler) place(); });
+    (function viewButtons(){ const g=document.getElementById('view-group');
+      const r=document.createElement('button'); r.textContent='reframe'; r.onclick=()=>frameView();
+      const sp=document.createElement('button'); sp.textContent='auto-spin'; sp.classList.add('active');
+      sp.onclick=()=>{ controls.autoRotate=!controls.autoRotate; sp.classList.toggle('active',controls.autoRotate); };
+      g.append(r,sp); })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc=0, frames=0, smoothed=0, lastT=performance.now();
+    function tick(now){ acc+=now-lastT; lastT=now; frames++;
+      if(acc>=250){ const fps=(frames*1000)/acc; smoothed=smoothed?smoothed*0.7+fps*0.3:fps;
+        fpsEl.textContent=smoothed.toFixed(0); fpsEl.className='v '+(smoothed>=50?'fps-good':smoothed>=30?'fps-mid':'fps-bad'); acc=0; frames=0; }
+      controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick);
+    }
+    window.addEventListener('resize', () => { camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); controls.update(); });
+    loadModel('Soldier');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
