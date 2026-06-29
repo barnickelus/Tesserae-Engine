@@ -252,7 +252,9 @@
         // faceplate
         const tex = PLATE_TEX[rec.plate];
         if (tex) {
-          const pmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0.9 });
+          // faceplate colour = a brighter tint of the material, so the pattern carries colour
+          const plateCol = new THREE.Color(rec.color).offsetHSL(0, 0.05, 0.22);
+          const pmat = new THREE.MeshBasicMaterial({ map: tex, color: plateCol, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0.9 });
           const pm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), pmat, ids.length); pm.frustumCulled = false;
           for (let j = 0; j < ids.length; j++) {
             const i = ids[j];

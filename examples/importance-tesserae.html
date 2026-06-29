@@ -250,13 +250,18 @@
     }
 
     const UPZ = new THREE.Vector3(0, 0, 1);
+    // importance colour ramp: low = cool blue, high = warm red. `strong` saturates
+    // it for the debug view; the gentle version tints bodies and faceplates so the
+    // model reads as a coloured perceptual field that blends to colour at distance.
+    function impColor(imp, strong, col) {
+      return col.setHSL(0.62 - 0.62 * imp, strong ? 0.85 : 0.55, strong ? 0.5 : 0.56);
+    }
     function buildTesserae(list, baseSize) {
       clearTesserae();
       const n = list.length;
       // bodies: rounded box oriented so +Z faces the surface normal (gives a face for the plate)
       const bgeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.2);
-      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.08, vertexColors: impDebug });
-      if (!impDebug) bmat.color.set(0x9fb4cc);
+      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.08, vertexColors: true });
       bodies = new THREE.InstancedMesh(bgeo, bmat, n); bodies.frustumCulled = false;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
 
@@ -270,18 +275,18 @@
         const size = baseSize * (1.7 - 1.15 * c.imp);
         p.set(c.x, c.y, c.z); s.set(size, size, size * 0.72);
         m.compose(p, q, s); bodies.setMatrixAt(i, m);
-        if (impDebug) { col.setHSL(0.62 - 0.62 * c.imp, 0.7, 0.5); bodies.setColorAt(i, col); }
+        bodies.setColorAt(i, impColor(c.imp, impDebug, col));
         if (faceplates) { const gi = glyphFor(c.imp); if (gi > 0) groups[gi].push({ c, size, q: q.clone() }); }
       }
       bodies.instanceMatrix.needsUpdate = true; if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
       scene.add(bodies);
 
-      // faceplates: a glyph quad on the outward face, one InstancedMesh per glyph
+      // faceplates: a coloured glyph quad on the outward face, one InstancedMesh per glyph
       if (faceplates) {
         for (let gi = 1; gi <= 3; gi++) {
           const arr = groups[gi]; if (!arr.length) continue;
           const tex = GLYPH_TEX[GLYPHS[gi]];
-          const pmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+          const pmat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
           const pm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), pmat, arr.length);
           pm.frustumCulled = false;
           for (let j = 0; j < arr.length; j++) {
@@ -290,8 +295,11 @@
             p.set(c.x + nv.x * size * 0.38, c.y + nv.y * size * 0.38, c.z + nv.z * size * 0.38);
             s.set(size * 0.82, size * 0.82, 1);
             m.compose(p, qq, s); pm.setMatrixAt(j, m);
+            // glyph colour = a brighter take on the body's importance colour
+            pm.setColorAt(j, impColor(c.imp, true, col).offsetHSL(0, 0, 0.18));
           }
-          pm.instanceMatrix.needsUpdate = true; scene.add(pm); plates.push(pm);
+          pm.instanceMatrix.needsUpdate = true; if (pm.instanceColor) pm.instanceColor.needsUpdate = true;
+          scene.add(pm); plates.push(pm);
         }
       }
       document.getElementById('calls').textContent = String(1 + plates.length);
