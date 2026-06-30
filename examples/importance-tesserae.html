@@ -261,7 +261,7 @@
       const n = list.length;
       // bodies: rounded box oriented so +Z faces the surface normal (gives a face for the plate)
       const bgeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.2);
-      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.08, vertexColors: true });
+      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.08 });
       bodies = new THREE.InstancedMesh(bgeo, bmat, n); bodies.frustumCulled = false;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
 
@@ -286,7 +286,7 @@
         for (let gi = 1; gi <= 3; gi++) {
           const arr = groups[gi]; if (!arr.length) continue;
           const tex = GLYPH_TEX[GLYPHS[gi]];
-          const pmat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+          const pmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
           const pm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), pmat, arr.length);
           pm.frustumCulled = false;
           for (let j = 0; j < arr.length; j++) {

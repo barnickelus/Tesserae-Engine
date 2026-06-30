@@ -249,7 +249,7 @@
       // 1) faceted-sphere bodies
       const geo = new THREE.IcosahedronGeometry(0.5, 1);          // faceted (soccer-ball facets)
       const opac = new Float32Array(n);
-      const mat = opacityMaterial({ color: 0x9fb4cc, roughness: 0.7, metalness: 0.05, vertexColors: vary,
+      const mat = opacityMaterial({ color: 0x9fb4cc, roughness: 0.7, metalness: 0.05,
         flatShading: true, transparent: translucent, opacity: 1, depthWrite: !translucent });
       const bodies = new THREE.InstancedMesh(geo, mat, n); bodies.frustumCulled = false;
       const baseSz = cell * (hex ? 0.9 : (translucent ? 1.2 : 1.12));
@@ -271,7 +271,7 @@
       if (plugsOn && pn > 0) {
         const pgeo = new THREE.OctahedronGeometry(0.5, 0);
         const popac = new Float32Array(pn);
-        const pmat = opacityMaterial({ color: 0x8aa0bc, roughness: 0.75, metalness: 0.05, vertexColors: vary,
+        const pmat = opacityMaterial({ color: 0x8aa0bc, roughness: 0.75, metalness: 0.05,
           flatShading: true, transparent: translucent, opacity: 1, depthWrite: !translucent });
         const plugMesh = new THREE.InstancedMesh(pgeo, pmat, pn); plugMesh.frustumCulled = false;
         for (let j = 0; j < pn; j++) {
@@ -291,7 +291,7 @@
       if (plate !== 'none') {
         const surfIds = render.filter(i => arr[i*9+3] === 1);
         const tex = GLYPH[plate];
-        const fmat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+        const fmat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
         const fm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1), fmat, surfIds.length); fm.frustumCulled = false;
         for (let j = 0; j < surfIds.length; j++) {
           const i = surfIds[j], rnd = arr[i*9+5];

@@ -175,8 +175,7 @@
       const px = Math.min(img.w-1, Math.max(0, (uu*img.w)|0));
       const py = Math.min(img.h-1, Math.max(0, ((1-vv)*img.h)|0));  // flip V
       const k = (py*img.w + px)*4, d = img.data;
-      // de-gamma (sRGB -> linear) so it matches three's colour management
-      out[0] = Math.pow(d[k]/255, 2.2); out[1] = Math.pow(d[k+1]/255, 2.2); out[2] = Math.pow(d[k+2]/255, 2.2);
+      out[0] = d[k]/255; out[1] = d[k+1]/255; out[2] = d[k+2]/255;  // sRGB bytes (converted at setRGB)
     }
     // pick a triangle (area-weighted), return interpolated pos/normal/colour
     const _o3 = [0,0,0];
@@ -234,8 +233,8 @@
 
     const UPZ = new THREE.Vector3(0,0,1);
     function colorFor(c, col) {
-      if (colorMode === 'source') return col.setRGB(c.r, c.g, c.b);
-      if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*c.imp, 0.7, 0.52);
+      if (colorMode === 'source') return col.setRGB(c.r, c.g, c.b, THREE.SRGBColorSpace);
+      if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*c.imp, 0.75, 0.55);
       return col.setRGB(0.62, 0.7, 0.8);
     }
     function clearT() {
@@ -246,7 +245,8 @@
       clearT();
       const n = list.length;
       const bgeo = new THREE.IcosahedronGeometry(0.5, 1);            // faceted sphere
-      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.04, vertexColors: true, flatShading: true });
+      // no vertexColors — per-instance colour comes from instanceColor (setColorAt)
+      const bmat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.04, flatShading: true });
       bodies = new THREE.InstancedMesh(bgeo, bmat, n); bodies.frustumCulled = false;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const fp = [];
@@ -261,7 +261,7 @@
       scene.add(bodies);
 
       if (faceplates && fp.length) {
-        const pmat = new THREE.MeshBasicMaterial({ map: RING, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+        const pmat = new THREE.MeshBasicMaterial({ map: RING, transparent: true, depthWrite: false, side: THREE.DoubleSide });
         plate = new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1), pmat, fp.length); plate.frustumCulled = false;
         for (let j=0;j<fp.length;j++){ const {c,size,q:qq}=fp[j];
           nv.set(c.nx,c.ny,c.nz).normalize();
@@ -285,7 +285,8 @@
         const sph = box.getBoundingSphere(new THREE.Sphere());
         center.copy(sph.center); radius = sph.radius || 1;
         sampler = buildSampler(gltf.scene); buildImportance(sampler); place(); frameView();
-        document.getElementById('model').textContent = name + ' (static)';
+        const tx = sampler.parts.filter(p => p.img).length;        // diagnostic: how many meshes gave a readable texture
+        document.getElementById('model').textContent = name + ' · tex ' + tx + '/' + sampler.parts.length;
       }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
     }
 
