@@ -1,0 +1,10 @@
+{
+  "name": "tesserae-tools",
+  "private": true,
+  "type": "module",
+  "description": "Headless render/critic harness for the Tesserae prototypes",
+  "dependencies": {
+    "playwright": "1.56.1",
+    "three": "0.160.0"
+  }
+}
