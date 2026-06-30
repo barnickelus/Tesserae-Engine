@@ -17,7 +17,7 @@
       · faceted-sphere bodies + variety   · colour/importance/flat colour modes
       · colour faceplate glyphs           · continuous abstraction (1%-100%)
 
-    GPU-instanced. Full-colour static models (Fox / Human / Duck / Helmet).
+    GPU-instanced. Full-colour static models (Empress / Fox / Human / Helmet).
   -->
   <style>
     :root { color-scheme: dark; } * { box-sizing: border-box; }
@@ -77,9 +77,9 @@
     // full-colour single-GLBs with standard (canvas-readable) embedded textures
     const KH = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/';
     const MODELS = {
+      Empress: './models/empress.glb',                         // user model (same-origin → texture readable)
       Fox:    KH + 'Fox/glTF-Binary/Fox.glb',                  // vivid orange — clearest colour test
-      Human:  KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',      // full-colour human figure (avatar case)
-      Duck:   KH + 'Duck/glTF-Binary/Duck.glb',                // simple, saturated — sanity check
+      Human:  KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',      // full-colour human figure
       Helmet: KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
     };
     const ABS = [1, 5, 20, 50, 100];
@@ -297,7 +297,7 @@
         b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
         if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b); }
     }
-    makeButtons('model-group', Object.keys(MODELS), 'Fox', m => m, m => loadModel(m));
+    makeButtons('model-group', Object.keys(MODELS), 'Empress', m => m, m => loadModel(m));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (sampler) place(); });
     makeButtons('color-group', ['source','importance','flat'], colorMode, x => x, x => { colorMode = x; if (sampler) place(); });
     makeButtons('fp-group', ['on','off'], 'on', x => x, x => { faceplates = (x==='on'); if (sampler) place(); });
@@ -316,7 +316,7 @@
       controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => { camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); controls.update(); });
-    loadModel('Fox');
+    loadModel('Empress');
     requestAnimationFrame(tick);
   </script>
 </body>
