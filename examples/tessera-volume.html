@@ -88,6 +88,20 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+
+    // Truncated octahedron — the space-filling faceted polyhedron (6 square + 8
+    // hexagon faces). Vertices are all permutations of (0,±1,±2); scaled so its
+    // square faces sit at ±0.5 → one fills a unit cell and tiles by touching
+    // neighbours, no overlap.
+    function truncatedOctahedron() {
+      const perms = [[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]];
+      const pts = [];
+      for (const pm of perms) for (const sx of [1,-1]) for (const sy of [1,-1]) for (const sz of [1,-1])
+        pts.push(new THREE.Vector3(pm[0]*sx, pm[1]*sy, pm[2]*sz));
+      const g = new ConvexGeometry(pts); g.scale(0.25, 0.25, 0.25); return g;
+    }
+    const TRUNC_OCTA = truncatedOctahedron();
 
     const MODELS = {
       Soldier: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb',
@@ -246,19 +260,17 @@
       const n = render.length;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), col = new THREE.Color(), nv = new THREE.Vector3();
 
-      // 1) faceted-sphere bodies
-      const geo = new THREE.IcosahedronGeometry(0.5, 1);          // faceted (soccer-ball facets)
+      // 1) faceted space-filling bodies — truncated octahedra that TILE the grid
+      //    (fill each cell, touch neighbours at their square faces, no overlap)
+      const geo = TRUNC_OCTA.clone();
       const opac = new Float32Array(n);
-      const mat = opacityMaterial({ color: 0x9fb4cc, roughness: 0.7, metalness: 0.05,
+      const mat = opacityMaterial({ color: 0x9fb4cc, roughness: 0.5, metalness: 0.1,
         flatShading: true, transparent: translucent, opacity: 1, depthWrite: !translucent });
       const bodies = new THREE.InstancedMesh(geo, mat, n); bodies.frustumCulled = false;
-      const baseSz = cell * (hex ? 0.9 : (translucent ? 1.2 : 1.12));
+      const bodySz = cell * 0.99;                                 // fill the cell, no overlap
       for (let j = 0; j < n; j++) {
-        const i = render[j], par = arr[i*9+4], rnd = arr[i*9+5];
-        let x = arr[i*9], y = arr[i*9+1], z = arr[i*9+2];
-        if (hex && par) { x += h; z += h; }
-        const sz = vary ? baseSz * (0.8 + rnd * 0.5) : baseSz;
-        p.set(x, y, z); s.setScalar(sz); m.compose(p, q, s); bodies.setMatrixAt(j, m);
+        const i = render[j], rnd = arr[i*9+5];
+        p.set(arr[i*9], arr[i*9+1], arr[i*9+2]); s.setScalar(bodySz); m.compose(p, q, s); bodies.setMatrixAt(j, m);
         if (vary) bodies.setColorAt(j, tesseraColor(rnd, col));
         opac[j] = vary ? (translucent ? Math.min(1, alpha*(0.4+rnd*1.5)) : 1) : (translucent ? alpha : 1);
       }
@@ -278,7 +290,7 @@
           const rnd = plg[j*4+3];
           let x = plg[j*4], y = plg[j*4+1], z = plg[j*4+2];
           if (hex) { x += h*0.0; }                                  // plugs already sit at grid corners
-          p.set(x, y, z); s.setScalar(cell * 0.78); m.compose(p, q, s); plugMesh.setMatrixAt(j, m);
+          p.set(x, y, z); s.setScalar(cell * 0.98); m.compose(p, q, s); plugMesh.setMatrixAt(j, m);
           if (vary) plugMesh.setColorAt(j, tesseraColor(rnd, col).offsetHSL(0, 0, -0.05));
           popac[j] = translucent ? Math.min(1, alpha*(vary?(0.4+rnd*1.2):1)) : 1;
         }

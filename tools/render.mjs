@@ -47,6 +47,13 @@ await page.route('**unpkg.com/**', (route) => {
   try { route.fulfill({ body: fs.readFileSync(path.join(TMOD, rel)), headers: { 'Content-Type': 'text/javascript' } }); }
   catch { route.abort(); }
 });
+// external model CDNs aren't reachable here — serve the local Empress as a stand-in
+const LOCALGLB = path.join(ROOT, 'examples/models/empress.glb');
+await page.route('**/*.glb', (route) => {
+  if (route.request().url().includes('localhost')) return route.continue();
+  try { route.fulfill({ body: fs.readFileSync(LOCALGLB), headers: { 'Content-Type': 'model/gltf-binary' } }); }
+  catch { route.abort(); }
+});
 page.on('console', m => console.log('  [page]', m.type(), m.text().slice(0, 200)));
 page.on('pageerror', e => console.log('  [pageerror]', String(e).slice(0, 300)));
 
