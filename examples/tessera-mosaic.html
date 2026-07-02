@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · mosaic</title>
+  <!--
+    tessera-mosaic.html — the ground-up rethink.
+
+    The word "tessera" already names the answer: a MOSAIC. Real mosaics solve
+    every problem the earlier prototypes fought one at a time:
+      · tiles are cut SMALLER where detail matters        (adaptive density)
+      · tiles are laid flush, never overlapping           (tiling by construction)
+      · tiles are separated by deliberate grout seams     (the gap, designed)
+      · each tile carries its own colour and finish       (material language)
+
+    Structure: a tessera is a LEAF OF AN IMPORTANCE-DRIVEN OCTREE.
+      1. Sample the surface densely (position / normal / source colour).
+      2. Build an octree over the surface; a cell subdivides where importance is
+         high — importance = colour detail (variance of the source texture in the
+         cell) + curvature (normal dispersion) + semantic region (head boost).
+         A cheek stays one large tile; an eye shatters into many small ones.
+      3. Octree cells nest perfectly across sizes — a 2x tile sits flush beside
+         four 1x tiles. No overlap is possible by construction.
+      4. Each leaf renders as an inset rounded TILE on a dark MORTAR bed,
+         oriented to the mean surface normal, coloured by the mean source texel.
+         The inset creates the grout seam. Abstraction = tree depth.
+
+    Two instanced draw calls (mortar + tiles). Static models.
+  -->
+  <style>
+    :root { color-scheme: dark; } * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #07090d; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 215px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #note { position: fixed; top: env(safe-area-inset-top, 12px); right: 12px; max-width: 240px; text-align: right; color: #65788c; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <h1>tessera-mosaic</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">abstraction</span><span id="abs" class="v">—</span></div>
+    <div class="row"><span class="k">tile sizes</span><span id="depths" class="v">—</span></div>
+    <div class="row"><span class="k">draw calls</span><span id="calls" class="v">—</span></div>
+  </div>
+  <div id="note"><div id="model">loading…</div></div>
+  <div id="controls">
+    <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
+    <div class="group" id="grout-group"><span class="label">GROUT</span></div>
+    <div class="group" id="color-group"><span class="label">COLOUR</span></div>
+    <div class="group" id="view-group"><span class="label">VIEW</span></div>
+  </div>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const KH = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/';
+    const MODELS = {
+      Empress: './models/empress.glb',
+      Fox:    KH + 'Fox/glTF-Binary/Fox.glb',
+      Human:  KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
+      Helmet: KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+    };
+    const KSAMP = 240000;                        // dense surface samples feeding the octree
+    const ABS = [1, 5, 20, 50, 100];
+    const MAXDEPTH = { 1: 4, 5: 5, 20: 6, 50: 7, 100: 8 };
+    // three tile-size classes at any abstraction (real mosaics vary ~4x, not 16x)
+    const SUB_THRESHOLD = 0.24;                   // importance needed to split deeper
+    const CURV_FORCE = 0.38;                      // a cell wrapping a curved form
+                                                  // cannot be one tile — force-split it
+    const MIN_SAMPLES = 6;                        // don't split cells with too few samples
+    const GROUTS = { none: 0.99, thin: 0.9, thick: 0.8 };
+    const MORTAR = new THREE.Color(0x11151c);
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0c0f15);
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 5000);
+    // neutral white lighting so source colour reads true
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    const key = new THREE.DirectionalLight(0xffffff, 1.3); key.position.set(1, 1.5, 1.2); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.45); fill.position.set(-1, 0.2, -0.8); scene.add(fill);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
+    const center = new THREE.Vector3(); let radius = 1;
+    function frameView() {
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
+      camera.updateProjectionMatrix(); controls.update();
+    }
+
+    // ---- state ----
+    let abstraction = 20, grout = 'thin', colorMode = 'source';
+    let sampler = null, samples = null;
+    let vmeshes = [];
+
+    // ---- source sampler (positions / normals / gutter-safe texture colour) ----
+    function buildSampler(root) {
+      root.updateWorldMatrix(true, true);
+      const parts = [];
+      root.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        if (!g.attributes.normal) g.computeVertexNormals();
+        const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+        const base = new THREE.Color(0xb9c2cf); if (mat && mat.color) base.copy(mat.color);
+        let img = null;
+        const tex = mat && (mat.map || mat.emissiveMap);
+        if (tex && tex.image) {
+          try {
+            const im = tex.image, cv = document.createElement('canvas');
+            cv.width = im.width || im.videoWidth; cv.height = im.height || im.videoHeight;
+            const cx = cv.getContext('2d'); cx.drawImage(im, 0, 0, cv.width, cv.height);
+            img = Object.assign(cx.getImageData(0, 0, cv.width, cv.height), { w: cv.width, h: cv.height });
+          } catch (e) { img = null; }
+        }
+        parts.push({ pos: g.attributes.position.array, nrm: g.attributes.normal.array,
+          uv: g.attributes.uv ? g.attributes.uv.array : null, img, base: [base.r, base.g, base.b],
+          triN: g.attributes.position.count / 3 });
+      });
+      let triTotal = 0; for (const p of parts) triTotal += p.triN;
+      const cum = new Float64Array(triTotal), partOf = new Int32Array(triTotal), startOf = [];
+      let gi = 0, run = 0;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const P = parts[pi].pos, tris = parts[pi].triN, off = gi; startOf[pi] = off;
+        for (let t = 0; t < tris; t++) {
+          const o = t * 9;
+          const abx=P[o+3]-P[o],aby=P[o+4]-P[o+1],abz=P[o+5]-P[o+2], acx=P[o+6]-P[o],acy=P[o+7]-P[o+1],acz=P[o+8]-P[o+2];
+          const cx=aby*acz-abz*acy,cy=abz*acx-abx*acz,cz=abx*acy-aby*acx; run += 0.5*Math.hypot(cx,cy,cz);
+          cum[off + t] = run; partOf[off + t] = pi;
+        }
+        gi += tris;
+      }
+      return { parts, cum, partOf, startOf, area: run, triTotal };
+    }
+    function sampleTexel(part, u, v, out) {
+      const img = part.img;
+      if (!img) { out[0]=part.base[0]; out[1]=part.base[1]; out[2]=part.base[2]; return; }
+      const uu = u - Math.floor(u), vv = 1 - (v - Math.floor(v));
+      const px = Math.min(img.w-1, Math.max(0, (uu*img.w)|0));
+      const py = Math.min(img.h-1, Math.max(0, (vv*img.h)|0));
+      const k = (py*img.w + px)*4, d = img.data;
+      out[0] = d[k]/255; out[1] = d[k+1]/255; out[2] = d[k+2]/255;
+    }
+    const _o3 = [0,0,0];
+    function drawSamples(s, n) {
+      // struct-of-arrays: pos, normal, colour per sample
+      const out = { x:new Float32Array(n), y:new Float32Array(n), z:new Float32Array(n),
+                    nx:new Float32Array(n), ny:new Float32Array(n), nz:new Float32Array(n),
+                    r:new Float32Array(n), g:new Float32Array(n), b:new Float32Array(n) };
+      for (let i = 0; i < n; i++) {
+        let lo = 0, hi = s.triTotal - 1, xx = Math.random() * s.area;
+        while (lo < hi) { const m = (lo+hi)>>1; if (s.cum[m] < xx) lo = m+1; else hi = m; }
+        const pi = s.partOf[lo], part = s.parts[pi], lt = lo - s.startOf[pi], o = lt * 9;
+        let u = Math.random(), v = Math.random(); if (u+v>1){u=1-u;v=1-v;} const w = 1-u-v;
+        const P = part.pos, N = part.nrm;
+        out.x[i]=P[o]*w+P[o+3]*u+P[o+6]*v; out.y[i]=P[o+1]*w+P[o+4]*u+P[o+7]*v; out.z[i]=P[o+2]*w+P[o+5]*u+P[o+8]*v;
+        let nx2=N[o]*w+N[o+3]*u+N[o+6]*v, ny2=N[o+1]*w+N[o+4]*u+N[o+7]*v, nz2=N[o+2]*w+N[o+5]*u+N[o+8]*v;
+        const nl=Math.hypot(nx2,ny2,nz2)||1; out.nx[i]=nx2/nl; out.ny[i]=ny2/nl; out.nz[i]=nz2/nl;
+        if (part.uv) {
+          const U = part.uv, uo = lt * 6;
+          // triangle-centroid texel — safely inside the UV island (gutter-proof)
+          const cu = (U[uo]+U[uo+2]+U[uo+4])/3, cvv = (U[uo+1]+U[uo+3]+U[uo+5])/3;
+          sampleTexel(part, cu, cvv, _o3);
+          if (_o3[0]+_o3[1]+_o3[2] < 0.04) sampleTexel(part, U[uo], U[uo+1], _o3);
+        } else { _o3[0]=part.base[0]; _o3[1]=part.base[1]; _o3[2]=part.base[2]; }
+        out.r[i]=_o3[0]; out.g[i]=_o3[1]; out.b[i]=_o3[2];
+      }
+      return out;
+    }
+
+    // ---- the octree: subdivide where perception demands it ----
+    function buildMosaic() {
+      const sm = samples, n = sm.x.length;
+      let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+      for (let i=0;i<n;i++){ if(sm.x[i]<minx)minx=sm.x[i]; if(sm.x[i]>maxx)maxx=sm.x[i];
+        if(sm.y[i]<miny)miny=sm.y[i]; if(sm.y[i]>maxy)maxy=sm.y[i];
+        if(sm.z[i]<minz)minz=sm.z[i]; if(sm.z[i]>maxz)maxz=sm.z[i]; }
+      const size = Math.max(maxx-minx, maxy-miny, maxz-minz) * 1.001;
+      const ox = (minx+maxx-size)/2, oy = (miny+maxy-size)/2, oz = (minz+maxz-size)/2;
+      const spanY = (maxy-miny) || 1;
+      const maxDepth = MAXDEPTH[abstraction];
+      const minDepth = maxDepth - 2;              // largest tile = 4x the smallest
+
+      const all = new Int32Array(n); for (let i=0;i<n;i++) all[i]=i;
+      const leaves = [];
+      const depthCount = {};
+      const stack = [{ x: ox, y: oy, z: oz, s: size, d: 0, ids: all }];
+      while (stack.length) {
+        const c = stack.pop();
+        const ids = c.ids, m = ids.length;
+        // cell stats: mean position / normal / colour, colour variance, curvature
+        let px=0,py=0,pz=0, nx2=0,ny2=0,nz2=0, r=0,g=0,b=0;
+        for (let k=0;k<m;k++){ const i=ids[k];
+          px+=sm.x[i]; py+=sm.y[i]; pz+=sm.z[i]; nx2+=sm.nx[i]; ny2+=sm.ny[i]; nz2+=sm.nz[i];
+          r+=sm.r[i]; g+=sm.g[i]; b+=sm.b[i]; }
+        px/=m; py/=m; pz/=m; r/=m; g/=m; b/=m;
+        let cvar=0;
+        for (let k=0;k<m;k++){ const i=ids[k];
+          const dr=sm.r[i]-r, dg=sm.g[i]-g, db=sm.b[i]-b; cvar += dr*dr+dg*dg+db*db; }
+        cvar/=m;
+        const curv = 1 - Math.hypot(nx2,ny2,nz2)/m;                     // normal dispersion 0..1
+        const head = ((py-miny)/spanY > 0.8) ? 0.18 : 0;                // semantic boost
+        const imp = Math.min(1, cvar*7 + curv*0.85 + head);
+
+        const wantSplit = c.d < minDepth ||
+          (c.d < maxDepth && m >= MIN_SAMPLES && (imp > SUB_THRESHOLD || curv > CURV_FORCE)) ||
+          (curv > CURV_FORCE && m >= 2 && c.d < maxDepth + 1);   // wrap-around cells split even past budget
+        if (wantSplit) {
+          const h = c.s/2, mx = c.x+h, my = c.y+h, mz = c.z+h;
+          const buckets = [[],[],[],[],[],[],[],[]];
+          for (let k=0;k<m;k++){ const i=ids[k];
+            buckets[(sm.x[i]>=mx?1:0) | (sm.y[i]>=my?2:0) | (sm.z[i]>=mz?4:0)].push(i); }
+          for (let o=0;o<8;o++) if (buckets[o].length)
+            stack.push({ x: c.x+(o&1?h:0), y: c.y+(o&2?h:0), z: c.z+(o&4?h:0), s: h, d: c.d+1, ids: buckets[o] });
+        } else {
+          const nl = Math.hypot(nx2,ny2,nz2)||1;
+          leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp,
+                        cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
+          depthCount[c.d] = (depthCount[c.d]||0) + 1;
+        }
+      }
+      buildMeshes(leaves);
+      const ds = Object.keys(depthCount).sort((a,b)=>a-b).map(d => depthCount[d]).join('/');
+      document.getElementById('count').textContent = leaves.length.toLocaleString();
+      document.getElementById('abs').textContent = abstraction + '%';
+      document.getElementById('depths').textContent = ds;
+    }
+
+    // ---- render: dark mortar bed + inset colour tiles ----
+    const UPZ = new THREE.Vector3(0, 0, 1);
+    function clearVol() { for (const m of vmeshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } vmeshes = []; }
+    function tileColor(l, col) {
+      if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*Math.min(1,l.imp), 0.75, 0.55);
+      if (colorMode === 'flat') return col.setHSL(0.6, 0.15, 0.62);
+      col.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);
+      // slight hand-cut lightness jitter so runs of same-colour tiles read as tiles
+      const j = (Math.random() - 0.5) * 0.07;
+      col.offsetHSL(0, 0, j);
+      return col;
+    }
+    function buildMeshes(leaves) {
+      clearVol();
+      const n = leaves.length;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
+      const inset = GROUTS[grout];
+
+      // tiles laid on the surface; the dark background showing through the inset
+      // seams IS the grout (a mosaic on a dark wall). One instanced draw call.
+      const tileGeo = new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09);
+      const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.06 });
+      const tiles = new THREE.InstancedMesh(tileGeo, tileMat, n); tiles.frustumCulled = false;
+      for (let j = 0; j < n; j++) {
+        const l = leaves[j];
+        nv.set(l.nx, l.ny, l.nz); if (nv.lengthSq() < 1e-6) nv.set(0,0,1); nv.normalize();
+        q.setFromUnitVectors(UPZ, nv);
+        p.set(l.x, l.y, l.z);                       // anchored on the surface itself
+        s.set(l.s * inset, l.s * inset, l.s);
+        m.compose(p, q, s); tiles.setMatrixAt(j, m);
+        tiles.setColorAt(j, tileColor(l, col));
+      }
+      tiles.instanceMatrix.needsUpdate = true; if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
+      scene.add(tiles); vmeshes.push(tiles);
+
+      document.getElementById('calls').textContent = '1';
+    }
+
+    // ---- loading ----
+    const loader = new GLTFLoader();
+    function loadModel(name) {
+      document.getElementById('model').textContent = 'loading ' + name + '…';
+      loader.load(MODELS[name], (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const sph = box.getBoundingSphere(new THREE.Sphere());
+        center.copy(sph.center); radius = sph.radius || 1;
+        sampler = buildSampler(gltf.scene);
+        samples = drawSamples(sampler, KSAMP);
+        buildMosaic(); frameView();
+        const tx = sampler.parts.filter(p => p.img).length;
+        document.getElementById('model').textContent = name + ' · tex ' + tx + '/' + sampler.parts.length;
+      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+    }
+
+    // ---- controls ----
+    function makeButtons(groupId, items, current, label, onPick) {
+      const group = document.getElementById(groupId); const map = new Map();
+      for (const it of items) { const b = document.createElement('button'); b.textContent = label(it);
+        b.onclick = () => { onPick(it); for (const [val, btn] of map) btn.classList.toggle('active', val === it); };
+        if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b); }
+    }
+    makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
+    makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
+    makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; if (samples) buildMosaic(); });
+    makeButtons('color-group', ['source','importance','flat'], colorMode, x => x, x => { colorMode = x; if (samples) buildMosaic(); });
+    (function viewButtons(){ const g = document.getElementById('view-group');
+      const r = document.createElement('button'); r.textContent = 'reframe'; r.onclick = () => frameView();
+      const sp = document.createElement('button'); sp.textContent = 'auto-spin'; sp.classList.add('active');
+      sp.onclick = () => { controls.autoRotate = !controls.autoRotate; sp.classList.toggle('active', controls.autoRotate); };
+      g.append(r, sp); })();
+
+    // ---- loop ----
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      acc += now - lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
+        acc = 0; frames = 0;
+      }
+      controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
+    }
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
+    });
+    loadModel('Empress');
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

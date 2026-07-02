@@ -29,7 +29,8 @@ Tesserae-Engine/
 │   ├── importance-tesserae.html # Importance-driven adaptive tesserae + faceplates
 │   ├── tessera-materials.html # Primitive shape + faceplate as a material language
 │   ├── tessera-volume.html   # Solid volume fill + transparency by accumulation
-│   └── tessera-preview.html  # Combined preview: source colour + importance + faceplates
+│   ├── tessera-preview.html  # Combined preview: source colour + importance + faceplates
+│   └── tessera-mosaic.html   # Ground-up rethink: importance-driven octree mosaic
 └── assets/                   # Models, textures, and other resources
 ```
 

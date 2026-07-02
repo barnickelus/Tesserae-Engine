@@ -131,6 +131,26 @@
       procedural description rather than copying the mesh.
 - [ ] **Viewer-adaptive** importance field (head position / distance).
 
+### M8 — The Mosaic Rethink (ground-up)
+> The word *tessera* named the answer all along: a **mosaic**. Real mosaics solve
+> every problem the earlier prototypes fought one at a time — tiles cut smaller
+> where detail matters (adaptive), laid flush without overlap (tiling), separated
+> by deliberate grout seams (the gap, designed), each with its own colour/finish.
+- [x] `examples/tessera-mosaic.html` — **a tessera is a leaf of an
+      importance-driven octree.** Cells subdivide where importance is high
+      (source-colour variance + curvature + semantic region, with force-splitting
+      of cells that wrap curved forms); octree cells nest flush across sizes, so
+      overlap is impossible by construction; each leaf renders as an inset
+      rounded tile oriented to the surface in source colour; grout = the inset
+      seam; abstraction = tree depth (always three tile-size classes, ~4× spread,
+      like real mosaic work). One instanced draw call. Iterated to a coherent
+      full-colour likeness via the render harness.
+- [ ] Andamento — orient/flow tiles along contour or colour-gradient lines (the
+      signature of hand-laid mosaic; currently tiles are axis-aligned in-plane).
+- [ ] Merge the faceplate/relief language and material recipes onto mosaic tiles.
+- [ ] Animate: bind leaves to bones (bind-pose octree + skinning, as in
+      tessera-avatar).
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
