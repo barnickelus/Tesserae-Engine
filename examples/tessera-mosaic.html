@@ -22,11 +22,17 @@
          A cheek stays one large tile; an eye shatters into many small ones.
       3. Octree cells nest perfectly across sizes — a 2x tile sits flush beside
          four 1x tiles. No overlap is possible by construction.
-      4. Each leaf renders as an inset rounded TILE on a dark MORTAR bed,
-         oriented to the mean surface normal, coloured by the mean source texel.
-         The inset creates the grout seam. Abstraction = tree depth.
+      4. Each leaf renders as an inset rounded TILE oriented to the mean surface
+         normal. The inset seam over the dark background is the grout.
+         Abstraction = tree depth.
+      5. PAINTED TILES: each tile is a small painting — a BASE colour (the cell's
+         mean source texel) plus TWO ACCENT colours (the most divergent source
+         colours inside the cell), applied as glyph shapes chosen by the tile's
+         material read (gold → facets, skin → pores, cloth → weave, dark → strands).
+         Up close the shapes read as material texture; at distance the accents
+         optically blend back into the base colour (the Chuck Close effect).
 
-    Two instanced draw calls (mortar + tiles). Static models.
+    One instanced draw call (pattern mask atlas + per-instance palette in shader).
   -->
   <style>
     :root { color-scheme: dark; } * { box-sizing: border-box; }
@@ -67,6 +73,7 @@
     <div class="group" id="model-group"><span class="label">MODEL</span></div>
     <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
     <div class="group" id="grout-group"><span class="label">GROUT</span></div>
+    <div class="group" id="paint-group"><span class="label">PAINT</span></div>
     <div class="group" id="color-group"><span class="label">COLOUR</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
@@ -129,9 +136,68 @@
     }
 
     // ---- state ----
-    let abstraction = 20, grout = 'thin', colorMode = 'source';
+    let abstraction = 20, grout = 'thin', colorMode = 'source', paint = true;
     let sampler = null, samples = null;
     let vmeshes = [];
+
+    // ---- pattern atlas: 4 material glyph masks (R = accent A, G = accent B) ----
+    // 0 gold/metal → hammered facets + glints   1 skin → pores + freckles
+    // 2 cloth      → weave threads              3 dark/hair → strands
+    const PAT_N = 4;
+    function buildPatternAtlas() {
+      const S = 128, cv = document.createElement('canvas'); cv.width = S*PAT_N; cv.height = S;
+      const g = cv.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, S*PAT_N, S);
+      const A = '#ff0000', B = '#00ff00';
+      // 0 — metal: faceted triangles (A) + small glints (B)
+      g.save(); g.translate(0, 0);
+      g.fillStyle = A;
+      for (const [x1,y1,x2,y2,x3,y3] of [[8,40,52,12,64,58],[70,10,120,34,92,64],[14,72,58,86,30,120],[74,78,118,70,100,118]]) {
+        g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.lineTo(x3,y3); g.closePath(); g.fill();
+      }
+      g.fillStyle = B;
+      for (const [x,y] of [[40,30],[96,50],[52,100],[104,96]]) { g.beginPath(); g.arc(x,y,5,0,7); g.fill(); }
+      g.restore();
+      // 1 — skin: pores (A) + freckles (B)
+      g.save(); g.translate(S, 0);
+      g.fillStyle = A;
+      for (const [x,y,r] of [[22,24,6],[64,16,5],[104,28,6],[40,58,5],[86,62,6],[18,92,5],[60,100,6],[104,94,5],[84,112,4],[34,114,4]]) {
+        g.beginPath(); g.arc(x,y,r,0,7); g.fill();
+      }
+      g.fillStyle = B;
+      for (const [x,y] of [[50,36],[96,78],[26,72]]) { g.beginPath(); g.arc(x,y,3.5,0,7); g.fill(); }
+      g.restore();
+      // 2 — cloth: warp threads (A) + weft threads (B)
+      g.save(); g.translate(S*2, 0);
+      g.fillStyle = A; for (let x = 6; x < S; x += 26) g.fillRect(x, 0, 8, S);
+      g.fillStyle = B; for (let y = 12; y < S; y += 30) g.fillRect(0, y, S, 7);
+      g.restore();
+      // 3 — dark/hair: strands (A) + fine strands (B)
+      g.save(); g.translate(S*3, 0);
+      for (const [c, w, ph] of [[A, 5, 0], [B, 2.5, 13]]) {
+        g.strokeStyle = c; g.lineWidth = w;
+        for (let x = 10 + ph; x < S; x += 24) {
+          g.beginPath(); g.moveTo(x, -4);
+          for (let y = 0; y <= S; y += 16) g.lineTo(x + Math.sin(y*0.09 + x)*6, y);
+          g.stroke();
+        }
+      }
+      g.restore();
+      const t = new THREE.CanvasTexture(cv);
+      t.colorSpace = THREE.NoColorSpace; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.anisotropy = 4;
+      return t;
+    }
+    const PATTERNS = buildPatternAtlas();
+
+    // heuristic material read from a tile's mean colour (sRGB) — which glyph set
+    const _hsl = { h: 0, s: 0, l: 0 };
+    const _mcol = new THREE.Color();
+    function materialOf(r, g, b, col) {
+      col.setRGB(r, g, b); col.getHSL(_hsl);
+      if (_hsl.l < 0.2) return 3;                                          // dark / hair / leather
+      if (_hsl.s > 0.34 && _hsl.h > 0.07 && _hsl.h < 0.19) return 0;       // gold / metal
+      if (_hsl.h < 0.11 && _hsl.s > 0.1 && _hsl.s < 0.5 && _hsl.l > 0.42) return 1; // skin
+      return 2;                                                            // cloth / other
+    }
 
     // ---- source sampler (positions / normals / gutter-safe texture colour) ----
     function buildSampler(root) {
@@ -255,7 +321,21 @@
             stack.push({ x: c.x+(o&1?h:0), y: c.y+(o&2?h:0), z: c.z+(o&4?h:0), s: h, d: c.d+1, ids: buckets[o] });
         } else {
           const nl = Math.hypot(nx2,ny2,nz2)||1;
+          // accent palette: the two most divergent source colours inside the cell
+          // (furthest from the mean, then furthest from that), tempered toward
+          // the base so a single outlier sample can't hijack the tile
+          let ia = ids[0], da = -1, ib = ids[0], db = -1;
+          for (let k=0;k<m;k++){ const i=ids[k];
+            const d=(sm.r[i]-r)*(sm.r[i]-r)+(sm.g[i]-g)*(sm.g[i]-g)+(sm.b[i]-b)*(sm.b[i]-b);
+            if (d>da){ da=d; ia=i; } }
+          for (let k=0;k<m;k++){ const i=ids[k];
+            const d=(sm.r[i]-sm.r[ia])*(sm.r[i]-sm.r[ia])+(sm.g[i]-sm.g[ia])*(sm.g[i]-sm.g[ia])+(sm.b[i]-sm.b[ia])*(sm.b[i]-sm.b[ia]);
+            if (d>db){ db=d; ib=i; } }
+          const T = 0.25;
           leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp,
+                        ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
+                        rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
+                        mat: materialOf(r, g, b, _mcol),
                         cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
@@ -273,6 +353,7 @@
     function tileColor(l, col) {
       if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*Math.min(1,l.imp), 0.75, 0.55);
       if (colorMode === 'flat') return col.setHSL(0.6, 0.15, 0.62);
+      if (colorMode === 'material') { const MH = [0.09, 0.95, 0.58, 0.78]; return col.setHSL(MH[l.mat], 0.7, 0.55); }
       col.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);
       // slight hand-cut lightness jitter so runs of same-colour tiles read as tiles
       const j = (Math.random() - 0.5) * 0.07;
@@ -284,12 +365,32 @@
       const n = leaves.length;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const inset = GROUTS[grout];
+      const painting = paint && colorMode === 'source';
 
       // tiles laid on the surface; the dark background showing through the inset
       // seams IS the grout (a mosaic on a dark wall). One instanced draw call.
       const tileGeo = new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09);
       const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.06 });
+      if (painting) {
+        // paint each tile: base colour (instanceColor) + two accents applied
+        // through the material glyph masks (R = accent A, G = accent B)
+        tileMat.onBeforeCompile = (sh) => {
+          sh.uniforms.patTex = { value: PATTERNS };
+          sh.vertexShader = 'attribute vec3 aA; attribute vec3 aB; attribute float aP;\n' +
+            'varying vec3 vAcc1; varying vec3 vAcc2; varying vec2 vPUv;\n' +
+            sh.vertexShader.replace('#include <begin_vertex>',
+              '#include <begin_vertex>\n vAcc1 = aA; vAcc2 = aB; vPUv = vec2((uv.x + aP)/' + PAT_N + '.0, uv.y);');
+          sh.fragmentShader = 'uniform sampler2D patTex;\n' +
+            'varying vec3 vAcc1; varying vec3 vAcc2; varying vec2 vPUv;\n' +
+            sh.fragmentShader.replace('#include <color_fragment>',
+              '#include <color_fragment>\n vec4 pm = texture2D(patTex, vPUv);\n' +
+              ' diffuseColor.rgb = diffuseColor.rgb * max(0.0, 1.0 - pm.r - pm.g) + vAcc1 * pm.r + vAcc2 * pm.g;');
+        };
+      }
       const tiles = new THREE.InstancedMesh(tileGeo, tileMat, n); tiles.frustumCulled = false;
+      const accA = painting ? new Float32Array(n*3) : null;
+      const accB = painting ? new Float32Array(n*3) : null;
+      const patId = painting ? new Float32Array(n) : null;
       for (let j = 0; j < n; j++) {
         const l = leaves[j];
         nv.set(l.nx, l.ny, l.nz); if (nv.lengthSq() < 1e-6) nv.set(0,0,1); nv.normalize();
@@ -298,6 +399,23 @@
         s.set(l.s * inset, l.s * inset, l.s);
         m.compose(p, q, s); tiles.setMatrixAt(j, m);
         tiles.setColorAt(j, tileColor(l, col));
+        if (painting) {
+          // guarantee the accents keep a little contrast against the base, so
+          // the texture still reads on flat-coloured cells
+          const lm = (l.r + l.g + l.b) / 3;
+          col.setRGB(l.ra, l.ga, l.ba, THREE.SRGBColorSpace);
+          if (Math.abs((l.ra + l.ga + l.ba)/3 - lm) < 0.05) col.offsetHSL(0, 0, -0.1);
+          accA[j*3] = col.r; accA[j*3+1] = col.g; accA[j*3+2] = col.b;
+          col.setRGB(l.rb, l.gb, l.bb, THREE.SRGBColorSpace);
+          if (Math.abs((l.rb + l.gb + l.bb)/3 - lm) < 0.05) col.offsetHSL(0, 0, 0.1);
+          accB[j*3] = col.r; accB[j*3+1] = col.g; accB[j*3+2] = col.b;
+          patId[j] = l.mat;
+        }
+      }
+      if (painting) {
+        tileGeo.setAttribute('aA', new THREE.InstancedBufferAttribute(accA, 3));
+        tileGeo.setAttribute('aB', new THREE.InstancedBufferAttribute(accB, 3));
+        tileGeo.setAttribute('aP', new THREE.InstancedBufferAttribute(patId, 1));
       }
       tiles.instanceMatrix.needsUpdate = true; if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
       scene.add(tiles); vmeshes.push(tiles);
@@ -331,7 +449,8 @@
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; if (samples) buildMosaic(); });
-    makeButtons('color-group', ['source','importance','flat'], colorMode, x => x, x => { colorMode = x; if (samples) buildMosaic(); });
+    makeButtons('paint-group', ['painted','flat'], 'painted', x => x, x => { paint = (x === 'painted'); if (samples) buildMosaic(); });
+    makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; if (samples) buildMosaic(); });
     (function viewButtons(){ const g = document.getElementById('view-group');
       const r = document.createElement('button'); r.textContent = 'reframe'; r.onclick = () => frameView();
       const sp = document.createElement('button'); sp.textContent = 'auto-spin'; sp.classList.add('active');

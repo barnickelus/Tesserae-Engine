@@ -145,6 +145,17 @@
       seam; abstraction = tree depth (always three tile-size classes, ~4× spread,
       like real mosaic work). One instanced draw call. Iterated to a coherent
       full-colour likeness via the render harness.
+- [x] **Painted tiles** — each tile is a small painting: base colour (cell mean)
+      + two accent colours (the most divergent source colours inside the cell),
+      applied as glyph shapes chosen by a heuristic material read of the tile
+      (gold → hammered facets, skin → pores, cloth → weave, dark → strands) via a
+      mask atlas + per-instance palette in the shader (still one draw call).
+      Up close the shapes read as material texture; at distance they optically
+      blend back into the base (the Chuck Close effect). COLOUR=material debugs
+      the classifier; PAINT toggles painted vs flat.
+- [ ] Improve the material read (true material IDs / metalness sampling — the
+      colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
+      pattern rotation so glyphs don't all align.
 - [ ] Andamento — orient/flow tiles along contour or colour-gradient lines (the
       signature of hand-laid mosaic; currently tiles are axis-aligned in-plane).
 - [ ] Merge the faceplate/relief language and material recipes onto mosaic tiles.
