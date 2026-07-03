@@ -105,10 +105,9 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const KH = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/';
-    // 'Portrait' (mrdoob/three.js facecap.glb) was removed — it 404'd, and that CDN
-    // path was never actually verified reachable from this environment (see roadmap).
     const MODELS = {
       Empress:  './models/empress.glb',
+      Portrait: './models/portrait.glb',   // user-supplied face model — hosted locally like Empress
       Fox:      KH + 'Fox/glTF-Binary/Fox.glb',
       Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
       Helmet:   KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
@@ -520,9 +519,13 @@
 
     // ---- loading ----
     const loader = new GLTFLoader();
+    let loadGen = 0;   // guards against a slower, earlier-started load (e.g. a big
+                       // default model still in flight) clobbering a later pick
     function loadModel(name) {
+      const gen = ++loadGen;
       document.getElementById('model').textContent = 'loading ' + name + '…';
       loader.load(MODELS[name], (gltf) => {
+        if (gen !== loadGen) return;   // a newer model was selected meanwhile
         const box = new THREE.Box3().setFromObject(gltf.scene);
         const sph = box.getBoundingSphere(new THREE.Sphere());
         center.copy(sph.center); radius = sph.radius || 1;
@@ -531,7 +534,7 @@
         buildMosaic(); frameView();
         const tx = sampler.parts.filter(p => p.img).length;
         document.getElementById('model').textContent = name + ' · tex ' + tx + '/' + sampler.parts.length;
-      }, undefined, () => { document.getElementById('model').textContent = name + ' — load failed'; });
+      }, undefined, () => { if (gen === loadGen) document.getElementById('model').textContent = name + ' — load failed'; });
     }
 
     // ---- controls ----

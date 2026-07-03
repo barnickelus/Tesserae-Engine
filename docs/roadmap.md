@@ -181,19 +181,25 @@
       the target colour more often than `bold`, so in practice it often reads
       only marginally bolder than `bold` rather than dramatically more so —
       logged as a known limit rather than oversold.
-- [ ] **Portrait model — reverted, 404'd on device.** Tried `facecap.glb` from
-      the mrdoob/three.js CDN; confirmed failed on a real device. Root cause
-      likely unfixable by guessing again: outbound network from this sandbox
-      is policy-blocked entirely (verified — even a metadata HEAD request to
-      `data.jsdelivr.com` gets a 403 at the gateway), so no external URL can be
-      checked here before shipping it. There's also a second, independent risk
-      specific to that repo: three.js's example binaries may be stored via Git
-      LFS, which jsDelivr's GitHub-CDN proxy does not resolve — it would serve
-      the LFS pointer text file instead of the model, failing glTF parsing
-      regardless of path correctness. Removed from MODELS pending either (a) a
-      user-supplied face/portrait `.glb` hosted locally like `empress.glb` (the
-      only approach proven reliable so far), or (b) a differently-sourced
-      candidate the user wants tried next.
+- [x] **Portrait model — fixed via the reliable path.** The CDN guess
+      (`facecap.glb`) 404'd, as expected given this sandbox can't verify
+      external URLs. Replaced with a user-supplied face/portrait `.glb`
+      (`examples/models/portrait.glb`, "Emerald Gaze in Shadow"), hosted
+      locally exactly like `empress.glb` — same-origin, so it's guaranteed
+      reachable and its texture is canvas-readable. This time genuinely
+      verified in the render harness (not guessed): loads as
+      `Portrait · tex 1/1`, and orbiting confirms a real head/shoulders bust
+      with the divisionist painting rendering correctly on it.
+      Also found and fixed a real bug this surfaced: switching models while a
+      large default model (Empress, 24 MB) was still loading could let the
+      slower, earlier-started load finish *later* and silently clobber the
+      newer selection. Fixed with a load-generation counter in `loadModel()` —
+      a stale completed load is now dropped if a newer one has since started.
+      Known cosmetic-only issue: the default camera angle doesn't face this
+      scan's front (its forward axis doesn't match the generic framing
+      assumption) — orbiting on-device finds the face instantly since that's
+      interactive, unlike the slow scripted verification here under software
+      rendering.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
       pattern rotation so glyphs don't all align.
