@@ -167,6 +167,28 @@
       four glyph patterns (~45–60% combined accent coverage, was ~5–30%) so
       purity is visible on every material, not just cloth. `muted` (softer,
       source-derived accents) and `flat` remain as the other PAINT modes.
+- [x] **SPLIT control — push complementary colours toward Chuck Close's
+      extremes.** classic / bold / extreme scale how far the two pure hues are
+      pushed apart around the target hue (was fixed at a narrow ~18°). Default
+      is now `bold`. Verified two ways: (1) at 5% the patches read distinctly
+      more vivid/jarring than `classic`; (2) rendered at full resolution, then
+      genuinely downsampled (cropped + bilinear-shrunk + re-expanded, not just
+      trusting the per-tile maths) to simulate viewing from a distance — the
+      figure resolves to the correct warm gold, confirming the optical
+      neutralization actually works and isn't just colour-correct on paper.
+      Honest finding: `extreme` (±86°, near-true-complements) hits the sRGB
+      gamut wall for many hue/lightness combos and silently falls back toward
+      the target colour more often than `bold`, so in practice it often reads
+      only marginally bolder than `bold` rather than dramatically more so —
+      logged as a known limit rather than oversold.
+- [x] Added **Portrait** (`facecap.glb`, a scanned human head bust with a
+      photographic skin texture, same three.js CDN as the Fox/Human models) so
+      the divisionist painting can be tried on a face specifically, alongside
+      Empress / Fox / Helmet. **Unverified from this sandbox** — CDN model
+      fetches are blocked here (the render harness substitutes the local
+      Empress for any external `.glb`), so this could not be screenshot-tested
+      before shipping; confirm it loads (`Portrait · tex 1/1` in the model
+      label) on a real device.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
       pattern rotation so glyphs don't all align.

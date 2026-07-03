@@ -38,6 +38,11 @@
          Glyph shapes are chosen by the tile's material read (gold → facets,
          skin → pores, cloth → weave, dark → strands) via a mask atlas mixed in
          the shader with a per-instance palette (aA/aB/aP attributes).
+      6. SPLIT controls how far the two pure hues are pushed apart (classic /
+         bold / extreme). Chuck Close pushed his warm/cool pairs toward true
+         complements — up close they read as vivid, almost jarring opposites;
+         only once the eye can no longer resolve individual tiles do they
+         optically NEUTRALIZE into the correct flesh tone.
 
     One instanced draw call (pattern mask atlas + per-instance palette in shader).
   -->
@@ -81,6 +86,7 @@
     <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
     <div class="group" id="grout-group"><span class="label">GROUT</span></div>
     <div class="group" id="paint-group"><span class="label">PAINT</span></div>
+    <div class="group" id="split-group"><span class="label">SPLIT</span></div>
     <div class="group" id="color-group"><span class="label">COLOUR</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
   </div>
@@ -99,11 +105,13 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const KH = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/';
+    const THREECDN = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/';
     const MODELS = {
-      Empress: './models/empress.glb',
-      Fox:    KH + 'Fox/glTF-Binary/Fox.glb',
-      Human:  KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
-      Helmet: KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
+      Empress:  './models/empress.glb',
+      Portrait: THREECDN + 'facecap.glb',          // scanned human head bust, photographic skin texture
+      Fox:      KH + 'Fox/glTF-Binary/Fox.glb',
+      Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
+      Helmet:   KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
     };
     const KSAMP = 240000;                        // dense surface samples feeding the octree
     const ABS = [1, 5, 20, 50, 100];
@@ -147,9 +155,10 @@
     //                      optically blend to the target at distance
     //            'muted' = source-derived accents over the mean base
     //            'flat'  = one colour per tile
-    let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure';
+    let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure', colorSplit = 'bold';
     let sampler = null, samples = null;
     let vmeshes = [];
+    let currentLeaves = null;   // cached octree leaves — repaint() restyles them without rebuilding the tree
 
     // ---- pattern atlas: 4 material glyph masks (R = accent A, G = accent B) ----
     // 0 gold/metal → hammered facets + glints   1 skin → pores + freckles
@@ -216,16 +225,22 @@
       return out;
     })();
 
-    // ---- divisionist decomposition (Seurat): tile shows ONLY pure colours; the
-    // target colour exists nowhere on the tile — it appears in the eye, at
-    // distance. Two fully-saturated hues bracket the target hue; the base region
-    // is solved in LINEAR LIGHT so coverage-weighted mix == target exactly.
+    // ---- divisionist decomposition (Seurat / Chuck Close): tile shows ONLY
+    // pure colours; the target colour exists nowhere on the tile — it appears
+    // in the eye, at distance. Two fully-saturated hues bracket the target hue
+    // and are pushed apart by COLOUR SPLIT — Close pushed these toward true
+    // complements (opposite corners of the wheel) so up close the patches read
+    // as vivid, almost jarring warm/cool pairs that optically NEUTRALIZE into
+    // the correct flesh tone only once the eye can no longer resolve them
+    // individually. The base region is solved in LINEAR LIGHT so the coverage-
+    // weighted mix equals the target exactly.
+    const SPLITS = { classic: 0.05, bold: 0.14, extreme: 0.24 };  // hue offset from target, each side
     const _tc = new THREE.Color(), _pa = new THREE.Color(), _pb = new THREE.Color(), _hsl2 = { h:0, s:0, l:0 };
     function decomposePure(l, out) {
       _tc.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);          // target, linear light
       _tc.getHSL(_hsl2, THREE.SRGBColorSpace);
       const h = _hsl2.h, s = _hsl2.s, li = _hsl2.l;
-      const gray = s < 0.1, dh = 0.05;
+      const gray = s < 0.1, dh = SPLITS[colorSplit];
       const sat = gray ? 0.4 : Math.max(0.88, s);               // pure pigment
       // accent lightness TRACKS the target's own lightness (not a compressed
       // band) — this is what keeps the solved base near the target and in
@@ -404,12 +419,16 @@
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
       }
+      currentLeaves = leaves;
       buildMeshes(leaves);
       const ds = Object.keys(depthCount).sort((a,b)=>a-b).map(d => depthCount[d]).join('/');
       document.getElementById('count').textContent = leaves.length.toLocaleString();
       document.getElementById('abs').textContent = abstraction + '%';
       document.getElementById('depths').textContent = ds;
     }
+    // repaint restyles the cached leaves (grout / paint / colour / split) without
+    // rebuilding the octree — the tree only depends on ABSTRACTION and the model
+    function repaint() { if (currentLeaves) buildMeshes(currentLeaves); }
 
     // ---- render: dark mortar bed + inset colour tiles ----
     const UPZ = new THREE.Vector3(0, 0, 1);
@@ -524,9 +543,10 @@
     }
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
-    makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; if (samples) buildMosaic(); });
-    makeButtons('paint-group', ['pure','muted','flat'], paintMode, x => x, x => { paintMode = x; if (samples) buildMosaic(); });
-    makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; if (samples) buildMosaic(); });
+    makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
+    makeButtons('paint-group', ['pure','muted','flat'], paintMode, x => x, x => { paintMode = x; repaint(); });
+    makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
+    makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
     (function viewButtons(){ const g = document.getElementById('view-group');
       const r = document.createElement('button'); r.textContent = 'reframe'; r.onclick = () => frameView();
       const sp = document.createElement('button'); sp.textContent = 'auto-spin'; sp.classList.add('active');
