@@ -181,14 +181,19 @@
       the target colour more often than `bold`, so in practice it often reads
       only marginally bolder than `bold` rather than dramatically more so —
       logged as a known limit rather than oversold.
-- [x] Added **Portrait** (`facecap.glb`, a scanned human head bust with a
-      photographic skin texture, same three.js CDN as the Fox/Human models) so
-      the divisionist painting can be tried on a face specifically, alongside
-      Empress / Fox / Helmet. **Unverified from this sandbox** — CDN model
-      fetches are blocked here (the render harness substitutes the local
-      Empress for any external `.glb`), so this could not be screenshot-tested
-      before shipping; confirm it loads (`Portrait · tex 1/1` in the model
-      label) on a real device.
+- [ ] **Portrait model — reverted, 404'd on device.** Tried `facecap.glb` from
+      the mrdoob/three.js CDN; confirmed failed on a real device. Root cause
+      likely unfixable by guessing again: outbound network from this sandbox
+      is policy-blocked entirely (verified — even a metadata HEAD request to
+      `data.jsdelivr.com` gets a 403 at the gateway), so no external URL can be
+      checked here before shipping it. There's also a second, independent risk
+      specific to that repo: three.js's example binaries may be stored via Git
+      LFS, which jsDelivr's GitHub-CDN proxy does not resolve — it would serve
+      the LFS pointer text file instead of the model, failing glTF parsing
+      regardless of path correctness. Removed from MODELS pending either (a) a
+      user-supplied face/portrait `.glb` hosted locally like `empress.glb` (the
+      only approach proven reliable so far), or (b) a differently-sourced
+      candidate the user wants tried next.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
       pattern rotation so glyphs don't all align.

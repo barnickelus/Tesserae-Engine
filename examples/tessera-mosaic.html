@@ -105,10 +105,10 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const KH = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets/Models/';
-    const THREECDN = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/';
+    // 'Portrait' (mrdoob/three.js facecap.glb) was removed — it 404'd, and that CDN
+    // path was never actually verified reachable from this environment (see roadmap).
     const MODELS = {
       Empress:  './models/empress.glb',
-      Portrait: THREECDN + 'facecap.glb',          // scanned human head bust, photographic skin texture
       Fox:      KH + 'Fox/glTF-Binary/Fox.glb',
       Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
       Helmet:   KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
