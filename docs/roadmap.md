@@ -153,6 +153,20 @@
       Up close the shapes read as material texture; at distance they optically
       blend back into the base (the Chuck Close effect). COLOUR=material debugs
       the classifier; PAINT toggles painted vs flat.
+- [x] **True optical blending (divisionism / Seurat).** PAINT gained a `pure`
+      mode: the tile contains **no pixel of the target colour** — two
+      fully-saturated hues (warm + cool bracket of the target hue, lightness
+      matched to the target so the equation stays in gamut) cover most of the
+      tile via the material glyph masks, and the small remaining base area is
+      solved in linear light so that
+      `coverage_A·A + coverage_B·B + coverage_base·Base = target` exactly,
+      using each mask's real measured pixel coverage (`PAT_COV`). The target
+      colour exists only in the eye, at distance — verified in the harness: up
+      close (5%) tiles show vivid pure pigment patches; from a normal view
+      (100%) they resolve back into the correct gold/skin figure. Densified all
+      four glyph patterns (~45–60% combined accent coverage, was ~5–30%) so
+      purity is visible on every material, not just cloth. `muted` (softer,
+      source-derived accents) and `flat` remain as the other PAINT modes.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
       pattern rotation so glyphs don't all align.

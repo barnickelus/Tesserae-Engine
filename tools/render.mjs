@@ -71,6 +71,6 @@ await page.evaluate(() => { const b = [...document.querySelectorAll('button')].f
 await page.waitForTimeout(+waitMs);
 console.log('model:', await page.evaluate(() => document.querySelector('#model')?.textContent || ''),
             '| tesserae:', await page.evaluate(() => document.querySelector('#count')?.textContent || ''));
-await page.screenshot({ path: path.isAbsolute(out) ? out : path.join(ROOT, out) });
+await page.screenshot({ path: path.isAbsolute(out) ? out : path.join(ROOT, out), timeout: 120000 });
 console.log('wrote', out);
 await browser.close(); server.close();

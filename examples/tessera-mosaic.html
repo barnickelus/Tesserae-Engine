@@ -25,12 +25,19 @@
       4. Each leaf renders as an inset rounded TILE oriented to the mean surface
          normal. The inset seam over the dark background is the grout.
          Abstraction = tree depth.
-      5. PAINTED TILES: each tile is a small painting — a BASE colour (the cell's
-         mean source texel) plus TWO ACCENT colours (the most divergent source
-         colours inside the cell), applied as glyph shapes chosen by the tile's
-         material read (gold → facets, skin → pores, cloth → weave, dark → strands).
-         Up close the shapes read as material texture; at distance the accents
-         optically blend back into the base colour (the Chuck Close effect).
+      5. PAINTED TILES, three modes (PAINT control):
+         · pure  — true divisionism (Seurat). The tile contains NO pixel of the
+           target colour. Two fully-saturated hues bracket the target hue; the
+           base region is solved in LINEAR LIGHT so that
+             coverage_A·A + coverage_B·B + coverage_base·Base = target
+           exactly, using the real measured pixel coverage of each glyph mask
+           (PAT_COV). The target colour exists only in the eye, at distance.
+         · muted — a base near the target colour plus two accents pulled from
+           real divergent source pixels in the cell (softer, more "painterly").
+         · flat  — one colour per tile, no glyphs.
+         Glyph shapes are chosen by the tile's material read (gold → facets,
+         skin → pores, cloth → weave, dark → strands) via a mask atlas mixed in
+         the shader with a per-instance palette (aA/aB/aP attributes).
 
     One instanced draw call (pattern mask atlas + per-instance palette in shader).
   -->
@@ -136,7 +143,11 @@
     }
 
     // ---- state ----
-    let abstraction = 20, grout = 'thin', colorMode = 'source', paint = true;
+    // paintMode: 'pure'  = divisionist — tiles carry only pure colours that
+    //                      optically blend to the target at distance
+    //            'muted' = source-derived accents over the mean base
+    //            'flat'  = one colour per tile
+    let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure';
     let sampler = null, samples = null;
     let vmeshes = [];
 
@@ -148,34 +159,36 @@
       const S = 128, cv = document.createElement('canvas'); cv.width = S*PAT_N; cv.height = S;
       const g = cv.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, S*PAT_N, S);
       const A = '#ff0000', B = '#00ff00';
-      // 0 — metal: faceted triangles (A) + small glints (B)
+      // 0 — metal: faceted triangles (A) + glints (B) — dense hammered-leaf coverage
       g.save(); g.translate(0, 0);
       g.fillStyle = A;
-      for (const [x1,y1,x2,y2,x3,y3] of [[8,40,52,12,64,58],[70,10,120,34,92,64],[14,72,58,86,30,120],[74,78,118,70,100,118]]) {
+      for (const [x1,y1,x2,y2,x3,y3] of [
+        [4,44,54,6,68,54],[62,2,118,26,86,60],[2,66,52,80,20,124],[68,72,124,62,96,120],
+        [30,6,60,34,8,40],[92,30,126,10,126,60],[36,86,66,116,10,118],[82,66,120,66,110,110]]) {
         g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.lineTo(x3,y3); g.closePath(); g.fill();
       }
       g.fillStyle = B;
-      for (const [x,y] of [[40,30],[96,50],[52,100],[104,96]]) { g.beginPath(); g.arc(x,y,5,0,7); g.fill(); }
+      for (const [x,y,r] of [[38,28,7],[94,46,8],[50,98,7],[102,92,7],[16,10,5],[120,116,6]]) { g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
       g.restore();
-      // 1 — skin: pores (A) + freckles (B)
+      // 1 — skin: dense pores (A) + freckles (B)
       g.save(); g.translate(S, 0);
       g.fillStyle = A;
-      for (const [x,y,r] of [[22,24,6],[64,16,5],[104,28,6],[40,58,5],[86,62,6],[18,92,5],[60,100,6],[104,94,5],[84,112,4],[34,114,4]]) {
-        g.beginPath(); g.arc(x,y,r,0,7); g.fill();
-      }
+      for (const [x,y,r] of [[16,18,9],[46,10,8],[76,16,9],[106,10,8],[124,40,8],[8,46,8],[32,44,9],
+        [60,40,8],[90,44,9],[118,68,8],[14,74,8],[42,72,9],[70,70,8],[98,76,9],[20,102,8],
+        [50,104,9],[80,102,8],[110,106,9],[36,124,7],[92,124,8]]) { g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
       g.fillStyle = B;
-      for (const [x,y] of [[50,36],[96,78],[26,72]]) { g.beginPath(); g.arc(x,y,3.5,0,7); g.fill(); }
+      for (const [x,y,r] of [[30,30,4],[62,58,4.5],[96,26,4],[112,90,4.5],[18,90,4],[70,110,4.5],[100,60,4]]) { g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
       g.restore();
-      // 2 — cloth: warp threads (A) + weft threads (B)
+      // 2 — cloth: warp threads (A) + weft threads (B) — near-even checker weave
       g.save(); g.translate(S*2, 0);
-      g.fillStyle = A; for (let x = 6; x < S; x += 26) g.fillRect(x, 0, 8, S);
-      g.fillStyle = B; for (let y = 12; y < S; y += 30) g.fillRect(0, y, S, 7);
+      g.fillStyle = A; for (let x = 4; x < S; x += 20) g.fillRect(x, 0, 10, S);
+      g.fillStyle = B; for (let y = 8; y < S; y += 22) g.fillRect(0, y, S, 10);
       g.restore();
-      // 3 — dark/hair: strands (A) + fine strands (B)
+      // 3 — dark/hair: strands (A) + fine strands (B) — dense wavy coverage
       g.save(); g.translate(S*3, 0);
-      for (const [c, w, ph] of [[A, 5, 0], [B, 2.5, 13]]) {
+      for (const [c, w, ph] of [[A, 8, 0], [B, 4, 12]]) {
         g.strokeStyle = c; g.lineWidth = w;
-        for (let x = 10 + ph; x < S; x += 24) {
+        for (let x = 6 + ph; x < S; x += 18) {
           g.beginPath(); g.moveTo(x, -4);
           for (let y = 0; y <= S; y += 16) g.lineTo(x + Math.sin(y*0.09 + x)*6, y);
           g.stroke();
@@ -187,6 +200,57 @@
       return t;
     }
     const PATTERNS = buildPatternAtlas();
+
+    // measured accent coverages per pattern (fraction of tile area under each
+    // mask) — needed to solve the optical-blend equation exactly
+    const PAT_COV = (() => {
+      const g = PATTERNS.image.getContext('2d');
+      const out = [];
+      for (let p = 0; p < PAT_N; p++) {
+        const d = g.getImageData(p*128, 0, 128, 128).data;
+        let a = 0, b = 0;
+        for (let i = 0; i < d.length; i += 4) { a += d[i]; b += d[i+1]; }
+        const n = d.length/4; a = a/255/n; b = b/255/n;
+        out.push({ a, b, base: Math.max(0.08, 1 - a - b) });
+      }
+      return out;
+    })();
+
+    // ---- divisionist decomposition (Seurat): tile shows ONLY pure colours; the
+    // target colour exists nowhere on the tile — it appears in the eye, at
+    // distance. Two fully-saturated hues bracket the target hue; the base region
+    // is solved in LINEAR LIGHT so coverage-weighted mix == target exactly.
+    const _tc = new THREE.Color(), _pa = new THREE.Color(), _pb = new THREE.Color(), _hsl2 = { h:0, s:0, l:0 };
+    function decomposePure(l, out) {
+      _tc.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);          // target, linear light
+      _tc.getHSL(_hsl2, THREE.SRGBColorSpace);
+      const h = _hsl2.h, s = _hsl2.s, li = _hsl2.l;
+      const gray = s < 0.1, dh = 0.05;
+      const sat = gray ? 0.4 : Math.max(0.88, s);               // pure pigment
+      // accent lightness TRACKS the target's own lightness (not a compressed
+      // band) — this is what keeps the solved base near the target and in
+      // gamut at full purity (t=0); only the hue splits warm/cool
+      const la = Math.min(0.9, Math.max(0.08, li));
+      _pa.setHSL(gray ? 0.08 : (h + 1 - dh) % 1, sat, la, THREE.SRGBColorSpace);  // warm bracket
+      _pb.setHSL(gray ? 0.58 : (h + dh) % 1, sat, la, THREE.SRGBColorSpace);      // cool bracket
+      const cov = PAT_COV[l.mat];
+      // pull accents toward the target only as far as needed to keep the solved
+      // base in gamut (t = 0 means fully pure accents)
+      for (let t = 0; t <= 1.001; t += 0.25) {
+        const ar = _pa.r + (_tc.r - _pa.r)*t, ag = _pa.g + (_tc.g - _pa.g)*t, ab = _pa.b + (_tc.b - _pa.b)*t;
+        const br = _pb.r + (_tc.r - _pb.r)*t, bg = _pb.g + (_tc.g - _pb.g)*t, bb = _pb.b + (_tc.b - _pb.b)*t;
+        const xr = (_tc.r - cov.a*ar - cov.b*br) / cov.base;
+        const xg = (_tc.g - cov.a*ag - cov.b*bg) / cov.base;
+        const xb = (_tc.b - cov.a*ab - cov.b*bb) / cov.base;
+        const lo = Math.min(xr, xg, xb), hi = Math.max(xr, xg, xb);
+        if ((lo >= -0.001 && hi <= 1.001) || t >= 1) {
+          out[0]=Math.min(1,Math.max(0,xr)); out[1]=Math.min(1,Math.max(0,xg)); out[2]=Math.min(1,Math.max(0,xb));
+          out[3]=ar; out[4]=ag; out[5]=ab; out[6]=br; out[7]=bg; out[8]=bb;
+          return;
+        }
+      }
+    }
+    const _dec = new Float32Array(9);
 
     // heuristic material read from a tile's mean colour (sRGB) — which glyph set
     const _hsl = { h: 0, s: 0, l: 0 };
@@ -365,7 +429,8 @@
       const n = leaves.length;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const inset = GROUTS[grout];
-      const painting = paint && colorMode === 'source';
+      const painting = paintMode !== 'flat' && colorMode === 'source';
+      const pure = paintMode === 'pure';
 
       // tiles laid on the surface; the dark background showing through the inset
       // seams IS the grout (a mosaic on a dark wall). One instanced draw call.
@@ -398,18 +463,29 @@
         p.set(l.x, l.y, l.z);                       // anchored on the surface itself
         s.set(l.s * inset, l.s * inset, l.s);
         m.compose(p, q, s); tiles.setMatrixAt(j, m);
-        tiles.setColorAt(j, tileColor(l, col));
-        if (painting) {
-          // guarantee the accents keep a little contrast against the base, so
-          // the texture still reads on flat-coloured cells
-          const lm = (l.r + l.g + l.b) / 3;
-          col.setRGB(l.ra, l.ga, l.ba, THREE.SRGBColorSpace);
-          if (Math.abs((l.ra + l.ga + l.ba)/3 - lm) < 0.05) col.offsetHSL(0, 0, -0.1);
-          accA[j*3] = col.r; accA[j*3+1] = col.g; accA[j*3+2] = col.b;
-          col.setRGB(l.rb, l.gb, l.bb, THREE.SRGBColorSpace);
-          if (Math.abs((l.rb + l.gb + l.bb)/3 - lm) < 0.05) col.offsetHSL(0, 0, 0.1);
-          accB[j*3] = col.r; accB[j*3+1] = col.g; accB[j*3+2] = col.b;
+        if (painting && pure) {
+          // divisionist: only pure colours on the tile; the target colour is
+          // reconstructed by the eye (coverage-weighted mix == target, exactly,
+          // in linear light — so no lightness jitter here)
+          decomposePure(l, _dec);
+          col.setRGB(_dec[0], _dec[1], _dec[2]);
+          tiles.setColorAt(j, col);
+          accA[j*3] = _dec[3]; accA[j*3+1] = _dec[4]; accA[j*3+2] = _dec[5];
+          accB[j*3] = _dec[6]; accB[j*3+1] = _dec[7]; accB[j*3+2] = _dec[8];
           patId[j] = l.mat;
+        } else {
+          tiles.setColorAt(j, tileColor(l, col));
+          if (painting) {
+            // muted: source-derived accents with guaranteed minimum contrast
+            const lm = (l.r + l.g + l.b) / 3;
+            col.setRGB(l.ra, l.ga, l.ba, THREE.SRGBColorSpace);
+            if (Math.abs((l.ra + l.ga + l.ba)/3 - lm) < 0.05) col.offsetHSL(0, 0, -0.1);
+            accA[j*3] = col.r; accA[j*3+1] = col.g; accA[j*3+2] = col.b;
+            col.setRGB(l.rb, l.gb, l.bb, THREE.SRGBColorSpace);
+            if (Math.abs((l.rb + l.gb + l.bb)/3 - lm) < 0.05) col.offsetHSL(0, 0, 0.1);
+            accB[j*3] = col.r; accB[j*3+1] = col.g; accB[j*3+2] = col.b;
+            patId[j] = l.mat;
+          }
         }
       }
       if (painting) {
@@ -449,7 +525,7 @@
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; if (samples) buildMosaic(); });
-    makeButtons('paint-group', ['painted','flat'], 'painted', x => x, x => { paint = (x === 'painted'); if (samples) buildMosaic(); });
+    makeButtons('paint-group', ['pure','muted','flat'], paintMode, x => x, x => { paintMode = x; if (samples) buildMosaic(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; if (samples) buildMosaic(); });
     (function viewButtons(){ const g = document.getElementById('view-group');
       const r = document.createElement('button'); r.textContent = 'reframe'; r.onclick = () => frameView();
