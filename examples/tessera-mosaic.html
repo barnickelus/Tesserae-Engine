@@ -580,19 +580,17 @@
           // skin binding (skeletal models only): one representative sample's
           // bone indices/weights per leaf — a tile is small enough that bone
           // binding is essentially uniform across it, away from joints
-          let domBone = 0, skinIdx = null, skinWt = null, rigid = false;
+          let skinIdx = null, skinWt = null, rigid = false;
           if (isSkinned) {
             const base = ids[0] * 4;
             skinIdx = [sm.skinIdx[base], sm.skinIdx[base+1], sm.skinIdx[base+2], sm.skinIdx[base+3]];
             skinWt = [sm.skinWt[base], sm.skinWt[base+1], sm.skinWt[base+2], sm.skinWt[base+3]];
-            let bw = -1;
-            for (let k = 0; k < 4; k++) if (skinWt[k] > bw) { bw = skinWt[k]; domBone = skinIdx[k]; }
             rigid = (skinWt[0]+skinWt[1]+skinWt[2]+skinWt[3]) < 0.001;   // unskinned part on an otherwise-skinned model
           }
           leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp, curv,
                         ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
                         rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
-                        mat: materialOf(r, g, b, _mcol), isEye, domBone, skinIdx, skinWt, rigid,
+                        mat: materialOf(r, g, b, _mcol), isEye, skinIdx, skinWt, rigid,
                         cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
@@ -653,6 +651,7 @@
       const n = bl.length;
       const geo = SHAPE_GEOS[shapeId]();
       const mesh = new THREE.InstancedMesh(geo, material, n); mesh.frustumCulled = false;
+      if (isSkinned) mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const painting = paintMode !== 'flat' && colorMode === 'source';
       const pure = paintMode === 'pure', rgbMode = !!RGB_SCALE[paintMode];
@@ -907,11 +906,16 @@
     // by blending the skeleton's live bone matrices — same maths as GPU
     // skinning, just run on the CPU into instance matrices. Beyond tessera-
     // avatar's own "attachment only" scope, orientation is ALSO corrected: a
-    // tile's bind-pose orientation is rotated by its DOMINANT bone's rotation
-    // delta since bind pose (precomputed once per bone per frame, then a cheap
-    // lookup per tessera) — otherwise tiles on a bending limb would keep
-    // pointing their bind-pose direction forever, visibly wrong at the elbow/
-    // knee. This is the fix for "not done right/relevant to the anatomy."
+    // tile's bind-pose orientation is rotated by a WEIGHTED BLEND of all its
+    // bones' rotation deltas since bind pose (precomputed once per bone per
+    // frame, then a cheap weighted lookup per tessera) — otherwise tiles on a
+    // bending limb would keep pointing their bind-pose direction forever.
+    // Blending all weighted bones (not just the single dominant one) matters
+    // for anything with more than a couple of joints: near a joint boundary,
+    // neighbouring tiles can have their dominant-weight bone flip (51%/49%
+    // vs 49%/51%), which with a single-bone lookup snaps their orientation
+    // sharply apart — reading as a jumbled, blobby surface rather than a
+    // smooth bend, on any rig complex enough for that boundary to matter.
     const _skinM = new THREE.Matrix4(), _boneMat4 = new THREE.Matrix4(), _deltaMat4 = new THREE.Matrix4();
     const _deltaQ = new THREE.Quaternion(), _skQ = new THREE.Quaternion(), _skP = new THREE.Vector3(), _skM2 = new THREE.Matrix4();
     let boneDeltaQuat = null;
@@ -927,6 +931,24 @@
         _deltaQ.setFromRotationMatrix(_deltaMat4);
         boneDeltaQuat[bi*4]=_deltaQ.x; boneDeltaQuat[bi*4+1]=_deltaQ.y; boneDeltaQuat[bi*4+2]=_deltaQ.z; boneDeltaQuat[bi*4+3]=_deltaQ.w;
       }
+    }
+    // weighted quaternion average (not a true SLERP blend, but the standard
+    // cheap approximation for real-time rigid-attachment skinning) — flips
+    // any bone's delta into the same hemisphere as the first before summing,
+    // since q and -q represent the same rotation and naive averaging can
+    // otherwise cancel them out.
+    function blendedDeltaQuat(si, sw, out) {
+      let x=0, y=0, z=0, w=0, haveRef=false, rx=0, ry=0, rz=0, rw=0;
+      for (let k = 0; k < 4; k++) {
+        const wk = sw[k]; if (wk === 0) continue;
+        const o = si[k] * 4;
+        let qx=boneDeltaQuat[o], qy=boneDeltaQuat[o+1], qz=boneDeltaQuat[o+2], qw=boneDeltaQuat[o+3];
+        if (!haveRef) { rx=qx; ry=qy; rz=qz; rw=qw; haveRef = true; }
+        else if (qx*rx+qy*ry+qz*rz+qw*rw < 0) { qx=-qx; qy=-qy; qz=-qz; qw=-qw; }
+        x += wk*qx; y += wk*qy; z += wk*qz; w += wk*qw;
+      }
+      const len = Math.hypot(x, y, z, w) || 1;
+      out.set(x/len, y/len, z/len, w/len);
     }
     function updateSkin() {
       if (!isSkinned || !currentLeaves) return;
@@ -944,8 +966,7 @@
           az += wk*(bm[o+2]*l.x + bm[o+6]*l.y + bm[o+10]*l.z + bm[o+14]);
         }
         _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
-        const db = l.domBone * 4;
-        _deltaQ.set(boneDeltaQuat[db], boneDeltaQuat[db+1], boneDeltaQuat[db+2], boneDeltaQuat[db+3]);
+        blendedDeltaQuat(si, sw, _deltaQ);
         _skQ.multiplyQuaternions(_deltaQ, l._bindQ);
         _skM2.compose(_skP, _skQ, l._baseS);
         l._mesh.setMatrixAt(l._idx, _skM2);
