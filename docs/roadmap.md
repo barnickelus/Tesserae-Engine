@@ -421,6 +421,37 @@
       timers to several times their real duration — but the cursor-driven
       test exercises the identical rotation code path, which is the part
       that actually mattered to verify.
+- [x] **Magnetic-stretch elasticity (MAGNET: off / soft / firm) — tiles bond
+      to neighbours and stretch to bridge the gaps deformation opens.** User:
+      "large gaps are left when models move... a lack of stretch that skin
+      has... a magnetic weighting of the mosaic pieces to their neighbours"
+      with three knobs to hone: noticeable stretch before the bond breaks;
+      bonds compound so a highly-connected tile holds better / is more
+      elastic. Implemented as meshless deformation on top of the rigid
+      animation transform: a lazily-built nearest-neighbour graph (spatial
+      hash, K=6), then per frame each moving tile accumulates a symmetric
+      stretch tensor toward any neighbour that has pulled away, and the tile's
+      instance matrix is composed as (rigid rotation)·(I + stretch)·(rest
+      scale). Break distance scales with bond count (compounding elasticity);
+      soft = elastic/skin-like, firm = stiffer/snaps sooner.
+      Key correctness finding, caught by instrumenting the pass: a purely
+      DISTANCE-based gap test (centre-to-centre separation) works for the
+      head-turn shear seam but does NOTHING for a bending limb — bending is
+      near-isometric, so neighbour centres barely separate; the gaps there
+      come from rigid tiles TILTING apart (their surface normals diverging).
+      Added an angular term (per-bond rest vs. current normal angle) as the
+      primary driver, combined with the distance term via max(); verified
+      both cases engage (head-turn: boundary tiles stretch up to ~2.4×;
+      bending test rig: the bend-band tiles stretch and bridge, and at an
+      extreme 90° corner the bonds correctly BREAK rather than smear a tile
+      across the corner). Built a second offline rig fixture with the armature
+      off-origin (`tools/test-rig-offset.glb`) and a freeze/pose debug hook to
+      compare identical poses with magnet off vs. soft.
+      Effect is subtle on the coarse test rigs (gap-per-tile scales with tile
+      size × tilt angle, so it reads best at fine abstraction) — the three
+      gains (strength / angular / break) are exactly the "fine tune and hone
+      in" knobs the user called out, exposed as soft/firm presets for
+      on-device evaluation at 100% abstraction / 60fps.
 
 ## Backlog
 

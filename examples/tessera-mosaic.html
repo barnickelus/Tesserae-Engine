@@ -79,6 +79,18 @@
          blend of all four bone influences' rotation delta since bind pose,
          so tiles on a bending limb actually tilt with it instead of keeping
          their bind orientation forever. CLIP buttons switch animation clips.
+      9. MAGNET (off / soft / firm) — rigid tiles leave gaps when the surface
+         deforms because they can't stretch the way skin does. Each tile is
+         bonded to its nearest neighbours; when the surface moves and a
+         neighbour pulls away (centres separating — the head-turn shear seam)
+         or tilts away (normals diverging — the dominant gap source when a
+         surface BENDS, where centres barely move), the tile STRETCHES toward
+         it to bridge the gap, until the opening exceeds a break distance and
+         the bond releases. Bonds COMPOUND: the break distance grows with how
+         many bonds a tile has, so a well-connected tile is more elastic and a
+         sparsely-connected one snaps early. soft = skin-like/very elastic,
+         firm = stiffer/snaps sooner. (Meshless deformation, applied on top of
+         the rigid animation transform; see applyMagnet.)
 
     One draw call per active tile shape (block/sliver/wedge), each an
     InstancedMesh sharing one material.
@@ -125,6 +137,7 @@
     <div class="group" id="paint-group"><span class="label">PAINT</span></div>
     <div class="group" id="split-group"><span class="label">SPLIT</span></div>
     <div class="group" id="color-group"><span class="label">COLOUR</span></div>
+    <div class="group" id="magnet-group"><span class="label">MAGNET</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
     <div class="group" id="clip-group"><span class="label">CLIP</span></div>
   </div>
@@ -208,7 +221,7 @@
     //                      optically blend to the target at distance
     //            'muted' = source-derived accents over the mean base
     //            'flat'  = one colour per tile
-    let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure', colorSplit = 'bold';
+    let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure', colorSplit = 'bold', magnet = 'off';
     let sampler = null, samples = null;
     let vmeshes = [];
     let currentLeaves = null;   // cached octree leaves — repaint() restyles them without rebuilding the tree
@@ -219,6 +232,28 @@
     let isSkinned = false, skinnedMesh = null, skeleton = null;
     let mixer = null, clips = [], currentAction = null;
     const skinCorrection = new THREE.Matrix4();   // see loadModel() / updateSkin()
+
+    // ---- magnetic-stretch state (see applyMagnet) ----
+    // Each tile is a "magnet" bonded to its nearest neighbours. When the
+    // model deforms and a neighbour pulls away, the tile STRETCHES to keep
+    // the bond (bridging the gap that rigid boxes would otherwise leave),
+    // until the pull exceeds a break distance and the bond releases. Bonds
+    // COMPOUND: a well-connected tile tolerates more total stretch before any
+    // bond breaks (higher elasticity), a sparsely-connected one snaps early.
+    const MAG_K = 6;                         // max neighbour bonds per tile
+    // tuning per mode: strength = how far a tile stretches per unit gap;
+    // breakBase / breakPer = break distance (in tile-widths) = base + per·(bondCount-1)
+    // ang = tile-widths of reach per radian that a neighbour tilts away
+    // (angular/curvature gaps — the dominant gap source when a surface BENDS,
+    // where centre-to-centre distance is ~preserved but rigid tiles tilt apart)
+    const MAG = {
+      soft: { strength: 1.8, ang: 1.3, breakBase: 1.1, breakPer: 0.34, maxStretch: 2.8 },  // skin-like, very elastic
+      firm: { strength: 1.2, ang: 0.8, breakBase: 0.55, breakPer: 0.18, maxStretch: 1.9 }, // stiffer, snaps sooner
+    };
+    let mgDirty = true;                      // neighbour graph must be (re)built
+    let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null;
+    let mgCurC = null, mgCurQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // per-frame centres/orientations/normals + eye-blink y-scale
+    let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
                               // matrices actually update each frame via render()
 
@@ -754,6 +789,21 @@
     function buildMeshes(leaves) {
       clearVol();
       headLeaves = [];
+      // global index per leaf + rest centre (in the space cur positions live
+      // in: bustGroup-local for static models, world for skinned) — feeds the
+      // magnetic neighbour graph, which is (re)built lazily when magnet is on.
+      mgN = leaves.length; mgDirty = true;
+      mgCurC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
+      mgCurN = new Float32Array(mgN * 3); mgRestN = new Float32Array(mgN * 3);   // surface normals: rest (const) + current
+      for (let i = 0; i < mgN; i++) {
+        const l = leaves[i]; l._g = i;
+        const rx = isSkinned ? l.x : l.x - center.x, ry = isSkinned ? l.y : l.y - center.y, rz = isSkinned ? l.z : l.z - center.z;
+        l._rest = [rx, ry, rz];
+        mgCurC[i*3] = rx; mgCurC[i*3+1] = ry; mgCurC[i*3+2] = rz;   // init cur = rest (static torso stays here)
+        const nl = Math.hypot(l.nx, l.ny, l.nz) || 1;
+        mgRestN[i*3] = mgCurN[i*3] = l.nx/nl; mgRestN[i*3+1] = mgCurN[i*3+1] = l.ny/nl; mgRestN[i*3+2] = mgCurN[i*3+2] = l.nz/nl;
+      }
+      mgMovingSkinned = isSkinned ? leaves.filter(l => !l.rigid) : null;
       const inset = GROUTS[grout];
       const painting = paintMode !== 'flat' && colorMode === 'source';
       const rgbMode = !!RGB_SCALE[paintMode];
@@ -866,6 +916,7 @@
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
     makeButtons('paint-group', ['pure','muted','flat','rgb','blobs'], paintMode, x => x, x => { paintMode = x; repaint(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
+    makeButtons('magnet-group', ['off','soft','firm'], magnet, x => x, x => { magnet = x; });
     makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
     let idleOn = true, lookCursor = false;
     (function viewButtons(){ const g = document.getElementById('view-group');
@@ -949,17 +1000,24 @@
         else { const phase = blinkTimer <= 0 ? 0 : 1 - Math.abs(blinkTimer/0.08 - 1); sq = Math.max(0.06, 1 - phase*0.94); }
       }
 
+      const magnetOn = magnet !== 'off';
       for (const l of headLeaves) {
-        _tmpScale.copy(l._baseS);
-        if (l.isEye && blinking) _tmpScale.y *= sq;
-        _headM.compose(
-          _tmpP0.copy(l._baseP).sub(_pivotLocal).applyQuaternion(_headQ).add(_pivotLocal),
-          _tmpQ0.copy(_headQ).multiply(l._baseQ),
-          _tmpScale
-        );
-        l._mesh.setMatrixAt(l._idx, _headM);
+        const scaleY = (l.isEye && blinking) ? sq : 1;
+        _tmpP0.copy(l._baseP).sub(_pivotLocal).applyQuaternion(_headQ).add(_pivotLocal);
+        _tmpQ0.copy(_headQ).multiply(l._baseQ);
+        if (magnetOn) {
+          const g = l._g;
+          mgCurC[g*3]=_tmpP0.x; mgCurC[g*3+1]=_tmpP0.y; mgCurC[g*3+2]=_tmpP0.z;
+          mgCurQ[g*4]=_tmpQ0.x; mgCurQ[g*4+1]=_tmpQ0.y; mgCurQ[g*4+2]=_tmpQ0.z; mgCurQ[g*4+3]=_tmpQ0.w;
+          mgScaleY[g]=scaleY;
+        } else {
+          _tmpScale.copy(l._baseS); _tmpScale.y *= scaleY;
+          _headM.compose(_tmpP0, _tmpQ0, _tmpScale);
+          l._mesh.setMatrixAt(l._idx, _headM);
+        }
       }
-      for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
+      if (magnetOn) applyMagnet(headLeaves);
+      else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
     // ---- real skeletal skinning (Fox / Human / Soldier) ----
@@ -1017,6 +1075,7 @@
     function updateSkin() {
       if (!isSkinned || !currentLeaves) return;
       computeBoneDeltas();
+      const magnetOn = magnet !== 'off';
       const bm = skeleton.boneMatrices, e = _skinM.elements;
       for (const l of currentLeaves) {
         if (l.rigid) continue;   // an unskinned part on an otherwise-skinned model — leave its build-time matrix
@@ -1037,8 +1096,139 @@
         _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
         blendedDeltaQuat(si, sw, _deltaQ);
         _skQ.multiplyQuaternions(_deltaQ, l._bindQ);
-        _skM2.compose(_skP, _skQ, l._baseS);
-        l._mesh.setMatrixAt(l._idx, _skM2);
+        if (magnetOn) {
+          const g = l._g;
+          mgCurC[g*3]=_skP.x; mgCurC[g*3+1]=_skP.y; mgCurC[g*3+2]=_skP.z;
+          mgCurQ[g*4]=_skQ.x; mgCurQ[g*4+1]=_skQ.y; mgCurQ[g*4+2]=_skQ.z; mgCurQ[g*4+3]=_skQ.w;
+        } else {
+          _skM2.compose(_skP, _skQ, l._baseS);
+          l._mesh.setMatrixAt(l._idx, _skM2);
+        }
+      }
+      if (magnetOn) applyMagnet(mgMovingSkinned);
+      else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // ---- magnetic stretch: tiles bond to nearest neighbours and stretch to
+    // bridge the gaps that rigid boxes leave when the surface deforms. This is
+    // the meshless "as-rigid-as-possible" idea, but with the rigid rotation
+    // kept from the animation path (robust, since tiles sit on a near-2D
+    // surface where a full deformation-gradient fit is ill-conditioned along
+    // the normal) and only the STRETCH derived from neighbours: a tile grows
+    // along the local direction of any neighbour that has pulled away, by half
+    // the gap (each of the two tiles covers half). A bond breaks when the gap
+    // exceeds a break distance; bonds COMPOUND — the break distance grows with
+    // how many bonds the tile has, so a well-connected tile is more elastic
+    // and a sparsely-connected one snaps early. Cost: one neighbour graph
+    // built lazily per rebuild, then O(tiles·K) per frame. ----
+    function ensureMagnetGraph() {
+      if (!mgDirty || !currentLeaves) return;
+      mgDirty = false;
+      const K = MAG_K, N = mgN;
+      mgNbrIdx = new Int32Array(N*K).fill(-1);
+      mgNbrRest = new Float32Array(N*K);
+      mgNbrRestAng = new Float32Array(N*K);   // rest angle between the two tiles' surface normals
+      mgNbrCount = new Uint8Array(N);
+      const moving = isSkinned ? mgMovingSkinned : headLeaves;
+      if (!moving || !moving.length) return;
+      // spatial hash over rest centres (mgCurC still == rest here for static
+      // parts; for skinned, rest == world bind position, also in mgCurC).
+      // Only neighbour INDEX + rest DISTANCE are stored — the stretch
+      // direction is derived per-frame in applyMagnet from the tiles' live
+      // positions, which stays correct as the tile both moves and rotates.
+      let avg = 0; for (const l of currentLeaves) avg += l.s; avg /= (currentLeaves.length || 1);
+      const cell = Math.max(1e-6, avg * 2.6);
+      const grid = new Map();
+      const key = (a,b,c) => a + ',' + b + ',' + c;
+      for (let i = 0; i < N; i++) {
+        const ix = Math.floor(mgCurC[i*3]/cell), iy = Math.floor(mgCurC[i*3+1]/cell), iz = Math.floor(mgCurC[i*3+2]/cell);
+        const kk = key(ix,iy,iz); let arr = grid.get(kk); if (!arr) grid.set(kk, arr = []); arr.push(i);
+      }
+      const cand = [];
+      for (const l of moving) {
+        const g = l._g, R = l.s * 2.6, R2 = R*R;
+        const cx = mgCurC[g*3], cy = mgCurC[g*3+1], cz = mgCurC[g*3+2];
+        const ix = Math.floor(cx/cell), iy = Math.floor(cy/cell), iz = Math.floor(cz/cell);
+        const rings = Math.max(1, Math.ceil(R/cell));
+        cand.length = 0;
+        for (let dx=-rings; dx<=rings; dx++) for (let dy=-rings; dy<=rings; dy++) for (let dz=-rings; dz<=rings; dz++) {
+          const arr = grid.get(key(ix+dx,iy+dy,iz+dz)); if (!arr) continue;
+          for (const j of arr) {
+            if (j === g) continue;
+            const ox=mgCurC[j*3]-cx, oy=mgCurC[j*3+1]-cy, oz=mgCurC[j*3+2]-cz, d2=ox*ox+oy*oy+oz*oz;
+            if (d2 <= R2) cand.push([d2, j]);
+          }
+        }
+        cand.sort((a,b)=>a[0]-b[0]);
+        const cnt = Math.min(K, cand.length);
+        mgNbrCount[g] = cnt;
+        const gnx=mgRestN[g*3], gny=mgRestN[g*3+1], gnz=mgRestN[g*3+2];
+        for (let k = 0; k < cnt; k++) {
+          const c = cand[k], j = c[1];
+          mgNbrIdx[g*K+k] = j; mgNbrRest[g*K+k] = Math.sqrt(c[0]) || 1e-6;
+          const dot = Math.max(-1, Math.min(1, gnx*mgRestN[j*3] + gny*mgRestN[j*3+1] + gnz*mgRestN[j*3+2]));
+          mgNbrRestAng[g*K+k] = Math.acos(dot);
+        }
+      }
+    }
+    const _magQ = new THREE.Quaternion(), _magIQ = new THREE.Quaternion(), _magDir = new THREE.Vector3();
+    const _magRot = new THREE.Matrix4(), _magLin = new THREE.Matrix4(), _magOut = new THREE.Matrix4();
+    const _zAxis = new THREE.Vector3(0, 0, 1);
+    function applyMagnet(moving) {
+      ensureMagnetGraph();
+      if (!moving || !moving.length) { for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true; return; }
+      const cfg = MAG[magnet], K = MAG_K;
+      const le = _magLin.elements;
+      // pass 1: refresh each moving tile's current surface normal (local +Z
+      // rotated by its current orientation) so the angular-gap term below can
+      // read neighbours' live normals (static neighbours keep their rest normal)
+      for (const l of moving) {
+        const g = l._g;
+        _magDir.copy(_zAxis).applyQuaternion(_magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]));
+        mgCurN[g*3]=_magDir.x; mgCurN[g*3+1]=_magDir.y; mgCurN[g*3+2]=_magDir.z;
+      }
+      for (const l of moving) {
+        const g = l._g, cnt = mgNbrCount[g];
+        const cx = mgCurC[g*3], cy = mgCurC[g*3+1], cz = mgCurC[g*3+2];
+        _magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]);
+        _magIQ.copy(_magQ).invert();   // world → this tile's current local frame
+        const gnx=mgCurN[g*3], gny=mgCurN[g*3+1], gnz=mgCurN[g*3+2];
+        // symmetric stretch accumulator A (upper triangle), in local frame
+        let a00=0,a11=0,a22=0,a01=0,a02=0,a12=0;
+        const breakDist = l.s * (cfg.breakBase + cfg.breakPer * (cnt>0 ? cnt-1 : 0));
+        for (let k = 0; k < cnt; k++) {
+          const j = mgNbrIdx[g*K+k];
+          const ox=mgCurC[j*3]-cx, oy=mgCurC[j*3+1]-cy, oz=mgCurC[j*3+2]-cz;
+          const d = Math.hypot(ox,oy,oz) || 1e-6;
+          // distance gap (shear — head-turn boundary) AND angular gap
+          // (curvature — bending, where centres barely move but tiles tilt
+          // apart); the tile must reach half of whichever opening is larger
+          const distOpen = d - mgNbrRest[g*K+k];
+          const nd = Math.max(-1, Math.min(1, gnx*mgCurN[j*3] + gny*mgCurN[j*3+1] + gnz*mgCurN[j*3+2]));
+          const angOpen = l.s * cfg.ang * Math.max(0, Math.acos(nd) - mgNbrRestAng[g*K+k]);
+          const reach = 0.5 * Math.max(distOpen, angOpen);
+          if (reach <= 0 || reach > breakDist) continue;   // touching, or bond broken
+          const s = (reach / l.s) * cfg.strength;
+          // world direction to the neighbour, expressed in the tile's current
+          // local frame — so the stretch, after the tile's rotation is
+          // re-applied below, points at the neighbour in world space
+          _magDir.set(ox/d, oy/d, oz/d).applyQuaternion(_magIQ);
+          const dx=_magDir.x, dy=_magDir.y, dz=_magDir.z;
+          a00 += s*dx*dx; a11 += s*dy*dy; a22 += s*dz*dz; a01 += s*dx*dy; a02 += s*dx*dz; a12 += s*dy*dz;
+        }
+        // clamp elongation to maxStretch
+        const md = Math.max(a00, a11, a22), lim = cfg.maxStretch - 1;
+        if (md > lim && md > 0) { const f = lim/md; a00*=f;a11*=f;a22*=f;a01*=f;a02*=f;a12*=f; }
+        // M = I + A (symmetric); scale columns by rest scale (with blink on y)
+        const sx = l._baseS.x, sy = l._baseS.y * mgScaleY[g], sz = l._baseS.z;
+        le[0]=(1+a00)*sx; le[1]=a01*sx; le[2]=a02*sx; le[3]=0;
+        le[4]=a01*sy; le[5]=(1+a11)*sy; le[6]=a12*sy; le[7]=0;
+        le[8]=a02*sz; le[9]=a12*sz; le[10]=(1+a22)*sz; le[11]=0;
+        le[12]=0; le[13]=0; le[14]=0; le[15]=1;
+        _magRot.makeRotationFromQuaternion(_magQ);   // _magQ already set above
+        _magOut.multiplyMatrices(_magRot, _magLin);
+        const oe = _magOut.elements; oe[12]=cx; oe[13]=cy; oe[14]=cz;
+        l._mesh.setMatrixAt(l._idx, _magOut);
       }
       for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
