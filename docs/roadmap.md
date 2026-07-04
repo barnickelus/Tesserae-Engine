@@ -452,6 +452,20 @@
       gains (strength / angular / break) are exactly the "fine tune and hone
       in" knobs the user called out, exposed as soft/firm presets for
       on-device evaluation at 100% abstraction / 60fps.
+- [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
+      colour ratio instead of a white sheen.** User: "instead of adding a
+      sheen... add the real time sheen into the pattern colour ratio of the
+      tile." Added a sixth PAINT mode: the same pure-divisionist tile (base +
+      two pure accents through the glyph mask), but the fragment shader reads
+      the key light's view-space direction (a uniform refreshed each frame as
+      the camera orbits) and shifts the accent COVERAGE by it — a brighter-lit
+      tile expands its warm accent, a shadowed one its cool accent — so a
+      highlight reads as more warm tesserae rather than a foreign white gloss
+      (the painterly warm-lights/cool-shadows convention). The material's own
+      specular is killed (roughness 1) so the colour shift is the only sheen.
+      Verified on Portrait: the light-facing cheek reads visibly warmer/pinker
+      than the shadowed side, vs. the uniform hue of plain `pure`; no
+      regression on pure/muted/flat/rgb/blobs.
 
 ## Backlog
 

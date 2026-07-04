@@ -52,6 +52,14 @@
          · blobs — the exact same rgb technique with far fewer noise-texture
            repeats across each tile, so a colour patch covers a visibly
            bigger area — a coarser, more painterly dab.
+         · lit   — the pure divisionist tile, but the scene light shifts the
+           RATIO instead of adding a white gloss: a brighter-lit tile expands
+           its warm accent's coverage, a shadowed one its cool accent's, so a
+           highlight reads as more warm tesserae (how a painter renders form —
+           warm lights, cool shadows). The material's specular is killed
+           (roughness 1) so the only "sheen" is this real-time colour shift;
+           the shader reads the key light's view-space direction, refreshed
+           each frame as the camera orbits.
          Pure/muted glyph shapes are chosen by the tile's material read
          (gold → facets, skin → pores, cloth → weave, dark → strands).
       6. SPLIT controls how far the two pure hues are pushed apart (classic /
@@ -254,6 +262,7 @@
     let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null;
     let mgCurC = null, mgCurQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // per-frame centres/orientations/normals + eye-blink y-scale
     let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
+    let litUniform = null;                    // 'lit' PAINT mode: view-space key-light direction, refreshed per frame
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
                               // matrices actually update each frame via render()
 
@@ -717,7 +726,7 @@
       if (isSkinned) mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const painting = paintMode !== 'flat' && colorMode === 'source';
-      const pure = paintMode === 'pure', rgbMode = !!RGB_SCALE[paintMode];
+      const pure = paintMode === 'pure' || paintMode === 'lit', rgbMode = !!RGB_SCALE[paintMode];
       const accA = (painting && !rgbMode) ? new Float32Array(n*3) : null;
       const accB = (painting && !rgbMode) ? new Float32Array(n*3) : null;
       const patId = (painting && !rgbMode) ? new Float32Array(n) : null;
@@ -808,11 +817,40 @@
       const painting = paintMode !== 'flat' && colorMode === 'source';
       const rgbMode = !!RGB_SCALE[paintMode];
 
+      const litMode = paintMode === 'lit';
+      litUniform = null;
       // tiles laid on the surface; the dark background showing through the inset
-      // seams IS the grout (a mosaic on a dark wall).
-      const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.06 });
+      // seams IS the grout (a mosaic on a dark wall). 'lit' kills the material's
+      // white specular (roughness 1) so the scene light shows up as a shift in
+      // the tile's own colour ratio instead of a foreign gloss.
+      const tileMat = new THREE.MeshStandardMaterial(litMode ? { roughness: 1.0, metalness: 0.0 } : { roughness: 0.45, metalness: 0.06 });
       liveTileMat = tileMat;
-      if (rgbMode) {
+      if (litMode) {
+        // real-time sheen baked into the DIVISIONIST RATIO: brighter light on a
+        // tile expands its warm accent's coverage, shadow expands the cool
+        // accent's — so a highlight reads as more warm tesserae, not a white
+        // gloss (how a painter renders form: warm lights, cool shadows). The
+        // tile still resolves to its target colour at neutral light. litLightDir
+        // is the key light's direction in view space, refreshed each frame.
+        tileMat.onBeforeCompile = (sh) => {
+          sh.uniforms.patTex = { value: PATTERNS };
+          sh.uniforms.litLightDir = { value: new THREE.Vector3(0, 0, 1) };
+          litUniform = sh.uniforms.litLightDir;
+          sh.vertexShader = 'attribute vec3 aA; attribute vec3 aB; attribute float aP;\n' +
+            'varying vec3 vAcc1; varying vec3 vAcc2; varying vec2 vPUv;\n' +
+            sh.vertexShader.replace('#include <begin_vertex>',
+              '#include <begin_vertex>\n vAcc1 = aA; vAcc2 = aB; vPUv = vec2((uv.x + aP)/' + PAT_N + '.0, uv.y);');
+          sh.fragmentShader = 'uniform sampler2D patTex; uniform vec3 litLightDir;\n' +
+            'varying vec3 vAcc1; varying vec3 vAcc2; varying vec2 vPUv;\n' +
+            sh.fragmentShader.replace('#include <color_fragment>',
+              '#include <color_fragment>\n vec4 pm = texture2D(patTex, vPUv);\n' +
+              ' float lit = clamp(dot(normalize(vNormal), litLightDir)*0.5 + 0.5, 0.0, 1.0);\n' +
+              ' float cA = pm.r * (0.3 + 1.2*lit);\n' +           // warm accent grows in light
+              ' float cB = pm.g * (0.3 + 1.2*(1.0-lit));\n' +     // cool accent grows in shadow
+              ' float tot = cA + cB; if (tot > 1.0) { cA /= tot; cB /= tot; }\n' +
+              ' diffuseColor.rgb = diffuseColor.rgb * max(0.0, 1.0 - cA - cB) + vAcc1 * cA + vAcc2 * cB;');
+        };
+      } else if (rgbMode) {
         // literal RGB-channel divisionism: each channel's own independent
         // noise-threshold dither, added — statistically reproduces the exact
         // target colour once the eye can't resolve individual dots. 'blobs'
@@ -914,7 +952,7 @@
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
-    makeButtons('paint-group', ['pure','muted','flat','rgb','blobs'], paintMode, x => x, x => { paintMode = x; repaint(); });
+    makeButtons('paint-group', ['pure','muted','flat','rgb','blobs','lit'], paintMode, x => x, x => { paintMode = x; repaint(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
     makeButtons('magnet-group', ['off','soft','firm'], magnet, x => x, x => { magnet = x; });
     makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
@@ -1247,8 +1285,13 @@
       }
       if (isSkinned) { if (mixer) mixer.update(dt); updateSkin(); }
       else { updateMotion(now/1000, dt); updateHeadAndBlink(dt); }
+      // 'lit' PAINT mode: refresh the key light's direction in VIEW space (the
+      // shader reads the view-space vNormal), so the colour-ratio sheen tracks
+      // the light as the camera orbits
+      if (litUniform) { _litWorld.copy(key.position).normalize().transformDirection(camera.matrixWorldInverse); litUniform.value.copy(_litWorld); }
       controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
     }
+    const _litWorld = new THREE.Vector3();
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
