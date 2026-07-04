@@ -350,6 +350,50 @@
       sandbox — asked the user to re-test on their device and report back,
       and to also check Fox/Human (simpler, single-mesh, well-worn sample
       assets) as an additional data point.
+- [x] **Found and fixed the actual Soldier bug: a coordinate-space mismatch,
+      not the animation math.** User confirmed Soldier was "still a blob"
+      after the orientation-blend fix above, this time with a screenshot
+      showing `Soldier · 0% covered` in the HUD and a round, featureless
+      silhouette with no visible limbs — a genuinely new, much more specific
+      clue than "blobby." 0% bake coverage meant every single sample failed
+      to hit any of the 14 bake cameras, and a round silhouette meant the
+      octree was partitioning a shape that wasn't the T-pose at all.
+      `test-rig.glb` (origin-centered) couldn't have caught this — it hid
+      the bug by construction. Built `test-rig-offset.glb`
+      (`make-test-rig-offset.mjs`): the same 2-bone rig, but parented under a
+      Group with a real position + rotation, i.e. how an actual authored
+      character sits (never at the world origin with identity rotation).
+      This reproduced `· 0% covered` and a garbled shape exactly.
+      Root cause: `buildSampler` sampled skinned parts by applying
+      `bindMatrix` — which is IDENTITY for glTF assets by spec convention
+      (no separate "bind shape matrix" concept), i.e. raw LOCAL vertex
+      space — while `center`/`radius` (from `Box3.setFromObject`) and the
+      bake cameras are computed in WORLD space (`matrixWorld`). For a mesh
+      sitting at the origin with no rotation, local space and world space
+      coincide, so `test-rig.glb` never exposed the mismatch. For an
+      off-origin, rotated armature — i.e. any real character — the two
+      spaces diverge entirely, and samples land nowhere near where the bake
+      cameras or octree math expect them.
+      Fixed by always sampling in WORLD space (removing the bindMatrix/
+      matrixWorld branch in `buildSampler` entirely — one code path for
+      skinned and static parts alike), and recovering the bindMatrix-space
+      position the per-frame skinning formula needs via a single
+      precomputed correction matrix (`skinCorrection = bindMatrix ⋅
+      matrixWorld⁻¹`, derived from the fact that bindMatrix is applied
+      exactly once forward and once back across the full skinning
+      equation, so any consistent choice of intermediate space works —
+      applied once per leaf per frame in `updateSkin()`, not per bone).
+      Verified against `test-rig-offset.glb`: bake coverage went from 0% to
+      66% (a flat box at an off-axis rotation relative to the 14 fixed bake
+      directions won't hit 100% regardless — expected, not a bug), the
+      correct bent arm shape rendered with real colour, and Empress/Portrait
+      showed no regression (buildSampler's transform is now simpler, one
+      path instead of two).
+      This is very likely THE actual cause of the original Soldier report —
+      `test-rig.glb` alone gave false confidence the algorithm was fully
+      fixed when it had only ruled out one class of bug. Still can't verify
+      against the real Soldier/Fox/Human assets directly (no network access
+      in this sandbox) — asked the user to re-test.
 
 ## Backlog
 

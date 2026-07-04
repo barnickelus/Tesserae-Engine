@@ -211,6 +211,7 @@
     // touch any of this and keep the idle-motion/blink path instead.
     let isSkinned = false, skinnedMesh = null, skeleton = null;
     let mixer = null, clips = [], currentAction = null;
+    const skinCorrection = new THREE.Matrix4();   // see loadModel() / updateSkin()
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
                               // matrices actually update each frame via render()
 
@@ -382,6 +383,18 @@
     // bindMatrix, not matrixWorld) with skinIndex/skinWeight carried along —
     // exactly the "sp" approach tessera-avatar.html uses — so leaves can be
     // re-skinned every frame instead of baked once as a static world position.
+    //
+    // Positions are ALWAYS sampled in WORLD space (matrixWorld), skinned or
+    // not — this must stay consistent with center/radius (from
+    // Box3.setFromObject, world space) and the bake cameras, or bake
+    // coverage silently collapses to 0% and the octree partitions garbage.
+    // (An earlier version applied bindMatrix instead for skinned parts —
+    // bindMatrix is identity for glTF assets, i.e. raw LOCAL vertex space,
+    // which only coincidentally matched world space when the mesh sat at
+    // the origin. Any real character, whose armature has its own position/
+    // rotation, hit exactly this mismatch.) The per-frame skinning formula's
+    // required "sp" (bindMatrix space) is recovered from this world-space
+    // position via a single correction matrix, see updateSkin().
     function buildSampler(root) {
       root.updateWorldMatrix(true, true);
       const parts = [];
@@ -390,7 +403,7 @@
         let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
         g = g.clone();
         const skin = o.isSkinnedMesh && g.attributes.skinIndex && g.attributes.skinWeight;
-        if (skin) g.applyMatrix4(o.bindMatrix); else g.applyMatrix4(o.matrixWorld);
+        g.applyMatrix4(o.matrixWorld);
         if (!g.attributes.normal) g.computeVertexNormals();
         const mat = Array.isArray(o.material) ? o.material[0] : o.material;
         const base = new THREE.Color(0xb9c2cf); if (mat && mat.color) base.copy(mat.color);
@@ -806,6 +819,12 @@
         mixer = isSkinned ? new THREE.AnimationMixer(gltf.scene) : null;
         clips = gltf.animations || []; currentAction = null;
         buildClipButtons();
+        // K converts a WORLD-SPACE bind-pose position (what every leaf's x/y/z
+        // now holds, for consistency with center/radius/bake cameras) into the
+        // "sp" space the per-frame skinning formula needs (bindMatrix space —
+        // identity for glTF assets, but this must hold for any convention).
+        // See updateSkin() for the derivation.
+        if (isSkinned) skinCorrection.multiplyMatrices(skinnedMesh.bindMatrix, new THREE.Matrix4().copy(skinnedMesh.matrixWorld).invert());
 
         sampler = buildSampler(gltf.scene);
         const views = bakeSurfaceColors(gltf.scene, center, radius);   // reparents+un-parents root, must finish first
@@ -950,6 +969,7 @@
       const len = Math.hypot(x, y, z, w) || 1;
       out.set(x/len, y/len, z/len, w/len);
     }
+    const _spVec = new THREE.Vector3();
     function updateSkin() {
       if (!isSkinned || !currentLeaves) return;
       computeBoneDeltas();
@@ -957,13 +977,18 @@
       for (const l of currentLeaves) {
         if (l.rigid) continue;   // an unskinned part on an otherwise-skinned model — leave its build-time matrix
         const si = l.skinIdx, sw = l.skinWt;
+        // l.x/y/z are the WORLD-space bind-pose position (consistent with
+        // center/radius/octree); recover the bindMatrix-space "sp" the skin
+        // formula needs via the precomputed correction (see loadModel()).
+        _spVec.set(l.x, l.y, l.z).applyMatrix4(skinCorrection);
+        const spx = _spVec.x, spy = _spVec.y, spz = _spVec.z;
         let ax = 0, ay = 0, az = 0;
         for (let k = 0; k < 4; k++) {
           const wk = sw[k]; if (wk === 0) continue;
           const o = si[k] * 16;
-          ax += wk*(bm[o]  *l.x + bm[o+4]*l.y + bm[o+8] *l.z + bm[o+12]);
-          ay += wk*(bm[o+1]*l.x + bm[o+5]*l.y + bm[o+9] *l.z + bm[o+13]);
-          az += wk*(bm[o+2]*l.x + bm[o+6]*l.y + bm[o+10]*l.z + bm[o+14]);
+          ax += wk*(bm[o]  *spx + bm[o+4]*spy + bm[o+8] *spz + bm[o+12]);
+          ay += wk*(bm[o+1]*spx + bm[o+5]*spy + bm[o+9] *spz + bm[o+13]);
+          az += wk*(bm[o+2]*spx + bm[o+6]*spy + bm[o+10]*spz + bm[o+14]);
         }
         _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
         blendedDeltaQuat(si, sw, _deltaQ);
