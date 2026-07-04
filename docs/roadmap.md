@@ -200,6 +200,30 @@
       assumption) — orbiting on-device finds the face instantly since that's
       interactive, unlike the slow scripted verification here under software
       rendering.
+- [x] **Colour sampler replaced — ground-truth GPU bake instead of manual
+      UV reading.** User feedback on the live Portrait render: "much of the
+      face is blacked out. Not much color intensity or variation." Root
+      cause: `portrait.glb`'s Meshy multi-view-baked atlas has large black
+      *background* patches between its per-view islands — not seams, whole
+      dead zones — and sampling a single UV point per triangle (even the
+      gutter-safe centroid used for Empress) frequently landed in one, even
+      though the model renders correctly on screen (confirmed by rendering
+      it plainly, no tesserae — full natural skin tone, legitimately dark
+      hair/top, no holes). So the manual reader — which has to independently
+      get flipY convention, atlas gutters, sRGB decode, and multi-material
+      handling all correct — was the fragile part, not the asset.
+      Replaced it: `bakeSurfaceColors()` renders the actual textured model
+      unlit from 14 orthographic directions (cube faces + corners) into an
+      offscreen target and reads colour straight off the rendered pixels;
+      `sampleBaked()` picks the most head-on unoccluded view per surface
+      sample (facing check + alpha-hit test). This reuses the GPU's own
+      correct rendering — the same pipeline already verified visually
+      correct — instead of re-deriving it by hand. `buildSampler` no longer
+      touches UV/texture data at all (positions/normals only); the HUD label
+      now reports bake coverage (e.g. `Portrait · 100% covered`, was ~25%
+      real colour / ~75% black before the fix, verified via the harness).
+      No regression on Empress/Fox/Human/Helmet (still 100% covered, clean
+      renders).
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
       pattern rotation so glyphs don't all align.
