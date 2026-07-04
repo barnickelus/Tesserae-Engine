@@ -265,6 +265,52 @@
       models (Fox/Helmet may flag an unrelated band; harmless).
       No regression across pure/muted/flat/rgb × source/importance/material
       colour modes, verified via the harness.
+- [x] **Real skeletal skinning for Fox/Human/Soldier, and a coarser "blobs"
+      RGB variant.** User feedback on the whole-model idle sway: "it really
+      isn[']t done right or relevant to the anatomy." Right call — the
+      static-bust idle motion is a single rigid rotation of the whole model,
+      which is a reasonable stand-in for a model with no skeleton at all, but
+      wrong for something that has one.
+      **Skinning**: ported the technique already proven in `tessera-avatar.
+      html` — sample in BIND-POSE space (via `bindMatrix`, not `matrixWorld`)
+      with each sample's dominant-vertex skin indices/weights carried through
+      (`buildSampler` → `drawSamples` → one representative binding per
+      octree leaf in `buildMosaic`), then re-skin every tessera's position
+      each frame from the skeleton's live bone matrices (`updateSkin()`) —
+      same maths as GPU skinning, run on the CPU into instance matrices.
+      Went one step past tessera-avatar's own scope, which explicitly keeps
+      tile orientation frozen at bind pose ("architecture test = attachment,
+      not polish"): here each tile's orientation is ALSO rotated by its
+      dominant bone's rotation delta since bind pose, precomputed once per
+      bone per frame (not per tessera — cheap) via `computeBoneDeltas()`, so
+      tiles on a bending limb actually tilt with it instead of pointing their
+      bind-pose direction forever regardless of pose. Fox and Human (Cesium
+      Man) already had skeletons + clips and needed no new asset; added
+      Soldier (Mixamo-rig sample from the same three.js CDN path already
+      proven working in tessera-avatar.html) as a third. CLIP buttons switch
+      animation clips, mirroring tessera-avatar's UI.
+      Known gap: could not exercise the actual bone-driven motion in this
+      sandbox — Fox/Human/Soldier are all external CDN URLs, and the render
+      harness (`tools/render.mjs`) substitutes a local static stand-in for
+      any non-localhost `.glb` precisely because this sandbox has no general
+      internet access, so `isSkinned` never goes true under test here. What
+      *was* verified via the harness: no regression on the static models
+      (Empress/Portrait) across all PAINT/COLOUR combinations, since
+      `buildSampler`/`buildMosaic`/`buildShapeMesh` are shared code paths
+      touched by this change. The skinned path needs verification on-device.
+      **blobs**: the user liked `rgb`'s fine per-pixel vibration (explained
+      why it happens: NEAREST-filtered true white-noise dithering means any
+      sub-pixel camera motion shifts which discrete texel a screen pixel
+      lands on, and adjacent texels are uncorrelated by construction — the
+      classic "dither crawl" artifact) and asked for a second variant with
+      larger colour shapes, current `rgb` left untouched. Implemented by
+      reusing the identical technique at a much lower noise-texture repeat
+      count. First attempt (5x fewer repeats) showed no visible difference —
+      turned out the noise was still landing at roughly one texel per screen
+      pixel either way, so "fewer repeats" alone didn't change the apparent
+      dot size until pushed much further (25x fewer repeats): verified via
+      tight pixel-level crops comparing the two side by side, and confirmed
+      it still downsamples to the correct skin tone at a distance.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
       colour heuristic misreads shadowed gold as cloth/dark).
 - [ ] Merge the faceplate/relief language and material recipes onto mosaic tiles.
