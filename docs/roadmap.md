@@ -318,6 +318,38 @@
       persona/interface, built on this same tessera system — bigger, separate
       follow-up; explicitly deferred by the user in favour of animating the
       existing Portrait bust first.
+- [x] **Debugged the Soldier skeletal-animation report ("didn't load right,
+      look very blobby") and shipped two real fixes.** Since Fox/Human/
+      Soldier are all external CDN URLs and this sandbox has no general
+      internet access, this couldn't be reproduced against the real asset —
+      built `tools/test-rig.glb` instead: a tiny 2-bone rig generated
+      entirely offline (three.js constructs the mesh/skeleton/clip directly,
+      `GLTFExporter` writes the file — see `tools/make-test-rig.mjs`), giving
+      a known ground truth to run the real code path against. Also verified
+      the position/rotation-blend formula in complete isolation (plain Node,
+      no browser) against a hand-computed expected result.
+      Both checks passed — the algorithm itself is sound. The reason the
+      synthetic rig *looked* unbent in the first several checks turned out to
+      be viewing-angle coincidence (a bend along the camera's view axis reads
+      as foreshortening, not a visible swing — confirmed by forcing a side-on
+      camera angle, where the bend was clearly visible).
+      That investigation surfaced one real gap, now fixed: tile ORIENTATION
+      was rotated by only its single most-dominant bone. Fine for a 2-bone
+      test rig, but on anything with more joints, neighbouring tiles can sit
+      on opposite sides of a dominant-bone tie (51/49 vs. 49/51) and snap to
+      different orientations right at that boundary — reading as a jumbled,
+      blobby surface even with correct positions, exactly matching what was
+      reported for a many-boned rig like Soldier. Replaced with a proper
+      weighted blend across all four bone influences (`blendedDeltaQuat()`),
+      handling the quaternion double-cover sign flip so weighted-averaging
+      doesn't cancel opposite-signed-but-equal rotations. Also added
+      `instanceMatrix.setUsage(DynamicDrawUsage)` on skinned meshes (matches
+      tessera-avatar's own practice; likely a no-op on modern GPUs but a
+      correct hint for a buffer that's rewritten every frame).
+      Still can't verify against the real Soldier/Fox/Human assets from this
+      sandbox — asked the user to re-test on their device and report back,
+      and to also check Fox/Human (simpler, single-mesh, well-worn sample
+      assets) as an additional data point.
 
 ## Backlog
 
