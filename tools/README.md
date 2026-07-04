@@ -59,3 +59,18 @@ default front-ish camera view can make a bend along the depth axis hard to
 see. Remove the temporary MODELS entry before shipping.
 
 Regenerate with `node make-test-rig.mjs test-rig.glb`.
+
+`test-rig-offset.glb` (`make-test-rig-offset.mjs`) is the same rig, but with
+the whole armature parented under a Group with a real position + rotation
+offset instead of sitting at the world origin — i.e. how any actually-
+authored character is set up, unlike `test-rig.glb`'s origin-centered
+simplicity. This one caught a real bug `test-rig.glb` couldn't: sampling
+skinned parts in bindMatrix space (identity for glTF, i.e. raw local vertex
+space) instead of world space, which only coincidentally worked when the
+mesh happened to sit at the origin — any off-origin character hit a total
+coordinate-space mismatch against `center`/`radius`/the bake cameras (all
+world-space), collapsing bake coverage to 0% and the shape into an
+unrecognizable jumble. Load-bearing lesson: an origin-centered test rig
+can hide exactly the class of bug that only shows up once a model has a
+real placement, so prefer this one (or add the offset to `test-rig.glb`)
+for future skinning-related debugging.
