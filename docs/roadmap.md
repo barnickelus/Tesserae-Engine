@@ -394,6 +394,33 @@
       fixed when it had only ruled out one class of bug. Still can't verify
       against the real Soldier/Fox/Human assets directly (no network access
       in this sandbox) — asked the user to re-test.
+- [x] **Real head-turn for Portrait/Empress/Helmet ("puppet the portrait —
+      have it look around and move her head").** Previously the only motion
+      for non-skinned models was the whole bust rigidly swivelling toward
+      the cursor — not anatomically real, and not what was asked for.
+      The top ~55% of leaves (`isHead`, broader than the existing eye-band
+      heuristic) now rotate independently around a neck pivot computed once
+      per model (`headPivot`, in `buildMosaic`), composed on top of the
+      body's existing small breathing sway rather than replacing it — a
+      real head turn, torso stays put. Two behaviours:
+        · autonomous idle glancing — a slow random-target state machine picks
+          a new gentle look direction every 1.6–4s and eases toward it, so
+          the bust looks subtly alive on its own.
+        · "look at cursor" — same head-turn mechanism, now driven by cursor
+          position instead of the random state machine.
+      Blinking (previously its own `eyeLeaves`/`updateBlink`) is merged into
+      the same per-frame pass (`updateHeadAndBlink`) since both act on
+      overlapping leaves and both need to compose with whatever the head is
+      currently doing, not the static bind pose.
+      Verified via the harness: moving the mouse to the left/right/top edges
+      produces a clean, correctly-directed head turn with the shoulders
+      staying fixed (screenshots compared side by side). The autonomous
+      glance timing itself was hard to directly verify in this sandbox —
+      software-rendered FPS is so low (1–7fps) that per-frame `dt` hits its
+      0.1s clamp almost every frame, stretching multi-second idle-state
+      timers to several times their real duration — but the cursor-driven
+      test exercises the identical rotation code path, which is the part
+      that actually mattered to verify.
 
 ## Backlog
 

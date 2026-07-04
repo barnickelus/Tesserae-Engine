@@ -59,19 +59,26 @@
          complements — up close they read as vivid, almost jarring opposites;
          only once the eye can no longer resolve individual tiles do they
          optically NEUTRALIZE into the correct flesh tone.
-      7. Non-skinned models (Empress/Portrait/Helmet) get idle motion instead:
-         a rigid whole-model sway/bob and optionally turning toward the cursor
-         (look at cursor) — both rotate a group pivoted at the model's own
-         centre. Blinking flattens the eye-band tiles' in-plane scale briefly.
+      7. Non-skinned models (Empress/Portrait/Helmet) get idle motion: a
+         rigid whole-model sway/bob (breathing), pivoted at the model's own
+         centre. On top of that, a real HEAD TURN — the top ~55% of leaves
+         (isHead) rotate independently around a neck pivot (headPivot,
+         computed per-model in buildMosaic), not the whole bust swivelling.
+         The head looks around on its own (a slow random-glance state
+         machine) and tracks the cursor instead when "look at cursor" is on.
+         Blinking flattens the eye-band leaves' in-plane scale briefly,
+         composed on top of whatever the head is doing.
       8. Skinned + animated models (Fox/Human/Soldier) get REAL skeletal
-         motion instead: each tessera keeps its bind-pose position and a
+         motion instead: each tessera keeps its bind-pose position (sampled
+         in WORLD space, same as static models — see buildSampler) and a
          4-bone weighted skin binding (ported from tessera-avatar.html's
          approach); every frame the position is re-derived from the
-         skeleton's live bone matrices, and — beyond tessera-avatar's
-         "attachment only" scope — the tile's orientation is ALSO rotated by
-         its dominant bone's rotation delta since bind pose, so tiles on a
-         bending limb actually tilt with it instead of keeping their bind
-         orientation forever. CLIP buttons switch animation clips.
+         skeleton's live bone matrices via a precomputed correction back
+         into bindMatrix space, and — beyond tessera-avatar's "attachment
+         only" scope — the tile's orientation is ALSO rotated by a weighted
+         blend of all four bone influences' rotation delta since bind pose,
+         so tiles on a bending limb actually tilt with it instead of keeping
+         their bind orientation forever. CLIP buttons switch animation clips.
 
     One draw call per active tile shape (block/sliver/wedge), each an
     InstancedMesh sharing one material.
@@ -543,6 +550,11 @@
       const spanY = (maxy-miny) || 1;
       const maxDepth = MAXDEPTH[abstraction];
       const minDepth = maxDepth - 2;              // largest tile = 4x the smallest
+      // neck pivot for the head-turn effect (non-skinned models only): the
+      // top ~55% of the bust turns independently of the shoulders/torso,
+      // pivoting around this point — tuned for a head+shoulders bust crop,
+      // not guaranteed sensible proportions for arbitrary props (Helmet).
+      headPivot.set((minx+maxx)/2, miny + spanY*0.45, (minz+maxz)/2);
 
       const all = new Int32Array(n); for (let i=0;i<n;i++) all[i]=i;
       const leaves = [];
@@ -590,6 +602,7 @@
           const T = 0.25;
           const yFrac = (py - miny) / spanY;
           const isEye = !isSkinned && yFrac > 0.56 && yFrac < 0.7 && Math.abs(px - (minx+maxx)/2) < size*0.32;
+          const isHead = !isSkinned && yFrac > 0.45;
           // skin binding (skeletal models only): one representative sample's
           // bone indices/weights per leaf — a tile is small enough that bone
           // binding is essentially uniform across it, away from joints
@@ -603,7 +616,7 @@
           leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp, curv,
                         ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
                         rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
-                        mat: materialOf(r, g, b, _mcol), isEye, skinIdx, skinWt, rigid,
+                        mat: materialOf(r, g, b, _mcol), isEye, isHead, skinIdx, skinWt, rigid,
                         cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
@@ -622,7 +635,8 @@
     // ---- render: dark mortar bed + inset colour tiles ----
     const UPZ = new THREE.Vector3(0, 0, 1), WORLD_UP = new THREE.Vector3(0, 1, 0);
     const bustGroup = new THREE.Group(); scene.add(bustGroup);
-    let eyeLeaves = [];   // leaves flagged isEye — re-populated each buildMeshes(), used for blink
+    let headLeaves = [];   // leaves flagged isHead — re-populated each buildMeshes(), used for head-turn + blink
+    const headPivot = new THREE.Vector3();   // neck pivot, computed in buildMosaic()
     let liveTileMat = null;   // one material shared by all shape meshes — dispose once, not per-mesh
     function clearVol() {
       // remove from whichever parent actually holds it (bustGroup for static
@@ -660,6 +674,7 @@
     }
     const _tanv = new THREE.Vector3(), _curY = new THREE.Vector3(), _crossv = new THREE.Vector3(), _qRoll = new THREE.Quaternion();
     const _tmpScale = new THREE.Vector3();
+    const _tmpP0 = new THREE.Vector3(), _tmpQ0 = new THREE.Quaternion();
     function buildShapeMesh(shapeId, bl, material, inset) {
       const n = bl.length;
       const geo = SHAPE_GEOS[shapeId]();
@@ -695,7 +710,7 @@
         s.set(l.s * shrink, l.s * shrink, l.s);
         m.compose(p, q, s); mesh.setMatrixAt(j, m);
         if (isSkinned) { l._mesh = mesh; l._idx = j; l._bindQ = q.clone(); l._baseS = s.clone(); }
-        else if (l.isEye) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); eyeLeaves.push(l); }
+        else if (l.isHead) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); headLeaves.push(l); }
         if (rgbMode) {
           linearCoverage(l, _cov3);
           covArr[j*3]=_cov3[0]; covArr[j*3+1]=_cov3[1]; covArr[j*3+2]=_cov3[2];
@@ -738,7 +753,7 @@
     }
     function buildMeshes(leaves) {
       clearVol();
-      eyeLeaves = [];
+      headLeaves = [];
       const inset = GROUTS[grout];
       const painting = paintMode !== 'flat' && colorMode === 'source';
       const rgbMode = !!RGB_SCALE[paintMode];
@@ -880,14 +895,21 @@
       [...document.querySelectorAll('#clip-group button')].forEach((b, idx) => b.classList.toggle('active', idx === i));
     }
 
-    // ---- idle / cursor motion + blink ----
-    // The bust is a static point cloud (no skeleton), so life comes from a
-    // rigid whole-model sway/bob (breathing) plus, optionally, turning toward
-    // the cursor — both rotate bustGroup, whose pivot sits at the model's own
-    // centre (tile positions are stored relative to it, see buildShapeMesh).
-    // Blinking flattens the eye-band tiles' in-plane scale briefly — a purely
-    // geometric effect so it reads the same in every PAINT mode.
-    let mouseX = 0, mouseY = 0, cursorYaw = 0, cursorPitch = 0, blinkTimer = 2 + Math.random()*3;
+    // ---- idle motion + head-turn + blink ----
+    // The bust is a static point cloud (no skeleton), so the body's life is
+    // a rigid whole-model sway/bob (breathing) — bustGroup rotates/bobs,
+    // pivoted at the model's own centre (tile positions are stored relative
+    // to it, see buildShapeMesh). The HEAD is a separate, more anatomically
+    // correct effect: the top ~55% of leaves (isHead) rotate independently
+    // around a neck pivot (headPivot, computed in buildMosaic), composed on
+    // top of the body's sway rather than replacing it — a real head turn,
+    // not the whole bust swivelling. It looks around on its own (a slow
+    // random-glance state machine) and switches to tracking the cursor when
+    // "look at cursor" is on. Blinking flattens the eye-band leaves' in-plane
+    // scale briefly, composed on top of whatever the head is currently doing
+    // — a purely geometric effect so it reads the same in every PAINT mode.
+    let mouseX = 0, mouseY = 0, blinkTimer = 2 + Math.random()*3;
+    let headYaw = 0, headPitch = 0, lookYaw = 0, lookPitch = 0, lookTimer = 0.5;
     window.addEventListener('pointermove', (e) => {
       mouseX = (e.clientX / window.innerWidth) * 2 - 1;
       mouseY = (e.clientY / window.innerHeight) * 2 - 1;
@@ -895,27 +917,49 @@
     function updateMotion(t, dt) {
       const sway = idleOn ? Math.sin(t*0.5)*0.035 : 0;
       const bob  = idleOn ? Math.sin(t*0.8)*radius*0.01 : 0;
-      const targetYaw = lookCursor ? mouseX*0.35 : 0, targetPitch = lookCursor ? -mouseY*0.18 : 0;
-      const k = Math.min(1, dt*4);
-      cursorYaw += (targetYaw - cursorYaw) * k; cursorPitch += (targetPitch - cursorPitch) * k;
-      bustGroup.rotation.y = sway + cursorYaw; bustGroup.rotation.x = cursorPitch;
-      bustGroup.position.y = center.y + bob;
-      bustGroup.position.x = center.x; bustGroup.position.z = center.z;
+      bustGroup.rotation.y = sway; bustGroup.rotation.x = 0;
+      bustGroup.position.set(center.x, center.y + bob, center.z);
     }
-    function updateBlink(dt) {
-      if (!eyeLeaves.length) return;
-      blinkTimer -= dt;
-      if (blinkTimer > 0.16) return;
-      if (blinkTimer < -3) { blinkTimer = 2.5 + Math.random()*4; return; }   // rest, then schedule next
-      const phase = blinkTimer <= 0 ? 0 : 1 - Math.abs(blinkTimer/0.08 - 1);
-      const sq = Math.max(0.06, 1 - phase*0.94);
-      const m = new THREE.Matrix4();
-      for (const l of eyeLeaves) {
-        _tmpScale.copy(l._baseS); _tmpScale.y *= sq;
-        m.compose(l._baseP, l._baseQ, _tmpScale);
-        l._mesh.setMatrixAt(l._idx, m);
-        l._mesh.instanceMatrix.needsUpdate = true;
+    const _headQ = new THREE.Quaternion(), _headEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const _pivotLocal = new THREE.Vector3(), _headM = new THREE.Matrix4();
+    function updateHeadAndBlink(dt) {
+      if (!headLeaves.length) return;
+      // autonomous idle glancing when not actively tracking the cursor —
+      // pick a new gentle target direction periodically and ease toward it
+      if (!lookCursor) {
+        lookTimer -= dt;
+        if (lookTimer <= 0) {
+          lookYaw = (Math.random() - 0.5) * 1.1; lookPitch = (Math.random() - 0.5) * 0.42;
+          lookTimer = 1.6 + Math.random() * 2.4;
+        }
       }
+      const targetYaw = lookCursor ? mouseX * 0.5 : lookYaw;
+      const targetPitch = lookCursor ? -mouseY * 0.28 : lookPitch;
+      const k = Math.min(1, dt * (lookCursor ? 5 : 2.2));
+      headYaw += (targetYaw - headYaw) * k; headPitch += (targetPitch - headPitch) * k;
+      _headEuler.set(headPitch, headYaw, 0);
+      _headQ.setFromEuler(_headEuler);
+      _pivotLocal.copy(headPivot).sub(center);   // headPivot is world-space; leaves are bustGroup-local
+
+      blinkTimer -= dt;
+      const blinking = blinkTimer <= 0.16;
+      let sq = 1;
+      if (blinking) {
+        if (blinkTimer < -3) { blinkTimer = 2.5 + Math.random() * 4; }
+        else { const phase = blinkTimer <= 0 ? 0 : 1 - Math.abs(blinkTimer/0.08 - 1); sq = Math.max(0.06, 1 - phase*0.94); }
+      }
+
+      for (const l of headLeaves) {
+        _tmpScale.copy(l._baseS);
+        if (l.isEye && blinking) _tmpScale.y *= sq;
+        _headM.compose(
+          _tmpP0.copy(l._baseP).sub(_pivotLocal).applyQuaternion(_headQ).add(_pivotLocal),
+          _tmpQ0.copy(_headQ).multiply(l._baseQ),
+          _tmpScale
+        );
+        l._mesh.setMatrixAt(l._idx, _headM);
+      }
+      for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
     // ---- real skeletal skinning (Fox / Human / Soldier) ----
@@ -1012,7 +1056,7 @@
         acc = 0; frames = 0;
       }
       if (isSkinned) { if (mixer) mixer.update(dt); updateSkin(); }
-      else { updateMotion(now/1000, dt); updateBlink(dt); }
+      else { updateMotion(now/1000, dt); updateHeadAndBlink(dt); }
       controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => {
