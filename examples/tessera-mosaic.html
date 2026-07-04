@@ -49,6 +49,9 @@
            light. Each channel is its own independent per-instance-randomised
            noise-threshold dither so they statistically overlap and add,
            reproducing the target once the eye can't resolve individual dots.
+         · blobs — the exact same rgb technique with far fewer noise-texture
+           repeats across each tile, so a colour patch covers a visibly
+           bigger area — a coarser, more painterly dab.
          Pure/muted glyph shapes are chosen by the tile's material read
          (gold → facets, skin → pores, cloth → weave, dark → strands).
       6. SPLIT controls how far the two pure hues are pushed apart (classic /
@@ -56,12 +59,19 @@
          complements — up close they read as vivid, almost jarring opposites;
          only once the eye can no longer resolve individual tiles do they
          optically NEUTRALIZE into the correct flesh tone.
-      7. The bust has no skeleton (it's a static sampled point cloud), so life
-         comes from a rigid whole-model sway/bob (idle motion) and optionally
-         turning toward the cursor (look at cursor) — both rotate a group
-         pivoted at the model's own centre. Blinking flattens the eye-band
-         tiles' in-plane scale briefly, a purely geometric effect so it reads
-         the same in every PAINT mode.
+      7. Non-skinned models (Empress/Portrait/Helmet) get idle motion instead:
+         a rigid whole-model sway/bob and optionally turning toward the cursor
+         (look at cursor) — both rotate a group pivoted at the model's own
+         centre. Blinking flattens the eye-band tiles' in-plane scale briefly.
+      8. Skinned + animated models (Fox/Human/Soldier) get REAL skeletal
+         motion instead: each tessera keeps its bind-pose position and a
+         4-bone weighted skin binding (ported from tessera-avatar.html's
+         approach); every frame the position is re-derived from the
+         skeleton's live bone matrices, and — beyond tessera-avatar's
+         "attachment only" scope — the tile's orientation is ALSO rotated by
+         its dominant bone's rotation delta since bind pose, so tiles on a
+         bending limb actually tilt with it instead of keeping their bind
+         orientation forever. CLIP buttons switch animation clips.
 
     One draw call per active tile shape (block/sliver/wedge), each an
     InstancedMesh sharing one material.
@@ -109,6 +119,7 @@
     <div class="group" id="split-group"><span class="label">SPLIT</span></div>
     <div class="group" id="color-group"><span class="label">COLOUR</span></div>
     <div class="group" id="view-group"><span class="label">VIEW</span></div>
+    <div class="group" id="clip-group"><span class="label">CLIP</span></div>
   </div>
 
   <script type="importmap">
@@ -128,8 +139,9 @@
     const MODELS = {
       Empress:  './models/empress.glb',
       Portrait: './models/portrait.glb',   // user-supplied face model — hosted locally like Empress
-      Fox:      KH + 'Fox/glTF-Binary/Fox.glb',
-      Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',
+      Fox:      KH + 'Fox/glTF-Binary/Fox.glb',                 // skinned + animated
+      Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',      // skinned + animated
+      Soldier:  'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb', // skinned + animated (same source proven in tessera-avatar.html)
       Helmet:   KH + 'DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
     };
     const KSAMP = 240000;                        // dense surface samples feeding the octree
@@ -193,6 +205,14 @@
     let sampler = null, samples = null;
     let vmeshes = [];
     let currentLeaves = null;   // cached octree leaves — repaint() restyles them without rebuilding the tree
+
+    // ---- skeletal animation state (Fox / Human / Soldier — models with a
+    // real skeleton). Non-skinned models (Empress/Portrait/Helmet) never
+    // touch any of this and keep the idle-motion/blink path instead.
+    let isSkinned = false, skinnedMesh = null, skeleton = null;
+    let mixer = null, clips = [], currentAction = null;
+    let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
+                              // matrices actually update each frame via render()
 
     // ---- pattern atlas: 4 material glyph masks (R = accent A, G = accent B) ----
     // 0 gold/metal → hammered facets + glints   1 skin → pores + freckles
@@ -274,6 +294,12 @@
       return t;
     }
     const NOISE3 = buildNoiseTex();
+    // 'rgb' = fine per-pixel dither (unchanged); 'blobs' = the same technique
+    // with far fewer noise-texture repeats across the tile, so each colour
+    // patch covers a visibly larger area — a coarser, more painterly dab
+    // instead of a fine speckle. Larger patches "vibrate" less on camera
+    // motion for the same reason (see the vibration explanation in chat).
+    const RGB_SCALE = { rgb: 3.0, blobs: 0.12 };
     const _lin = new THREE.Color();
     function linearCoverage(l, out3) {
       _lin.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);   // THREE.Color stores linear internally
@@ -352,18 +378,26 @@
     }
 
     // ---- source sampler (positions / normals only — colour comes from the bake) ----
+    // For a SKINNED mesh, positions are kept in BIND-POSE space (via
+    // bindMatrix, not matrixWorld) with skinIndex/skinWeight carried along —
+    // exactly the "sp" approach tessera-avatar.html uses — so leaves can be
+    // re-skinned every frame instead of baked once as a static world position.
     function buildSampler(root) {
       root.updateWorldMatrix(true, true);
       const parts = [];
       root.traverse((o) => {
         if (!o.isMesh || !o.geometry) return;
         let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
-        g = g.clone(); g.applyMatrix4(o.matrixWorld);
+        g = g.clone();
+        const skin = o.isSkinnedMesh && g.attributes.skinIndex && g.attributes.skinWeight;
+        if (skin) g.applyMatrix4(o.bindMatrix); else g.applyMatrix4(o.matrixWorld);
         if (!g.attributes.normal) g.computeVertexNormals();
         const mat = Array.isArray(o.material) ? o.material[0] : o.material;
         const base = new THREE.Color(0xb9c2cf); if (mat && mat.color) base.copy(mat.color);
         parts.push({ pos: g.attributes.position.array, nrm: g.attributes.normal.array,
-          base: [base.r, base.g, base.b], triN: g.attributes.position.count / 3 });
+          base: [base.r, base.g, base.b], triN: g.attributes.position.count / 3,
+          skinIndex: skin ? g.attributes.skinIndex.array : null,
+          skinWeight: skin ? g.attributes.skinWeight.array : null });
       });
       let triTotal = 0; for (const p of parts) triTotal += p.triN;
       const cum = new Float64Array(triTotal), partOf = new Int32Array(triTotal), startOf = [];
@@ -454,10 +488,11 @@
     }
     const _o3 = [0,0,0];
     function drawSamples(s, n, views, center) {
-      // struct-of-arrays: pos, normal, colour per sample
+      // struct-of-arrays: pos, normal, colour (+ skin binding, if any) per sample
       const out = { x:new Float32Array(n), y:new Float32Array(n), z:new Float32Array(n),
                     nx:new Float32Array(n), ny:new Float32Array(n), nz:new Float32Array(n),
-                    r:new Float32Array(n), g:new Float32Array(n), b:new Float32Array(n) };
+                    r:new Float32Array(n), g:new Float32Array(n), b:new Float32Array(n),
+                    skinIdx: new Float32Array(n*4), skinWt: new Float32Array(n*4) };
       let fallback = 0;
       for (let i = 0; i < n; i++) {
         let lo = 0, hi = s.triTotal - 1, xx = Math.random() * s.area;
@@ -472,6 +507,12 @@
         const hit = sampleBaked(views, out.x[i]-center.x, out.y[i]-center.y, out.z[i]-center.z, snx, sny, snz, _o3);
         if (!hit) { fallback++; _o3[0]=part.base[0]; _o3[1]=part.base[1]; _o3[2]=part.base[2]; }
         out.r[i]=_o3[0]; out.g[i]=_o3[1]; out.b[i]=_o3[2];
+        if (part.skinIndex) {
+          // dominant vertex of the triangle carries the skin binding for this sample
+          const lt3 = lt * 3, dom = (w >= u && w >= v) ? 0 : (u >= v ? 1 : 2), vtx = lt3 + dom;
+          const SI = part.skinIndex, SW = part.skinWeight;
+          for (let k = 0; k < 4; k++) { out.skinIdx[i*4+k] = SI[vtx*4+k]; out.skinWt[i*4+k] = SW[vtx*4+k]; }
+        }
       }
       out.fallbackFrac = fallback / n;
       return out;
@@ -535,11 +576,23 @@
             if (d>db){ db=d; ib=i; } }
           const T = 0.25;
           const yFrac = (py - miny) / spanY;
-          const isEye = yFrac > 0.56 && yFrac < 0.7 && Math.abs(px - (minx+maxx)/2) < size*0.32;
+          const isEye = !isSkinned && yFrac > 0.56 && yFrac < 0.7 && Math.abs(px - (minx+maxx)/2) < size*0.32;
+          // skin binding (skeletal models only): one representative sample's
+          // bone indices/weights per leaf — a tile is small enough that bone
+          // binding is essentially uniform across it, away from joints
+          let domBone = 0, skinIdx = null, skinWt = null, rigid = false;
+          if (isSkinned) {
+            const base = ids[0] * 4;
+            skinIdx = [sm.skinIdx[base], sm.skinIdx[base+1], sm.skinIdx[base+2], sm.skinIdx[base+3]];
+            skinWt = [sm.skinWt[base], sm.skinWt[base+1], sm.skinWt[base+2], sm.skinWt[base+3]];
+            let bw = -1;
+            for (let k = 0; k < 4; k++) if (skinWt[k] > bw) { bw = skinWt[k]; domBone = skinIdx[k]; }
+            rigid = (skinWt[0]+skinWt[1]+skinWt[2]+skinWt[3]) < 0.001;   // unskinned part on an otherwise-skinned model
+          }
           leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp, curv,
                         ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
                         rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
-                        mat: materialOf(r, g, b, _mcol), isEye,
+                        mat: materialOf(r, g, b, _mcol), isEye, domBone, skinIdx, skinWt, rigid,
                         cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
@@ -561,7 +614,9 @@
     let eyeLeaves = [];   // leaves flagged isEye — re-populated each buildMeshes(), used for blink
     let liveTileMat = null;   // one material shared by all shape meshes — dispose once, not per-mesh
     function clearVol() {
-      for (const m of vmeshes) { bustGroup.remove(m); m.geometry.dispose(); }
+      // remove from whichever parent actually holds it (bustGroup for static
+      // idle-motion models, scene directly for skinned ones — see buildMeshes)
+      for (const m of vmeshes) { if (m.parent) m.parent.remove(m); m.geometry.dispose(); }
       if (liveTileMat) { liveTileMat.dispose(); liveTileMat = null; }
       vmeshes = [];
     }
@@ -600,7 +655,7 @@
       const mesh = new THREE.InstancedMesh(geo, material, n); mesh.frustumCulled = false;
       const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
       const painting = paintMode !== 'flat' && colorMode === 'source';
-      const pure = paintMode === 'pure', rgbMode = paintMode === 'rgb';
+      const pure = paintMode === 'pure', rgbMode = !!RGB_SCALE[paintMode];
       const accA = (painting && !rgbMode) ? new Float32Array(n*3) : null;
       const accB = (painting && !rgbMode) ? new Float32Array(n*3) : null;
       const patId = (painting && !rgbMode) ? new Float32Array(n) : null;
@@ -620,11 +675,15 @@
           _qRoll.setFromAxisAngle(nv, (j * 2.399963) % (Math.PI*2));
           q.premultiply(_qRoll);
         }
-        p.set(l.x - center.x, l.y - center.y, l.z - center.z);   // relative to bustGroup's pivot
+        // skinned models: position stays in BIND-POSE space (re-skinned every
+        // frame by updateSkin(), see below) instead of world-space-relative-
+        // to-bustGroup's-pivot, which only applies to the static idle-motion path.
+        if (isSkinned) p.set(l.x, l.y, l.z); else p.set(l.x - center.x, l.y - center.y, l.z - center.z);
         const shrink = shapeId === 2 ? inset*0.92 : inset;
         s.set(l.s * shrink, l.s * shrink, l.s);
         m.compose(p, q, s); mesh.setMatrixAt(j, m);
-        if (l.isEye) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); eyeLeaves.push(l); }
+        if (isSkinned) { l._mesh = mesh; l._idx = j; l._bindQ = q.clone(); l._baseS = s.clone(); }
+        else if (l.isEye) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); eyeLeaves.push(l); }
         if (rgbMode) {
           linearCoverage(l, _cov3);
           covArr[j*3]=_cov3[0]; covArr[j*3+1]=_cov3[1]; covArr[j*3+2]=_cov3[2];
@@ -670,7 +729,7 @@
       eyeLeaves = [];
       const inset = GROUTS[grout];
       const painting = paintMode !== 'flat' && colorMode === 'source';
-      const rgbMode = paintMode === 'rgb';
+      const rgbMode = !!RGB_SCALE[paintMode];
 
       // tiles laid on the surface; the dark background showing through the inset
       // seams IS the grout (a mosaic on a dark wall).
@@ -679,13 +738,16 @@
       if (rgbMode) {
         // literal RGB-channel divisionism: each channel's own independent
         // noise-threshold dither, added — statistically reproduces the exact
-        // target colour once the eye can't resolve individual dots.
+        // target colour once the eye can't resolve individual dots. 'blobs'
+        // reuses the exact same technique at a lower repeat count, so each
+        // dot covers a visibly bigger patch of the tile.
+        const scale = RGB_SCALE[paintMode].toFixed(3);
         tileMat.onBeforeCompile = (sh) => {
           sh.uniforms.noiseTex = { value: NOISE3 };
           sh.vertexShader = 'attribute vec3 aCov; attribute vec2 aOff;\n' +
             'varying vec3 vCov; varying vec2 vNUv;\n' +
             sh.vertexShader.replace('#include <begin_vertex>',
-              '#include <begin_vertex>\n vCov = aCov; vNUv = uv * 3.0 + aOff * 17.0;');
+              '#include <begin_vertex>\n vCov = aCov; vNUv = uv * ' + scale + ' + aOff * 17.0;');
           sh.fragmentShader = 'uniform sampler2D noiseTex;\n' +
             'varying vec3 vCov; varying vec2 vNUv;\n' +
             sh.fragmentShader.replace('#include <color_fragment>',
@@ -720,7 +782,9 @@
       for (let bi = 0; bi < 3; bi++) {
         if (!buckets[bi].length) continue;
         const mesh = buildShapeMesh(bi, buckets[bi], tileMat, inset);
-        bustGroup.add(mesh); vmeshes.push(mesh); draws++;
+        // skinned models are re-skinned in WORLD space every frame (updateSkin);
+        // static models live in bustGroup, which handles idle sway/cursor-follow
+        (isSkinned ? scene : bustGroup).add(mesh); vmeshes.push(mesh); draws++;
       }
       document.getElementById('calls').textContent = draws;
     }
@@ -737,10 +801,22 @@
         const box = new THREE.Box3().setFromObject(gltf.scene);
         const sph = box.getBoundingSphere(new THREE.Sphere());
         center.copy(sph.center); radius = sph.radius || 1;
+
+        skinnedMesh = null; skeleton = null; isSkinned = false;
+        gltf.scene.traverse((o) => { if (o.isSkinnedMesh && !skinnedMesh) { skinnedMesh = o; skeleton = o.skeleton; isSkinned = true; } });
+        mixer = isSkinned ? new THREE.AnimationMixer(gltf.scene) : null;
+        clips = gltf.animations || []; currentAction = null;
+        buildClipButtons();
+
         sampler = buildSampler(gltf.scene);
-        const views = bakeSurfaceColors(gltf.scene, center, radius);
+        const views = bakeSurfaceColors(gltf.scene, center, radius);   // reparents+un-parents root, must finish first
+        if (currentRoot) scene.remove(currentRoot);
+        currentRoot = gltf.scene;
+        currentRoot.traverse((o) => { if (o.isMesh) o.visible = false; });   // tesserae are the visible surface
+        scene.add(currentRoot);   // kept in-graph so skeleton.update() sees fresh bone matrices each frame
         samples = drawSamples(sampler, KSAMP, views, center);
         buildMosaic(); frameView();
+        if (isSkinned) { if (clips.length) playClip(0); updateSkin(); }
         document.getElementById('model').textContent = name + ' · ' + (100 - samples.fallbackFrac*100).toFixed(0) + '% covered';
       }, undefined, () => { if (gen === loadGen) document.getElementById('model').textContent = name + ' — load failed'; });
     }
@@ -755,7 +831,7 @@
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
-    makeButtons('paint-group', ['pure','muted','flat','rgb'], paintMode, x => x, x => { paintMode = x; repaint(); });
+    makeButtons('paint-group', ['pure','muted','flat','rgb','blobs'], paintMode, x => x, x => { paintMode = x; repaint(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
     makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
     let idleOn = true, lookCursor = false;
@@ -768,6 +844,23 @@
       const look = document.createElement('button'); look.textContent = 'look at cursor';
       look.onclick = () => { lookCursor = !lookCursor; look.classList.toggle('active', lookCursor); };
       g.append(r, sp, idle, look); })();
+
+    // clip buttons only appear for skinned models (Fox / Human / Soldier) —
+    // real skeletal animation clips, not the idle-motion sway used elsewhere
+    function buildClipButtons() {
+      const g = document.getElementById('clip-group');
+      [...g.querySelectorAll('button')].forEach(b => b.remove());
+      clips.forEach((c, i) => {
+        const b = document.createElement('button'); b.textContent = c.name || ('clip ' + i);
+        b.onclick = () => playClip(i); g.appendChild(b);
+      });
+    }
+    function playClip(i) {
+      if (!mixer || !clips[i]) return;
+      if (currentAction) currentAction.fadeOut(0.2);
+      currentAction = mixer.clipAction(clips[i]); currentAction.reset().fadeIn(0.2).play();
+      [...document.querySelectorAll('#clip-group button')].forEach((b, idx) => b.classList.toggle('active', idx === i));
+    }
 
     // ---- idle / cursor motion + blink ----
     // The bust is a static point cloud (no skeleton), so life comes from a
@@ -807,6 +900,59 @@
       }
     }
 
+    // ---- real skeletal skinning (Fox / Human / Soldier) ----
+    // Ported from tessera-avatar.html's approach: each tessera keeps its
+    // BIND-POSE position + a 4-bone weighted skin binding (see buildSampler /
+    // drawSamples / buildMosaic above); every frame the position is re-derived
+    // by blending the skeleton's live bone matrices — same maths as GPU
+    // skinning, just run on the CPU into instance matrices. Beyond tessera-
+    // avatar's own "attachment only" scope, orientation is ALSO corrected: a
+    // tile's bind-pose orientation is rotated by its DOMINANT bone's rotation
+    // delta since bind pose (precomputed once per bone per frame, then a cheap
+    // lookup per tessera) — otherwise tiles on a bending limb would keep
+    // pointing their bind-pose direction forever, visibly wrong at the elbow/
+    // knee. This is the fix for "not done right/relevant to the anatomy."
+    const _skinM = new THREE.Matrix4(), _boneMat4 = new THREE.Matrix4(), _deltaMat4 = new THREE.Matrix4();
+    const _deltaQ = new THREE.Quaternion(), _skQ = new THREE.Quaternion(), _skP = new THREE.Vector3(), _skM2 = new THREE.Matrix4();
+    let boneDeltaQuat = null;
+    function computeBoneDeltas() {
+      scene.updateMatrixWorld(true);   // force-refresh bone matrices this frame, not last frame's
+      skeleton.update();
+      _skinM.multiplyMatrices(skinnedMesh.matrixWorld, skinnedMesh.bindMatrixInverse);
+      const bm = skeleton.boneMatrices, nb = skeleton.bones.length;
+      if (!boneDeltaQuat || boneDeltaQuat.length !== nb*4) boneDeltaQuat = new Float32Array(nb*4);
+      for (let bi = 0; bi < nb; bi++) {
+        _boneMat4.fromArray(bm, bi*16);
+        _deltaMat4.multiplyMatrices(_skinM, _boneMat4);
+        _deltaQ.setFromRotationMatrix(_deltaMat4);
+        boneDeltaQuat[bi*4]=_deltaQ.x; boneDeltaQuat[bi*4+1]=_deltaQ.y; boneDeltaQuat[bi*4+2]=_deltaQ.z; boneDeltaQuat[bi*4+3]=_deltaQ.w;
+      }
+    }
+    function updateSkin() {
+      if (!isSkinned || !currentLeaves) return;
+      computeBoneDeltas();
+      const bm = skeleton.boneMatrices, e = _skinM.elements;
+      for (const l of currentLeaves) {
+        if (l.rigid) continue;   // an unskinned part on an otherwise-skinned model — leave its build-time matrix
+        const si = l.skinIdx, sw = l.skinWt;
+        let ax = 0, ay = 0, az = 0;
+        for (let k = 0; k < 4; k++) {
+          const wk = sw[k]; if (wk === 0) continue;
+          const o = si[k] * 16;
+          ax += wk*(bm[o]  *l.x + bm[o+4]*l.y + bm[o+8] *l.z + bm[o+12]);
+          ay += wk*(bm[o+1]*l.x + bm[o+5]*l.y + bm[o+9] *l.z + bm[o+13]);
+          az += wk*(bm[o+2]*l.x + bm[o+6]*l.y + bm[o+10]*l.z + bm[o+14]);
+        }
+        _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
+        const db = l.domBone * 4;
+        _deltaQ.set(boneDeltaQuat[db], boneDeltaQuat[db+1], boneDeltaQuat[db+2], boneDeltaQuat[db+3]);
+        _skQ.multiplyQuaternions(_deltaQ, l._bindQ);
+        _skM2.compose(_skP, _skQ, l._baseS);
+        l._mesh.setMatrixAt(l._idx, _skM2);
+      }
+      for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
+    }
+
     // ---- loop ----
     const fpsEl = document.getElementById('fps');
     let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
@@ -819,7 +965,8 @@
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
-      updateMotion(now/1000, dt); updateBlink(dt);
+      if (isSkinned) { if (mixer) mixer.update(dt); updateSkin(); }
+      else { updateMotion(now/1000, dt); updateBlink(dt); }
       controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => {
