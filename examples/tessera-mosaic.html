@@ -22,10 +22,16 @@
          A cheek stays one large tile; an eye shatters into many small ones.
       3. Octree cells nest perfectly across sizes — a 2x tile sits flush beside
          four 1x tiles. No overlap is possible by construction.
-      4. Each leaf renders as an inset rounded TILE oriented to the mean surface
-         normal. The inset seam over the dark background is the grout.
-         Abstraction = tree depth.
-      5. PAINTED TILES, three modes (PAINT control):
+      4. Each leaf renders as an inset TILE oriented to the mean surface normal.
+         Real mosaics aren't all one shape: a BLOCK fills most of the surface,
+         a SLIVER (elongated, rolled to follow the local tangent) is used at
+         high-importance colour edges — the andamento cut for lips/eyelids —
+         and a WEDGE (triangular, scattered roll) is used where curvature
+         wraps too tightly for a flat block (nostril, ear rim). Shape is
+         chosen per leaf from importance/curvature, not forced uniform.
+         The inset seam over the dark background is the grout. Abstraction =
+         tree depth.
+      5. PAINTED TILES, four PAINT modes:
          · pure  — true divisionism (Seurat). The tile contains NO pixel of the
            target colour. Two fully-saturated hues bracket the target hue; the
            base region is solved in LINEAR LIGHT so that
@@ -35,16 +41,30 @@
          · muted — a base near the target colour plus two accents pulled from
            real divergent source pixels in the cell (softer, more "painterly").
          · flat  — one colour per tile, no glyphs.
-         Glyph shapes are chosen by the tile's material read (gold → facets,
-         skin → pores, cloth → weave, dark → strands) via a mask atlas mixed in
-         the shader with a per-instance palette (aA/aB/aP attributes).
+         · rgb   — literal channel-proportional divisionism: a mosaic mixes
+           REFLECTED LIGHT additively (like a screen's RGB subpixels, not
+           subtractive ink — that's what CMYK is for), so the exact in-gamut
+           decomposition of any colour into pure R/G/B is trivial: coverage_R
+           = target.r, coverage_G = target.g, coverage_B = target.b in linear
+           light. Each channel is its own independent per-instance-randomised
+           noise-threshold dither so they statistically overlap and add,
+           reproducing the target once the eye can't resolve individual dots.
+         Pure/muted glyph shapes are chosen by the tile's material read
+         (gold → facets, skin → pores, cloth → weave, dark → strands).
       6. SPLIT controls how far the two pure hues are pushed apart (classic /
          bold / extreme). Chuck Close pushed his warm/cool pairs toward true
          complements — up close they read as vivid, almost jarring opposites;
          only once the eye can no longer resolve individual tiles do they
          optically NEUTRALIZE into the correct flesh tone.
+      7. The bust has no skeleton (it's a static sampled point cloud), so life
+         comes from a rigid whole-model sway/bob (idle motion) and optionally
+         turning toward the cursor (look at cursor) — both rotate a group
+         pivoted at the model's own centre. Blinking flattens the eye-band
+         tiles' in-plane scale briefly, a purely geometric effect so it reads
+         the same in every PAINT mode.
 
-    One instanced draw call (pattern mask atlas + per-instance palette in shader).
+    One draw call per active tile shape (block/sliver/wedge), each an
+    InstancedMesh sharing one material.
   -->
   <style>
     :root { color-scheme: dark; } * { box-sizing: border-box; }
@@ -223,6 +243,45 @@
       return t;
     }
     const PATTERNS = buildPatternAtlas();
+
+    // ---- RGB divisionism: literal channel-proportional coverage ----
+    // Since a mosaic mixes REFLECTED LIGHT additively (like a screen's RGB
+    // subpixels — not subtractive ink, which is what CMYK is for), the exact
+    // in-gamut decomposition of any target colour into pure R/G/B patches is
+    // trivial: coverage_R = target.r, coverage_G = target.g, coverage_B =
+    // target.b (in LINEAR light), each drawn as its OWN independent
+    // per-instance-randomised noise-threshold dither so they statistically
+    // overlap and add — exactly reproducing the target once the eye can no
+    // longer resolve individual dots. Unlike the 2-hue 'pure' mode this needs
+    // no gamut-clamping fallback: R, G, B individually already span [0,1].
+    const NOISE_RES = 64;
+    function buildNoiseTex() {
+      const cv = document.createElement('canvas'); cv.width = NOISE_RES; cv.height = NOISE_RES;
+      const g = cv.getContext('2d'); const id = g.createImageData(NOISE_RES, NOISE_RES);
+      for (let i = 0; i < id.data.length; i += 4) {
+        id.data[i] = (Math.random()*256)|0; id.data[i+1] = (Math.random()*256)|0;
+        id.data[i+2] = (Math.random()*256)|0; id.data[i+3] = 255;
+      }
+      g.putImageData(id, 0, 0);
+      const t = new THREE.CanvasTexture(cv);
+      t.colorSpace = THREE.NoColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      // NEAREST + no mipmaps — this must read as per-pixel noise (a proper
+      // dither), not a blurred average. Mipmapping a random field collapses
+      // it to ~flat grey at any minification, turning the per-pixel
+      // stochastic threshold into a near-binary per-TILE decision (whole
+      // tiles going solid-red/solid-black instead of finely dithering).
+      t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+      return t;
+    }
+    const NOISE3 = buildNoiseTex();
+    const _lin = new THREE.Color();
+    function linearCoverage(l, out3) {
+      _lin.setRGB(l.r, l.g, l.b, THREE.SRGBColorSpace);   // THREE.Color stores linear internally
+      out3[0] = Math.min(1, Math.max(0, _lin.r));
+      out3[1] = Math.min(1, Math.max(0, _lin.g));
+      out3[2] = Math.min(1, Math.max(0, _lin.b));
+    }
+    const _cov3 = new Float32Array(3);
 
     // measured accent coverages per pattern (fraction of tile area under each
     // mask) — needed to solve the optical-blend equation exactly
@@ -475,10 +534,12 @@
             const d=(sm.r[i]-sm.r[ia])*(sm.r[i]-sm.r[ia])+(sm.g[i]-sm.g[ia])*(sm.g[i]-sm.g[ia])+(sm.b[i]-sm.b[ia])*(sm.b[i]-sm.b[ia]);
             if (d>db){ db=d; ib=i; } }
           const T = 0.25;
-          leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp,
+          const yFrac = (py - miny) / spanY;
+          const isEye = yFrac > 0.56 && yFrac < 0.7 && Math.abs(px - (minx+maxx)/2) < size*0.32;
+          leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp, curv,
                         ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
                         rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
-                        mat: materialOf(r, g, b, _mcol),
+                        mat: materialOf(r, g, b, _mcol), isEye,
                         cx: c.x+c.s/2, cy: c.y+c.s/2, cz: c.z+c.s/2 });
           depthCount[c.d] = (depthCount[c.d]||0) + 1;
         }
@@ -495,8 +556,15 @@
     function repaint() { if (currentLeaves) buildMeshes(currentLeaves); }
 
     // ---- render: dark mortar bed + inset colour tiles ----
-    const UPZ = new THREE.Vector3(0, 0, 1);
-    function clearVol() { for (const m of vmeshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } vmeshes = []; }
+    const UPZ = new THREE.Vector3(0, 0, 1), WORLD_UP = new THREE.Vector3(0, 1, 0);
+    const bustGroup = new THREE.Group(); scene.add(bustGroup);
+    let eyeLeaves = [];   // leaves flagged isEye — re-populated each buildMeshes(), used for blink
+    let liveTileMat = null;   // one material shared by all shape meshes — dispose once, not per-mesh
+    function clearVol() {
+      for (const m of vmeshes) { bustGroup.remove(m); m.geometry.dispose(); }
+      if (liveTileMat) { liveTileMat.dispose(); liveTileMat = null; }
+      vmeshes = [];
+    }
     function tileColor(l, col) {
       if (colorMode === 'importance') return col.setHSL(0.62 - 0.62*Math.min(1,l.imp), 0.75, 0.55);
       if (colorMode === 'flat') return col.setHSL(0.6, 0.15, 0.62);
@@ -507,19 +575,124 @@
       col.offsetHSL(0, 0, j);
       return col;
     }
+    // real mosaics aren't all-one-shape: small elongated SLIVERS follow
+    // contour lines at sharp colour edges (andamento — how lips/eyelids are
+    // traditionally cut), WEDGES hug tightly wrapped curvature (nostril, ear
+    // rim), and BLOCKS fill the rest. Shape is chosen per leaf, not forced.
+    const SHAPE_GEOS = [
+      () => new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09),        // 0 block
+      () => new RoundedBoxGeometry(0.42, 1.3, 0.42, 2, 0.07),  // 1 sliver (contour)
+      // 2 wedge (curvature) — cylinder's height axis is Y by default; rotate
+      // it onto Z so the thin (0.5) dimension points along the surface
+      // normal, matching how the box shapes sit (local Z = tile thickness)
+      () => new THREE.CylinderGeometry(0.62, 0.62, 0.5, 3).rotateX(Math.PI/2),
+    ];
+    function tangentFor(nv, out) {
+      out.crossVectors(WORLD_UP, nv);
+      if (out.lengthSq() < 1e-6) out.set(1, 0, 0); else out.normalize();
+      return out;
+    }
+    const _tanv = new THREE.Vector3(), _curY = new THREE.Vector3(), _crossv = new THREE.Vector3(), _qRoll = new THREE.Quaternion();
+    const _tmpScale = new THREE.Vector3();
+    function buildShapeMesh(shapeId, bl, material, inset) {
+      const n = bl.length;
+      const geo = SHAPE_GEOS[shapeId]();
+      const mesh = new THREE.InstancedMesh(geo, material, n); mesh.frustumCulled = false;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
+      const painting = paintMode !== 'flat' && colorMode === 'source';
+      const pure = paintMode === 'pure', rgbMode = paintMode === 'rgb';
+      const accA = (painting && !rgbMode) ? new Float32Array(n*3) : null;
+      const accB = (painting && !rgbMode) ? new Float32Array(n*3) : null;
+      const patId = (painting && !rgbMode) ? new Float32Array(n) : null;
+      const covArr = (painting && rgbMode) ? new Float32Array(n*3) : null;
+      const offArr = (painting && rgbMode) ? new Float32Array(n*2) : null;
+      for (let j = 0; j < n; j++) {
+        const l = bl[j];
+        nv.set(l.nx, l.ny, l.nz); if (nv.lengthSq() < 1e-6) nv.set(0,0,1); nv.normalize();
+        q.setFromUnitVectors(UPZ, nv);
+        if (shapeId === 1) {                       // sliver — roll long axis onto local tangent
+          tangentFor(nv, _tanv);
+          _curY.set(0,1,0).applyQuaternion(q);
+          _crossv.crossVectors(_curY, _tanv);
+          _qRoll.setFromAxisAngle(nv, Math.atan2(_crossv.dot(nv), _curY.dot(_tanv)));
+          q.premultiply(_qRoll);
+        } else if (shapeId === 2) {                 // wedge — scattered roll, like cut shards
+          _qRoll.setFromAxisAngle(nv, (j * 2.399963) % (Math.PI*2));
+          q.premultiply(_qRoll);
+        }
+        p.set(l.x - center.x, l.y - center.y, l.z - center.z);   // relative to bustGroup's pivot
+        const shrink = shapeId === 2 ? inset*0.92 : inset;
+        s.set(l.s * shrink, l.s * shrink, l.s);
+        m.compose(p, q, s); mesh.setMatrixAt(j, m);
+        if (l.isEye) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); eyeLeaves.push(l); }
+        if (rgbMode) {
+          linearCoverage(l, _cov3);
+          covArr[j*3]=_cov3[0]; covArr[j*3+1]=_cov3[1]; covArr[j*3+2]=_cov3[2];
+          offArr[j*2]=Math.random(); offArr[j*2+1]=Math.random();
+        } else if (painting && pure) {
+          // divisionist: only pure colours on the tile; the target colour is
+          // reconstructed by the eye (coverage-weighted mix == target, exactly,
+          // in linear light — so no lightness jitter here)
+          decomposePure(l, _dec);
+          col.setRGB(_dec[0], _dec[1], _dec[2]);
+          mesh.setColorAt(j, col);
+          accA[j*3] = _dec[3]; accA[j*3+1] = _dec[4]; accA[j*3+2] = _dec[5];
+          accB[j*3] = _dec[6]; accB[j*3+1] = _dec[7]; accB[j*3+2] = _dec[8];
+          patId[j] = l.mat;
+        } else {
+          mesh.setColorAt(j, tileColor(l, col));
+          if (painting) {
+            // muted: source-derived accents with guaranteed minimum contrast
+            const lm = (l.r + l.g + l.b) / 3;
+            col.setRGB(l.ra, l.ga, l.ba, THREE.SRGBColorSpace);
+            if (Math.abs((l.ra + l.ga + l.ba)/3 - lm) < 0.05) col.offsetHSL(0, 0, -0.1);
+            accA[j*3] = col.r; accA[j*3+1] = col.g; accA[j*3+2] = col.b;
+            col.setRGB(l.rb, l.gb, l.bb, THREE.SRGBColorSpace);
+            if (Math.abs((l.rb + l.gb + l.bb)/3 - lm) < 0.05) col.offsetHSL(0, 0, 0.1);
+            accB[j*3] = col.r; accB[j*3+1] = col.g; accB[j*3+2] = col.b;
+            patId[j] = l.mat;
+          }
+        }
+      }
+      if (rgbMode) {
+        geo.setAttribute('aCov', new THREE.InstancedBufferAttribute(covArr, 3));
+        geo.setAttribute('aOff', new THREE.InstancedBufferAttribute(offArr, 2));
+      } else if (painting) {
+        geo.setAttribute('aA', new THREE.InstancedBufferAttribute(accA, 3));
+        geo.setAttribute('aB', new THREE.InstancedBufferAttribute(accB, 3));
+        geo.setAttribute('aP', new THREE.InstancedBufferAttribute(patId, 1));
+      }
+      mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      return mesh;
+    }
     function buildMeshes(leaves) {
       clearVol();
-      const n = leaves.length;
-      const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), nv = new THREE.Vector3(), col = new THREE.Color();
+      eyeLeaves = [];
       const inset = GROUTS[grout];
       const painting = paintMode !== 'flat' && colorMode === 'source';
-      const pure = paintMode === 'pure';
+      const rgbMode = paintMode === 'rgb';
 
       // tiles laid on the surface; the dark background showing through the inset
-      // seams IS the grout (a mosaic on a dark wall). One instanced draw call.
-      const tileGeo = new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09);
+      // seams IS the grout (a mosaic on a dark wall).
       const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.06 });
-      if (painting) {
+      liveTileMat = tileMat;
+      if (rgbMode) {
+        // literal RGB-channel divisionism: each channel's own independent
+        // noise-threshold dither, added — statistically reproduces the exact
+        // target colour once the eye can't resolve individual dots.
+        tileMat.onBeforeCompile = (sh) => {
+          sh.uniforms.noiseTex = { value: NOISE3 };
+          sh.vertexShader = 'attribute vec3 aCov; attribute vec2 aOff;\n' +
+            'varying vec3 vCov; varying vec2 vNUv;\n' +
+            sh.vertexShader.replace('#include <begin_vertex>',
+              '#include <begin_vertex>\n vCov = aCov; vNUv = uv * 3.0 + aOff * 17.0;');
+          sh.fragmentShader = 'uniform sampler2D noiseTex;\n' +
+            'varying vec3 vCov; varying vec2 vNUv;\n' +
+            sh.fragmentShader.replace('#include <color_fragment>',
+              '#include <color_fragment>\n vec3 pn = texture2D(noiseTex, vNUv).rgb;\n' +
+              ' diffuseColor.rgb = step(pn, vCov);');
+        };
+      } else if (painting) {
         // paint each tile: base colour (instanceColor) + two accents applied
         // through the material glyph masks (R = accent A, G = accent B)
         tileMat.onBeforeCompile = (sh) => {
@@ -535,51 +708,21 @@
               ' diffuseColor.rgb = diffuseColor.rgb * max(0.0, 1.0 - pm.r - pm.g) + vAcc1 * pm.r + vAcc2 * pm.g;');
         };
       }
-      const tiles = new THREE.InstancedMesh(tileGeo, tileMat, n); tiles.frustumCulled = false;
-      const accA = painting ? new Float32Array(n*3) : null;
-      const accB = painting ? new Float32Array(n*3) : null;
-      const patId = painting ? new Float32Array(n) : null;
-      for (let j = 0; j < n; j++) {
-        const l = leaves[j];
-        nv.set(l.nx, l.ny, l.nz); if (nv.lengthSq() < 1e-6) nv.set(0,0,1); nv.normalize();
-        q.setFromUnitVectors(UPZ, nv);
-        p.set(l.x, l.y, l.z);                       // anchored on the surface itself
-        s.set(l.s * inset, l.s * inset, l.s);
-        m.compose(p, q, s); tiles.setMatrixAt(j, m);
-        if (painting && pure) {
-          // divisionist: only pure colours on the tile; the target colour is
-          // reconstructed by the eye (coverage-weighted mix == target, exactly,
-          // in linear light — so no lightness jitter here)
-          decomposePure(l, _dec);
-          col.setRGB(_dec[0], _dec[1], _dec[2]);
-          tiles.setColorAt(j, col);
-          accA[j*3] = _dec[3]; accA[j*3+1] = _dec[4]; accA[j*3+2] = _dec[5];
-          accB[j*3] = _dec[6]; accB[j*3+1] = _dec[7]; accB[j*3+2] = _dec[8];
-          patId[j] = l.mat;
-        } else {
-          tiles.setColorAt(j, tileColor(l, col));
-          if (painting) {
-            // muted: source-derived accents with guaranteed minimum contrast
-            const lm = (l.r + l.g + l.b) / 3;
-            col.setRGB(l.ra, l.ga, l.ba, THREE.SRGBColorSpace);
-            if (Math.abs((l.ra + l.ga + l.ba)/3 - lm) < 0.05) col.offsetHSL(0, 0, -0.1);
-            accA[j*3] = col.r; accA[j*3+1] = col.g; accA[j*3+2] = col.b;
-            col.setRGB(l.rb, l.gb, l.bb, THREE.SRGBColorSpace);
-            if (Math.abs((l.rb + l.gb + l.bb)/3 - lm) < 0.05) col.offsetHSL(0, 0, 0.1);
-            accB[j*3] = col.r; accB[j*3+1] = col.g; accB[j*3+2] = col.b;
-            patId[j] = l.mat;
-          }
-        }
-      }
-      if (painting) {
-        tileGeo.setAttribute('aA', new THREE.InstancedBufferAttribute(accA, 3));
-        tileGeo.setAttribute('aB', new THREE.InstancedBufferAttribute(accB, 3));
-        tileGeo.setAttribute('aP', new THREE.InstancedBufferAttribute(patId, 1));
-      }
-      tiles.instanceMatrix.needsUpdate = true; if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
-      scene.add(tiles); vmeshes.push(tiles);
 
-      document.getElementById('calls').textContent = '1';
+      const buckets = [[], [], []];
+      for (const l of leaves) {
+        let shape = 0;
+        if (l.curv > CURV_FORCE) shape = 2;
+        else if (l.imp > SUB_THRESHOLD * 1.3) shape = 1;
+        buckets[shape].push(l);
+      }
+      let draws = 0;
+      for (let bi = 0; bi < 3; bi++) {
+        if (!buckets[bi].length) continue;
+        const mesh = buildShapeMesh(bi, buckets[bi], tileMat, inset);
+        bustGroup.add(mesh); vmeshes.push(mesh); draws++;
+      }
+      document.getElementById('calls').textContent = draws;
     }
 
     // ---- loading ----
@@ -612,19 +755,63 @@
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
-    makeButtons('paint-group', ['pure','muted','flat'], paintMode, x => x, x => { paintMode = x; repaint(); });
+    makeButtons('paint-group', ['pure','muted','flat','rgb'], paintMode, x => x, x => { paintMode = x; repaint(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
     makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
+    let idleOn = true, lookCursor = false;
     (function viewButtons(){ const g = document.getElementById('view-group');
       const r = document.createElement('button'); r.textContent = 'reframe'; r.onclick = () => frameView();
       const sp = document.createElement('button'); sp.textContent = 'auto-spin'; sp.classList.add('active');
       sp.onclick = () => { controls.autoRotate = !controls.autoRotate; sp.classList.toggle('active', controls.autoRotate); };
-      g.append(r, sp); })();
+      const idle = document.createElement('button'); idle.textContent = 'idle motion'; idle.classList.add('active');
+      idle.onclick = () => { idleOn = !idleOn; idle.classList.toggle('active', idleOn); };
+      const look = document.createElement('button'); look.textContent = 'look at cursor';
+      look.onclick = () => { lookCursor = !lookCursor; look.classList.toggle('active', lookCursor); };
+      g.append(r, sp, idle, look); })();
+
+    // ---- idle / cursor motion + blink ----
+    // The bust is a static point cloud (no skeleton), so life comes from a
+    // rigid whole-model sway/bob (breathing) plus, optionally, turning toward
+    // the cursor — both rotate bustGroup, whose pivot sits at the model's own
+    // centre (tile positions are stored relative to it, see buildShapeMesh).
+    // Blinking flattens the eye-band tiles' in-plane scale briefly — a purely
+    // geometric effect so it reads the same in every PAINT mode.
+    let mouseX = 0, mouseY = 0, cursorYaw = 0, cursorPitch = 0, blinkTimer = 2 + Math.random()*3;
+    window.addEventListener('pointermove', (e) => {
+      mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+      mouseY = (e.clientY / window.innerHeight) * 2 - 1;
+    });
+    function updateMotion(t, dt) {
+      const sway = idleOn ? Math.sin(t*0.5)*0.035 : 0;
+      const bob  = idleOn ? Math.sin(t*0.8)*radius*0.01 : 0;
+      const targetYaw = lookCursor ? mouseX*0.35 : 0, targetPitch = lookCursor ? -mouseY*0.18 : 0;
+      const k = Math.min(1, dt*4);
+      cursorYaw += (targetYaw - cursorYaw) * k; cursorPitch += (targetPitch - cursorPitch) * k;
+      bustGroup.rotation.y = sway + cursorYaw; bustGroup.rotation.x = cursorPitch;
+      bustGroup.position.y = center.y + bob;
+      bustGroup.position.x = center.x; bustGroup.position.z = center.z;
+    }
+    function updateBlink(dt) {
+      if (!eyeLeaves.length) return;
+      blinkTimer -= dt;
+      if (blinkTimer > 0.16) return;
+      if (blinkTimer < -3) { blinkTimer = 2.5 + Math.random()*4; return; }   // rest, then schedule next
+      const phase = blinkTimer <= 0 ? 0 : 1 - Math.abs(blinkTimer/0.08 - 1);
+      const sq = Math.max(0.06, 1 - phase*0.94);
+      const m = new THREE.Matrix4();
+      for (const l of eyeLeaves) {
+        _tmpScale.copy(l._baseS); _tmpScale.y *= sq;
+        m.compose(l._baseP, l._baseQ, _tmpScale);
+        l._mesh.setMatrixAt(l._idx, m);
+        l._mesh.instanceMatrix.needsUpdate = true;
+      }
+    }
 
     // ---- loop ----
     const fpsEl = document.getElementById('fps');
     let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
     function tick(now) {
+      const dt = Math.min(0.1, (now - lastT) / 1000);
       acc += now - lastT; lastT = now; frames++;
       if (acc >= 250) {
         const fps = (frames*1000)/acc; smoothed = smoothed ? smoothed*0.7 + fps*0.3 : fps;
@@ -632,6 +819,7 @@
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
+      updateMotion(now/1000, dt); updateBlink(dt);
       controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
     }
     window.addEventListener('resize', () => {

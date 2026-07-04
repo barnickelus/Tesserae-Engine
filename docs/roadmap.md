@@ -224,14 +224,54 @@
       real colour / ~75% black before the fix, verified via the harness).
       No regression on Empress/Fox/Human/Helmet (still 100% covered, clean
       renders).
+- [x] **Multi-shape tiles, an RGB divisionist mode, and idle/cursor motion +
+      blinking.** User feedback on Portrait (post-bake-fix): fine detail near
+      the lips got blocked in too roughly ("mosaics aren't just squares"),
+      colours/patterns needed pushing further ("more colors in each tile...
+      could you get at least cmyk or rgb and just use the correct
+      proportions"), and asked to wire the bust up to move/interact.
+      **Shapes**: leaves are bucketed into BLOCK (default), SLIVER (elongated,
+      rolled to align with the local tangent — andamento, the traditional cut
+      for lips/eyelid contours — chosen where importance is high), and WEDGE
+      (triangular prism, scattered roll — chosen where curvature wraps too
+      tight for a flat block, e.g. nostril/ear rim). Each shape is its own
+      InstancedMesh sharing one material (draw calls = active shape count,
+      2–3 typically), so this is still a small, fixed number of draw calls,
+      not one per tile.
+      **RGB mode**: a mosaic mixes reflected light *additively* (like a
+      screen's RGB subpixels), not subtractively (that's CMYK, for ink) — so
+      the exact in-gamut decomposition of any colour into pure R/G/B is
+      trivial: coverage_R/G/B = target's own linear r/g/b. Reasoned through
+      explicitly rather than silently picking one, since the user offered
+      either — CMY alone goes negative (out of gamut) for saturated single-
+      channel colours under an additive model, so RGB is the physically
+      correct choice here. Implemented as three independent per-instance
+      noise-threshold dithers (one per channel) that statistically overlap
+      and add. First attempt used a mipmapped noise texture and came out as
+      solid colour blotches per tile, not a fine dither — mipmapping a random
+      field collapses it to ~flat grey at any minification, turning a
+      per-pixel stochastic threshold into a near-binary per-tile decision.
+      Fixed with NearestFilter + no mipmaps; verified both visually (fine
+      RGB speckle, not blotches) and by downsampling the render (resolves to
+      a correct natural skin tone).
+      **Motion**: the bust has no skeleton (a static sampled point cloud), so
+      idle motion is a rigid whole-model sway/bob, and "look at cursor"
+      rotates the same group toward the pointer — both pivot at the model's
+      own centre (tile positions are stored relative to it). Blinking
+      flattens the eye-band tiles' in-plane scale briefly; purely geometric,
+      so it reads the same across every PAINT mode. Eye-band leaves are
+      detected heuristically by head-relative y-fraction + horizontal
+      centrality — works for front-facing busts, not guaranteed for arbitrary
+      models (Fox/Helmet may flag an unrelated band; harmless).
+      No regression across pure/muted/flat/rgb × source/importance/material
+      colour modes, verified via the harness.
 - [ ] Improve the material read (true material IDs / metalness sampling — the
-      colour heuristic misreads shadowed gold as cloth/dark) and add per-tile
-      pattern rotation so glyphs don't all align.
-- [ ] Andamento — orient/flow tiles along contour or colour-gradient lines (the
-      signature of hand-laid mosaic; currently tiles are axis-aligned in-plane).
+      colour heuristic misreads shadowed gold as cloth/dark).
 - [ ] Merge the faceplate/relief language and material recipes onto mosaic tiles.
-- [ ] Animate: bind leaves to bones (bind-pose octree + skinning, as in
-      tessera-avatar).
+- [ ] A from-scratch original avatar (not a scanned model) as a Claude
+      persona/interface, built on this same tessera system — bigger, separate
+      follow-up; explicitly deferred by the user in favour of animating the
+      existing Portrait bust first.
 
 ## Backlog
 
