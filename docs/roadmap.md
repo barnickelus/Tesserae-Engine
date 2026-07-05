@@ -452,6 +452,35 @@
       gains (strength / angular / break) are exactly the "fine tune and hone
       in" knobs the user called out, exposed as soft/firm presets for
       on-device evaluation at 100% abstraction / 60fps.
+- [x] **Fascia upgrade to MAGNET: bonds now DRAG tiles, not just stretch
+      them.** User feedback on the first magnet version: it wasn't "really
+      acting like skin or fascia" as hoped. Correct diagnosis of a structural
+      limitation — each tile only scaled itself toward departed neighbours,
+      reacting alone; real skin is a connected sheet under tension where a
+      pull in one place drags a whole band of material along, distributing
+      strain across a gradient. Added a position-based-dynamics relaxation
+      pass (applyMagnet pass 2): per frame, every moving tile starts at its
+      animation-driven target, then the bond network is relaxed `iters` times
+      — each over-stretched bond pulls its tile partway back toward the
+      neighbour (half-weight vs. co-moving tiles, near-full vs. static
+      anchors, which won't meet it halfway). Each iteration diffuses the lag
+      one bond-hop deeper, so an N-iteration relax forms an ~N-tile-wide
+      strain band — the skin/fascia gradient. The stretch pass then bridges
+      only the RESIDUAL strain relaxation couldn't absorb, reading positions
+      from the relaxed state. Stateless per frame (re-seeded from the
+      animation every time): no drift, no lag once strain is gone, and broken
+      bonds re-latch automatically when back in range — magnets, not welds.
+      soft = supple (lower stiffness, more iterations, strain spreads wide),
+      firm = taut (transmits pull harder, snaps sooner).
+      Verified via the harness on the Portrait head-turn held hard left:
+      with `off` a clean shear seam at the neck; with `soft` the neck/jaw
+      band visibly drags partway with the turn, distributing the strain. At
+      the test's coarse 20% abstraction the band is proportionally wide
+      (band width is measured in tile-hops); at 100% on-device it reads as a
+      tighter gradient. Cost is O(tiles·K·iters) ≈ 120k adds/frame at 5k
+      tiles — negligible at real frame rates, though it visibly costs FPS
+      under the harness's software renderer (1fps vs 4fps — not meaningful
+      for device performance).
 - [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
       colour ratio instead of a white sheen.** User: "instead of adding a
       sheen... add the real time sheen into the pattern colour ratio of the
