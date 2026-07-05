@@ -495,6 +495,21 @@
         (mgRestQ, filled in buildShapeMesh).
       Verified: neck band drags and twists smoothly on the hard-left head
       turn; no regression on the default load.
+- [x] **Fascia round 3: rest-pose seeding bug + hot-loop perf.** Found by
+      re-reviewing the implementation: the neighbour graph seeded its "rest"
+      distances from `mgCurC`, but the graph is built lazily on the FIRST
+      frame with the magnet on — by which time the animation paths have
+      already overwritten `mgCurC` with posed positions. Toggling the magnet
+      mid-animation (mid-head-turn, or on an always-animating skinned model —
+      i.e. the normal way anyone uses the button) baked that deformed pose in
+      as "rest", permanently mis-tensioning every bond. Fixed with a
+      dedicated `mgRestC` captured at build time and never overwritten; the
+      graph now reads it exclusively. Also swapped `Math.hypot` for
+      `Math.sqrt` in the two per-frame bond loops (~4x faster per call,
+      ~500k calls/frame at 100% abstraction with iters=4). Verified on the
+      neck test, which happens to exercise the exact bug scenario (magnet
+      toggled while the head is held hard-left): band drags correctly from
+      true rest; default load regression-free.
 - [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
       colour ratio instead of a white sheen.** User: "instead of adding a
       sheen... add the real time sheen into the pattern colour ratio of the
