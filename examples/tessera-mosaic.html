@@ -270,7 +270,7 @@
     };
     let mgDirty = true;                      // neighbour graph must be (re)built
     let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null, mgIsMoving = null;
-    let mgCurC = null, mgSimC = null, mgCurQ = null, mgRestQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed positions / orientations (cur + rest) / normals / blink
+    let mgCurC = null, mgSimC = null, mgRestC = null, mgCurQ = null, mgRestQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed / rest positions / orientations (cur + rest) / normals / blink
     let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
     let litUniform = null;                    // 'lit' PAINT mode: view-space key-light direction, refreshed per frame
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
@@ -814,7 +814,8 @@
       // in: bustGroup-local for static models, world for skinned) — feeds the
       // magnetic neighbour graph, which is (re)built lazily when magnet is on.
       mgN = leaves.length; mgDirty = true;
-      mgCurC = new Float32Array(mgN * 3); mgSimC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgRestQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
+      mgCurC = new Float32Array(mgN * 3); mgSimC = new Float32Array(mgN * 3); mgRestC = new Float32Array(mgN * 3);
+      mgCurQ = new Float32Array(mgN * 4); mgRestQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
       mgCurN = new Float32Array(mgN * 3); mgRestN = new Float32Array(mgN * 3);   // surface normals: rest (const) + current
       for (let i = 0; i < mgN; i++) {
         const l = leaves[i]; l._g = i;
@@ -822,6 +823,7 @@
         l._rest = [rx, ry, rz];
         mgCurC[i*3] = rx; mgCurC[i*3+1] = ry; mgCurC[i*3+2] = rz;   // init cur = rest (static torso stays here)
         mgSimC[i*3] = rx; mgSimC[i*3+1] = ry; mgSimC[i*3+2] = rz;
+        mgRestC[i*3] = rx; mgRestC[i*3+1] = ry; mgRestC[i*3+2] = rz;
         const nl = Math.hypot(l.nx, l.ny, l.nz) || 1;
         mgRestN[i*3] = mgCurN[i*3] = l.nx/nl; mgRestN[i*3+1] = mgCurN[i*3+1] = l.ny/nl; mgRestN[i*3+2] = mgCurN[i*3+2] = l.nz/nl;
       }
@@ -1190,8 +1192,11 @@
       const moving = isSkinned ? mgMovingSkinned : headLeaves;
       if (!moving || !moving.length) return;
       for (const l of moving) mgIsMoving[l._g] = 1;
-      // spatial hash over rest centres (mgCurC still == rest here for static
-      // parts; for skinned, rest == world bind position, also in mgCurC).
+      // spatial hash over REST centres (mgRestC — captured at build, never
+      // overwritten). Earlier this read mgCurC, which the animation paths
+      // overwrite with posed positions BEFORE the graph is lazily built on
+      // the first magnet frame — so toggling the magnet mid-animation baked a
+      // deformed pose in as "rest", making bonds permanently mis-tensioned.
       // Only neighbour INDEX + rest DISTANCE are stored — the stretch
       // direction is derived per-frame in applyMagnet from the tiles' live
       // positions, which stays correct as the tile both moves and rotates.
@@ -1200,13 +1205,13 @@
       const grid = new Map();
       const key = (a,b,c) => a + ',' + b + ',' + c;
       for (let i = 0; i < N; i++) {
-        const ix = Math.floor(mgCurC[i*3]/cell), iy = Math.floor(mgCurC[i*3+1]/cell), iz = Math.floor(mgCurC[i*3+2]/cell);
+        const ix = Math.floor(mgRestC[i*3]/cell), iy = Math.floor(mgRestC[i*3+1]/cell), iz = Math.floor(mgRestC[i*3+2]/cell);
         const kk = key(ix,iy,iz); let arr = grid.get(kk); if (!arr) grid.set(kk, arr = []); arr.push(i);
       }
       const cand = [];
       for (const l of moving) {
         const g = l._g, R = l.s * 2.6, R2 = R*R;
-        const cx = mgCurC[g*3], cy = mgCurC[g*3+1], cz = mgCurC[g*3+2];
+        const cx = mgRestC[g*3], cy = mgRestC[g*3+1], cz = mgRestC[g*3+2];
         const ix = Math.floor(cx/cell), iy = Math.floor(cy/cell), iz = Math.floor(cz/cell);
         const rings = Math.max(1, Math.ceil(R/cell));
         cand.length = 0;
@@ -1214,7 +1219,7 @@
           const arr = grid.get(key(ix+dx,iy+dy,iz+dz)); if (!arr) continue;
           for (const j of arr) {
             if (j === g) continue;
-            const ox=mgCurC[j*3]-cx, oy=mgCurC[j*3+1]-cy, oz=mgCurC[j*3+2]-cz, d2=ox*ox+oy*oy+oz*oz;
+            const ox=mgRestC[j*3]-cx, oy=mgRestC[j*3+1]-cy, oz=mgRestC[j*3+2]-cz, d2=ox*ox+oy*oy+oz*oz;
             if (d2 <= R2) cand.push([d2, j]);
           }
         }
@@ -1271,7 +1276,7 @@
           for (let k = 0; k < cnt; k++) {
             const j = mgNbrIdx[g*K+k];
             const ox = mgSimC[j*3]-px, oy = mgSimC[j*3+1]-py, oz = mgSimC[j*3+2]-pz;
-            const d = Math.hypot(ox,oy,oz) || 1e-6;
+            const d = Math.sqrt(ox*ox+oy*oy+oz*oz) || 1e-6;   // sqrt, not hypot — ~4x faster in this per-frame hot loop
             const strain = d - mgNbrRest[g*K+k];
             if (strain > breakDist) continue;                  // bond released (re-latches in range)
             const w = mgIsMoving[j] ? 0.5 : 0.95;              // static anchors pull harder (they won't meet us halfway)
@@ -1309,7 +1314,7 @@
           // neighbour positions from the RELAXED state — the stretch bridges
           // whatever strain the fascia relaxation couldn't absorb
           const ox=mgSimC[j*3]-cx, oy=mgSimC[j*3+1]-cy, oz=mgSimC[j*3+2]-cz;
-          const d = Math.hypot(ox,oy,oz) || 1e-6;
+          const d = Math.sqrt(ox*ox+oy*oy+oz*oz) || 1e-6;   // sqrt, not hypot — ~4x faster in this per-frame hot loop
           // distance gap (shear — head-turn boundary) AND angular gap
           // (curvature — bending, where centres barely move but tiles tilt
           // apart); the tile must reach half of whichever opening is larger
