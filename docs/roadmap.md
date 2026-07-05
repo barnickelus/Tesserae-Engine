@@ -481,6 +481,20 @@
       tiles — negligible at real frame rates, though it visibly costs FPS
       under the harness's software renderer (1fps vs 4fps — not meaningful
       for device performance).
+- [x] **Fascia round 2: compression push-back + orientation drag.** Two
+      refinements on top of the relaxation pass:
+      · deep compression now pushes back (with a dead zone of 0.18 tile-
+        widths so resting contact doesn't jiggle) — bunched tiles resist
+        piling into each other, a light volume-preservation effect;
+      · a tile the fascia dragged away from its animated target also SLERPS
+        partway back toward its rest orientation, proportional to drag
+        distance — the strain band twists gradually between the moving
+        region and the anchors instead of lagging in position while still
+        carrying the full head rotation (which read as a sheared, twisted
+        band). Rest orientations are captured per tile at build time
+        (mgRestQ, filled in buildShapeMesh).
+      Verified: neck band drags and twists smoothly on the hard-left head
+      turn; no regression on the default load.
 - [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
       colour ratio instead of a white sheen.** User: "instead of adding a
       sheen... add the real time sheen into the pattern colour ratio of the

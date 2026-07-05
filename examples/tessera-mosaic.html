@@ -270,7 +270,7 @@
     };
     let mgDirty = true;                      // neighbour graph must be (re)built
     let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null, mgIsMoving = null;
-    let mgCurC = null, mgSimC = null, mgCurQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed positions / orientations / normals / blink
+    let mgCurC = null, mgSimC = null, mgCurQ = null, mgRestQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed positions / orientations (cur + rest) / normals / blink
     let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
     let litUniform = null;                    // 'lit' PAINT mode: view-space key-light direction, refreshed per frame
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
@@ -763,6 +763,8 @@
         const shrink = shapeId === 2 ? inset*0.92 : inset;
         s.set(l.s * shrink, l.s * shrink, l.s);
         m.compose(p, q, s); mesh.setMatrixAt(j, m);
+        // rest orientation, for the fascia orientation-drag blend (applyMagnet)
+        mgRestQ[l._g*4]=q.x; mgRestQ[l._g*4+1]=q.y; mgRestQ[l._g*4+2]=q.z; mgRestQ[l._g*4+3]=q.w;
         if (isSkinned) { l._mesh = mesh; l._idx = j; l._bindQ = q.clone(); l._baseS = s.clone(); }
         else if (l.isHead) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); headLeaves.push(l); }
         if (rgbMode) {
@@ -812,7 +814,7 @@
       // in: bustGroup-local for static models, world for skinned) — feeds the
       // magnetic neighbour graph, which is (re)built lazily when magnet is on.
       mgN = leaves.length; mgDirty = true;
-      mgCurC = new Float32Array(mgN * 3); mgSimC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
+      mgCurC = new Float32Array(mgN * 3); mgSimC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgRestQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
       mgCurN = new Float32Array(mgN * 3); mgRestN = new Float32Array(mgN * 3);   // surface normals: rest (const) + current
       for (let i = 0; i < mgN; i++) {
         const l = leaves[i]; l._g = i;
@@ -1228,7 +1230,7 @@
         }
       }
     }
-    const _magQ = new THREE.Quaternion(), _magIQ = new THREE.Quaternion(), _magDir = new THREE.Vector3();
+    const _magQ = new THREE.Quaternion(), _magQ2 = new THREE.Quaternion(), _magIQ = new THREE.Quaternion(), _magDir = new THREE.Vector3();
     const _magRot = new THREE.Matrix4(), _magLin = new THREE.Matrix4(), _magOut = new THREE.Matrix4();
     const _zAxis = new THREE.Vector3(0, 0, 1);
     function applyMagnet(moving) {
@@ -1271,9 +1273,12 @@
             const ox = mgSimC[j*3]-px, oy = mgSimC[j*3+1]-py, oz = mgSimC[j*3+2]-pz;
             const d = Math.hypot(ox,oy,oz) || 1e-6;
             const strain = d - mgNbrRest[g*K+k];
-            if (strain <= 0 || strain > breakDist) continue;   // slack, or bond released
+            if (strain > breakDist) continue;                  // bond released (re-latches in range)
             const w = mgIsMoving[j] ? 0.5 : 0.95;              // static anchors pull harder (they won't meet us halfway)
-            const c = (strain * cfg.stiff * w) / d;
+            let c;
+            if (strain > 0) c = (strain * cfg.stiff * w) / d;                       // tension: pull together
+            else if (strain < -0.18 * l.s) c = ((strain + 0.18*l.s) * cfg.stiff * 0.5 * w) / d;  // deep compression: push apart (volume push-back; dead zone so resting contact doesn't jiggle)
+            else continue;                                     // gently compressed: skin tolerates this
             px += ox*c; py += oy*c; pz += oz*c;
           }
           mgSimC[g*3] = px; mgSimC[g*3+1] = py; mgSimC[g*3+2] = pz;
@@ -1283,6 +1288,17 @@
         const g = l._g, cnt = mgNbrCount[g];
         const cx = mgSimC[g*3], cy = mgSimC[g*3+1], cz = mgSimC[g*3+2];
         _magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]);
+        // orientation drag: a tile the fascia pulled away from its animated
+        // target also rotates partway back toward its REST orientation, in
+        // proportion to how far it was dragged — the strain band twists
+        // gradually between the moving region and the anchors, instead of
+        // lagging in position while still carrying the full head rotation
+        const dgx = cx-mgCurC[g*3], dgy = cy-mgCurC[g*3+1], dgz = cz-mgCurC[g*3+2];
+        const dragK = Math.min(0.8, Math.hypot(dgx,dgy,dgz) / (l.s * 2.5));
+        if (dragK > 0.02) {
+          _magQ2.set(mgRestQ[g*4], mgRestQ[g*4+1], mgRestQ[g*4+2], mgRestQ[g*4+3]);
+          _magQ.slerp(_magQ2, dragK);
+        }
         _magIQ.copy(_magQ).invert();   // world → this tile's current local frame
         const gnx=mgCurN[g*3], gny=mgCurN[g*3+1], gnz=mgCurN[g*3+2];
         // symmetric stretch accumulator A (upper triangle), in local frame
