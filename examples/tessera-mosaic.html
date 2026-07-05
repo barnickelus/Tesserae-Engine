@@ -89,16 +89,21 @@
          their bind orientation forever. CLIP buttons switch animation clips.
       9. MAGNET (off / soft / firm) — rigid tiles leave gaps when the surface
          deforms because they can't stretch the way skin does. Each tile is
-         bonded to its nearest neighbours; when the surface moves and a
-         neighbour pulls away (centres separating — the head-turn shear seam)
-         or tilts away (normals diverging — the dominant gap source when a
-         surface BENDS, where centres barely move), the tile STRETCHES toward
-         it to bridge the gap, until the opening exceeds a break distance and
-         the bond releases. Bonds COMPOUND: the break distance grows with how
-         many bonds a tile has, so a well-connected tile is more elastic and a
-         sparsely-connected one snaps early. soft = skin-like/very elastic,
-         firm = stiffer/snaps sooner. (Meshless deformation, applied on top of
-         the rigid animation transform; see applyMagnet.)
+         bonded to its nearest neighbours, and the bonds act like fascia in
+         two stages per frame: first a POSITION relaxation (position-based
+         dynamics) where every over-stretched bond drags its tiles partway
+         back together — tension propagates through the sheet, so a hard pull
+         drags a whole band of tiles along a strain gradient instead of
+         tearing at one seam line; then each tile STRETCHES toward any
+         neighbour still pulled away after relaxation (distance term = shear
+         seams, angular term = bending, where centres barely move but rigid
+         tiles tilt apart). A bond releases past its break distance and
+         re-latches when back in range — magnets, not welds. Bonds COMPOUND:
+         break distance grows with bond count, so a well-connected tile is
+         more elastic and a sparsely-connected one snaps early. soft =
+         supple/strain spreads wide, firm = taut/transmits harder, snaps
+         sooner. (Meshless deformation on top of the rigid animation
+         transform; see applyMagnet.)
 
     One draw call per active tile shape (block/sliver/wedge), each an
     InstancedMesh sharing one material.
@@ -254,13 +259,18 @@
     // ang = tile-widths of reach per radian that a neighbour tilts away
     // (angular/curvature gaps — the dominant gap source when a surface BENDS,
     // where centre-to-centre distance is ~preserved but rigid tiles tilt apart)
+    // stiff/iters drive the FASCIA relaxation (see applyMagnet): per frame the
+    // bond network is relaxed a few iterations, each stretched bond dragging
+    // its tiles partway back together — that position pull is what makes
+    // tension PROPAGATE through the sheet (a band of tiles sharing the strain,
+    // like skin) instead of every tile reacting alone at a single seam.
     const MAG = {
-      soft: { strength: 1.8, ang: 1.3, breakBase: 1.1, breakPer: 0.34, maxStretch: 2.8 },  // skin-like, very elastic
-      firm: { strength: 1.2, ang: 0.8, breakBase: 0.55, breakPer: 0.18, maxStretch: 1.9 }, // stiffer, snaps sooner
+      soft: { strength: 1.8, ang: 1.3, breakBase: 1.1, breakPer: 0.34, maxStretch: 2.8, stiff: 0.42, iters: 4 },  // supple: strain spreads wide, stretches far
+      firm: { strength: 1.2, ang: 0.8, breakBase: 0.55, breakPer: 0.18, maxStretch: 1.9, stiff: 0.75, iters: 3 }, // taut fascia: transmits pull harder, snaps sooner
     };
     let mgDirty = true;                      // neighbour graph must be (re)built
-    let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null;
-    let mgCurC = null, mgCurQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // per-frame centres/orientations/normals + eye-blink y-scale
+    let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null, mgIsMoving = null;
+    let mgCurC = null, mgSimC = null, mgCurQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed positions / orientations / normals / blink
     let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
     let litUniform = null;                    // 'lit' PAINT mode: view-space key-light direction, refreshed per frame
     let currentRoot = null;   // kept in the scene graph (meshes hidden) so bone
@@ -802,13 +812,14 @@
       // in: bustGroup-local for static models, world for skinned) — feeds the
       // magnetic neighbour graph, which is (re)built lazily when magnet is on.
       mgN = leaves.length; mgDirty = true;
-      mgCurC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
+      mgCurC = new Float32Array(mgN * 3); mgSimC = new Float32Array(mgN * 3); mgCurQ = new Float32Array(mgN * 4); mgScaleY = new Float32Array(mgN).fill(1);
       mgCurN = new Float32Array(mgN * 3); mgRestN = new Float32Array(mgN * 3);   // surface normals: rest (const) + current
       for (let i = 0; i < mgN; i++) {
         const l = leaves[i]; l._g = i;
         const rx = isSkinned ? l.x : l.x - center.x, ry = isSkinned ? l.y : l.y - center.y, rz = isSkinned ? l.z : l.z - center.z;
         l._rest = [rx, ry, rz];
         mgCurC[i*3] = rx; mgCurC[i*3+1] = ry; mgCurC[i*3+2] = rz;   // init cur = rest (static torso stays here)
+        mgSimC[i*3] = rx; mgSimC[i*3+1] = ry; mgSimC[i*3+2] = rz;
         const nl = Math.hypot(l.nx, l.ny, l.nz) || 1;
         mgRestN[i*3] = mgCurN[i*3] = l.nx/nl; mgRestN[i*3+1] = mgCurN[i*3+1] = l.ny/nl; mgRestN[i*3+2] = mgCurN[i*3+2] = l.nz/nl;
       }
@@ -1147,18 +1158,24 @@
       else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
-    // ---- magnetic stretch: tiles bond to nearest neighbours and stretch to
-    // bridge the gaps that rigid boxes leave when the surface deforms. This is
-    // the meshless "as-rigid-as-possible" idea, but with the rigid rotation
-    // kept from the animation path (robust, since tiles sit on a near-2D
-    // surface where a full deformation-gradient fit is ill-conditioned along
-    // the normal) and only the STRETCH derived from neighbours: a tile grows
-    // along the local direction of any neighbour that has pulled away, by half
-    // the gap (each of the two tiles covers half). A bond breaks when the gap
-    // exceeds a break distance; bonds COMPOUND — the break distance grows with
-    // how many bonds the tile has, so a well-connected tile is more elastic
-    // and a sparsely-connected one snaps early. Cost: one neighbour graph
-    // built lazily per rebuild, then O(tiles·K) per frame. ----
+    // ---- magnetic fascia: tiles bond to nearest neighbours; the bonds both
+    // DRAG (position) and STRETCH (shape). Two stages per frame:
+    //   1. fascia relaxation — position-based dynamics over the bond network:
+    //      every stretched bond pulls its tiles partway back together, so
+    //      tension propagates through the sheet like skin/fascia — a hard pull
+    //      drags a whole band of tiles along a strain gradient instead of
+    //      tearing at one seam line (see applyMagnet pass 2).
+    //   2. magnetic stretch — each tile then grows toward any neighbour still
+    //      pulled away after relaxation (distance term = shear seams, angular
+    //      term = bending, where centres barely move but rigid tiles TILT
+    //      apart), bridging the residual gap. Rigid rotation is kept from the
+    //      animation path (robust — tiles sit on a near-2D surface where a
+    //      full deformation-gradient fit is ill-conditioned along the normal).
+    // A bond releases past its break distance and RE-LATCHES when back in
+    // range (magnets, not welds). Bonds COMPOUND — break distance grows with
+    // bond count, so a well-connected tile is more elastic and a sparsely-
+    // connected one snaps early. Cost: one lazily-built neighbour graph per
+    // rebuild, then O(tiles·K·iters) per frame. ----
     function ensureMagnetGraph() {
       if (!mgDirty || !currentLeaves) return;
       mgDirty = false;
@@ -1167,8 +1184,10 @@
       mgNbrRest = new Float32Array(N*K);
       mgNbrRestAng = new Float32Array(N*K);   // rest angle between the two tiles' surface normals
       mgNbrCount = new Uint8Array(N);
+      mgIsMoving = new Uint8Array(N);         // 1 = animated tile (participates in relaxation); 0 = static anchor
       const moving = isSkinned ? mgMovingSkinned : headLeaves;
       if (!moving || !moving.length) return;
+      for (const l of moving) mgIsMoving[l._g] = 1;
       // spatial hash over rest centres (mgCurC still == rest here for static
       // parts; for skinned, rest == world bind position, also in mgCurC).
       // Only neighbour INDEX + rest DISTANCE are stored — the stretch
@@ -1225,9 +1244,44 @@
         _magDir.copy(_zAxis).applyQuaternion(_magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]));
         mgCurN[g*3]=_magDir.x; mgCurN[g*3+1]=_magDir.y; mgCurN[g*3+2]=_magDir.z;
       }
+      // pass 2 — FASCIA RELAXATION (position-based dynamics): start every
+      // moving tile at its animation-driven target, then iterate the bond
+      // network, each over-stretched bond dragging its tile back toward the
+      // neighbour (half-weight when the neighbour is animated too, since it
+      // pulls its own side; full toward a static anchor). This is what makes
+      // the sheet behave like skin/fascia: tension PROPAGATES — a hard pull
+      // in one place drags a whole band of tiles partway along, distributing
+      // the strain across the band instead of tearing at a single seam line.
+      // Broken bonds (past break distance) exert no pull, and RE-LATCH
+      // automatically once back within range — they're magnets, not welds.
+      // Stateless per frame (positions re-seeded from the animation), so
+      // there's no drift and no lag once the strain is gone.
+      for (const l of moving) {
+        const g3 = l._g * 3;
+        mgSimC[g3] = mgCurC[g3]; mgSimC[g3+1] = mgCurC[g3+1]; mgSimC[g3+2] = mgCurC[g3+2];
+      }
+      for (let it = 0; it < cfg.iters; it++) {
+        for (const l of moving) {
+          const g = l._g, cnt = mgNbrCount[g];
+          if (!cnt) continue;
+          const breakDist = l.s * (cfg.breakBase + cfg.breakPer * (cnt - 1));
+          let px = mgSimC[g*3], py = mgSimC[g*3+1], pz = mgSimC[g*3+2];
+          for (let k = 0; k < cnt; k++) {
+            const j = mgNbrIdx[g*K+k];
+            const ox = mgSimC[j*3]-px, oy = mgSimC[j*3+1]-py, oz = mgSimC[j*3+2]-pz;
+            const d = Math.hypot(ox,oy,oz) || 1e-6;
+            const strain = d - mgNbrRest[g*K+k];
+            if (strain <= 0 || strain > breakDist) continue;   // slack, or bond released
+            const w = mgIsMoving[j] ? 0.5 : 0.95;              // static anchors pull harder (they won't meet us halfway)
+            const c = (strain * cfg.stiff * w) / d;
+            px += ox*c; py += oy*c; pz += oz*c;
+          }
+          mgSimC[g*3] = px; mgSimC[g*3+1] = py; mgSimC[g*3+2] = pz;
+        }
+      }
       for (const l of moving) {
         const g = l._g, cnt = mgNbrCount[g];
-        const cx = mgCurC[g*3], cy = mgCurC[g*3+1], cz = mgCurC[g*3+2];
+        const cx = mgSimC[g*3], cy = mgSimC[g*3+1], cz = mgSimC[g*3+2];
         _magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]);
         _magIQ.copy(_magQ).invert();   // world → this tile's current local frame
         const gnx=mgCurN[g*3], gny=mgCurN[g*3+1], gnz=mgCurN[g*3+2];
@@ -1236,7 +1290,9 @@
         const breakDist = l.s * (cfg.breakBase + cfg.breakPer * (cnt>0 ? cnt-1 : 0));
         for (let k = 0; k < cnt; k++) {
           const j = mgNbrIdx[g*K+k];
-          const ox=mgCurC[j*3]-cx, oy=mgCurC[j*3+1]-cy, oz=mgCurC[j*3+2]-cz;
+          // neighbour positions from the RELAXED state — the stretch bridges
+          // whatever strain the fascia relaxation couldn't absorb
+          const ox=mgSimC[j*3]-cx, oy=mgSimC[j*3+1]-cy, oz=mgSimC[j*3+2]-cz;
           const d = Math.hypot(ox,oy,oz) || 1e-6;
           // distance gap (shear — head-turn boundary) AND angular gap
           // (curvature — bending, where centres barely move but tiles tilt
