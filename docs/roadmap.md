@@ -541,6 +541,32 @@
       Verified: hard-left neck test shows the lattice holding together —
       band drags, no rift; magnet-off restores statics; default load
       regression-free.
+- [x] **Fascia round 5: force COMPOUNDING — "grab skin and pull".** User
+      (with circle-mosaic portrait references and a hinged Victorian Masonic
+      pendant as the connected-tiles metaphor): "there's a little pull and
+      movement with magnetism, but either the bond isn't strong enough or
+      the neighbouring tiles aren't enough — there's no compounding of
+      force," contrasting with real skin, where grabbing a pinch recruits a
+      wide patch of surrounding tissue. Two structural causes found:
+      · bonds only existed on MOVING tiles, so the recruited skirt was
+        exactly one bond-hop wide — force literally could not compound
+        deeper. Bonds are now built for EVERY tile, and the lattice recruits
+        statics via multi-hop BFS through the bond graph (RING=4 hops); the
+        whole recruited patch participates fully in relaxation AND the
+        stretch pass (unified code path — recruited statics' mgCurC/mgCurQ
+        hold rest, so the same loop treats them uniformly).
+      · anchors dominated bonds — every tile was yanked to its target so
+        hard that bond pull barely accumulated. Rebalanced so bond cohesion
+        dominates (stiff 0.85–1.0, anchors cut ~2.5x): skin is strongly
+        bonded to itself, only loosely attached to the bone underneath. The
+        weaker animation anchor also adds a natural viscous lag (secondary
+        motion) — the sheet settles into a pose rather than teleporting.
+      Verified off-vs-soft on the hard-left turn: the whole neck/collar/
+      upper-chest patch is now recruited and follows as one connected sheet,
+      vs. the one-tile skirt before. Note: bonds-for-every-tile roughly
+      doubles graph-build cost (still lazy, once per rebuild) and the
+      lattice loop covers moving+ring rather than moving — partially offset
+      by the earlier iters cuts; re-measure FPS on-device.
 - [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
       colour ratio instead of a white sheen.** User: "instead of adding a
       sheen... add the real time sheen into the pattern colour ratio of the
