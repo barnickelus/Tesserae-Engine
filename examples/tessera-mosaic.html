@@ -270,9 +270,14 @@
     // relaxing across time like a real atomic lattice, so strain propagates
     // far beyond iters bond-hops without more per-frame cost, and released
     // regions spring back over a few frames instead of snapping.
+    // Force balance is what makes it read as SKIN: bond cohesion must
+    // dominate the anchors (skin is strongly bonded to itself, only loosely
+    // attached to the bone underneath — grab a pinch and a wide patch of
+    // surrounding skin comes with it). Weak anchors + stiff bonds + a
+    // multi-hop recruited ring = force COMPOUNDS through the sheet.
     const MAG = {
-      soft: { strength: 1.8, ang: 1.3, breakBase: 1.4, breakPer: 0.34, maxStretch: 2.8, stiff: 0.42, iters: 3, anchor: 6,  anchorStatic: 16 },  // supple: strain spreads wide, stretches far
-      firm: { strength: 1.2, ang: 0.8, breakBase: 0.85, breakPer: 0.2,  maxStretch: 1.9, stiff: 0.7,  iters: 2, anchor: 10, anchorStatic: 24 }, // taut fascia: transmits pull harder, snaps sooner
+      soft: { strength: 1.8, ang: 1.3, breakBase: 1.5, breakPer: 0.34, maxStretch: 2.8, stiff: 0.85, iters: 4, anchor: 2.5, anchorStatic: 5 },  // supple: pull recruits a wide patch, stretches far
+      firm: { strength: 1.2, ang: 0.8, breakBase: 0.95, breakPer: 0.2,  maxStretch: 1.9, stiff: 1.0,  iters: 3, anchor: 4.5, anchorStatic: 9 }, // taut fascia: transmits pull harder, snaps sooner
     };
     let mgDirty = true;                      // neighbour graph must be (re)built
     let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null, mgIsMoving = null;
@@ -1239,8 +1244,13 @@
         const ix = Math.floor(mgRestC[i*3]/cell), iy = Math.floor(mgRestC[i*3+1]/cell), iz = Math.floor(mgRestC[i*3+2]/cell);
         const kk = key(ix,iy,iz); let arr = grid.get(kk); if (!arr) grid.set(kk, arr = []); arr.push(i);
       }
+      // bonds for EVERY tile (not just moving ones) — required for force to
+      // COMPOUND through the sheet: a pulled tile pulls its neighbours, which
+      // pull THEIR neighbours, hop after hop, the way grabbed skin recruits
+      // the whole surrounding patch. When only moving tiles had bonds, the
+      // recruited skirt was exactly one tile wide and the pull died there.
       const cand = [];
-      for (const l of moving) {
+      for (const l of currentLeaves) {
         const g = l._g, R = l.s * 2.6, R2 = R*R;
         const cx = mgRestC[g*3], cy = mgRestC[g*3+1], cz = mgRestC[g*3+2];
         const ix = Math.floor(cx/cell), iy = Math.floor(cy/cell), iz = Math.floor(cz/cell);
@@ -1265,20 +1275,28 @@
           mgNbrRestAng[g*K+k] = Math.acos(dot);
         }
       }
-      // the LATTICE = moving tiles + every static tile their bonds touch.
-      // Statics in the lattice are compliant anchors: they can be dragged a
-      // little (reciprocity — atoms pull back on each other; the chest gives
-      // slightly when the head pulls) while a strong spring holds them near
-      // rest. Statics beyond this ring never move.
+      // the LATTICE = moving tiles + static tiles within RING bond-hops of
+      // them (BFS through the bond graph). Recruited statics are compliant:
+      // they participate fully in the relaxation — dragged by bonds, pulled
+      // home by an anchor spring — so a hard pull recruits a whole PATCH of
+      // surrounding tissue (compounding), not a one-tile skirt. Statics
+      // beyond the ring never move.
+      const RING = 4;
       mgInLattice = new Uint8Array(N);
       mgLattice = [];
-      for (const l of moving) { mgInLattice[l._g] = 1; mgLattice.push(l); }
-      for (const l of moving) {
-        const g = l._g, cnt = mgNbrCount[g];
-        for (let k = 0; k < cnt; k++) {
-          const j = mgNbrIdx[g*K+k];
-          if (!mgInLattice[j]) { mgInLattice[j] = 1; mgLattice.push(currentLeaves[j]); }
+      let frontier = [];
+      for (const l of moving) { mgInLattice[l._g] = 1; mgLattice.push(l); frontier.push(l._g); }
+      for (let hop = 0; hop < RING; hop++) {
+        const next = [];
+        for (const g of frontier) {
+          const cnt = mgNbrCount[g];
+          for (let k = 0; k < cnt; k++) {
+            const j = mgNbrIdx[g*K+k];
+            if (!mgInLattice[j]) { mgInLattice[j] = 1; mgLattice.push(currentLeaves[j]); next.push(j); }
+          }
         }
+        frontier = next;
+        if (!frontier.length) break;
       }
     }
     const _magQ = new THREE.Quaternion(), _magQ2 = new THREE.Quaternion(), _magIQ = new THREE.Quaternion(), _magDir = new THREE.Vector3();
@@ -1289,10 +1307,10 @@
       if (!moving || !moving.length) { for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true; return; }
       const cfg = MAG[magnet], K = MAG_K;
       const le = _magLin.elements;
-      // pass 1: refresh each moving tile's current surface normal (local +Z
+      // pass 1: refresh each lattice tile's current surface normal (local +Z
       // rotated by its current orientation) so the angular-gap term below can
-      // read neighbours' live normals (static neighbours keep their rest normal)
-      for (const l of moving) {
+      // read neighbours' live normals (statics hold rest orientation in mgCurQ)
+      for (const l of mgLattice) {
         const g = l._g;
         _magDir.copy(_zAxis).applyQuaternion(_magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]));
         mgCurN[g*3]=_magDir.x; mgCurN[g*3+1]=_magDir.y; mgCurN[g*3+2]=_magDir.z;
@@ -1323,7 +1341,7 @@
         mgSimC[g3+2] += (T[g3+2] - mgSimC[g3+2]) * k;
       }
       for (let it = 0; it < cfg.iters; it++) {
-        for (const l of moving) {
+        for (const l of mgLattice) {
           const g = l._g, cnt = mgNbrCount[g];
           if (!cnt) continue;
           const breakDist = l.s * (cfg.breakBase + cfg.breakPer * (cnt - 1));
@@ -1339,24 +1357,17 @@
             else if (strain < -0.18 * l.s) c = ((strain + 0.18*l.s) * cfg.stiff * 0.25) / d;  // deep compression: push apart (volume push-back; dead zone so resting contact doesn't jiggle)
             else continue;                                     // gently compressed: skin tolerates this
             px += ox*c; py += oy*c; pz += oz*c;
-            // reciprocal correction — the other end moves too (atoms pull back)
-            mgSimC[j*3] -= ox*c; mgSimC[j*3+1] -= oy*c; mgSimC[j*3+2] -= oz*c;
+            // reciprocal correction — the other end moves too (atoms pull
+            // back), unless it's beyond the recruited ring (frozen)
+            if (mgInLattice[j]) { mgSimC[j*3] -= ox*c; mgSimC[j*3+1] -= oy*c; mgSimC[j*3+2] -= oz*c; }
           }
           mgSimC[g*3] = px; mgSimC[g*3+1] = py; mgSimC[g*3+2] = pz;
         }
       }
-      // dragged compliant statics: write their instance matrices (rest
-      // orientation and scale, relaxed position) — they're part of the sheet
+      // final pass over the WHOLE lattice — recruited statics stretch and
+      // bridge exactly like moving tiles (their mgCurC/mgCurQ hold rest, so
+      // the same code path treats them uniformly)
       for (const l of mgLattice) {
-        const g = l._g;
-        if (mgIsMoving[g]) continue;
-        _magQ.set(mgRestQ[g*4], mgRestQ[g*4+1], mgRestQ[g*4+2], mgRestQ[g*4+3]);
-        _magOut.makeRotationFromQuaternion(_magQ);
-        _magOut.scale(l._baseS);
-        const oe = _magOut.elements; oe[12]=mgSimC[g*3]; oe[13]=mgSimC[g*3+1]; oe[14]=mgSimC[g*3+2];
-        l._mesh.setMatrixAt(l._idx, _magOut);
-      }
-      for (const l of moving) {
         const g = l._g, cnt = mgNbrCount[g];
         const cx = mgSimC[g*3], cy = mgSimC[g*3+1], cz = mgSimC[g*3+2];
         _magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]);
