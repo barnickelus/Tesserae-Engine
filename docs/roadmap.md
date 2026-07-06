@@ -510,6 +510,37 @@
       neck test, which happens to exercise the exact bug scenario (magnet
       toggled while the head is held hard-left): band drags correctly from
       true rest; default load regression-free.
+- [x] **Fascia round 4: "bond the way atoms do" — persistence, reciprocity,
+      compliant anchors.** User's marked-up on-device screenshot (100%
+      abstraction, firm, head turned) showed exactly what was still wrong:
+      big open rifts tearing across the neck/chest, plates of tiles
+      separating like continents. Three physics gaps mapped to it:
+      · no reciprocity — bonds only pulled the MOVING tile; the static side
+        never gave. Newton's third law now applies: bond corrections move
+        both ends (Gauss-Seidel, half each), and the "static" tiles a bond
+        touches join the lattice as COMPLIANT ANCHORS — draggable a little,
+        with a strong dt-scaled spring back to rest (the chest pulls up
+        slightly when the head turns). Their matrices are now written per
+        frame too, and restored to rest when the magnet switches off (the
+        animation paths never rewrite them).
+      · no persistence — positions were re-seeded from the animation every
+        frame, so strain could only propagate `iters` bond-hops per frame;
+        it piled up at the moving/static boundary until those bonds snapped
+        into one giant fissure. The sim positions now PERSIST between frames
+        with a per-second anchor spring toward the target: strain keeps
+        propagating across frames like a real lattice relaxing, iters could
+        drop (4→3 soft, 3→2 firm — a perf win at the same time), and a
+        released region springs back over a few frames instead of popping.
+      · bonds gave up too early — breakBase raised (1.1→1.4 soft,
+        0.55→0.85 firm) since distributed strain means each bond individually
+        stretches less before the lattice as a whole absorbs the motion.
+      The user's screenshot also showed 19fps at 19.7k tiles with firm on
+      (vs 60 with magnet off) — the iters reduction plus the earlier
+      hypot→sqrt swap are the perf levers applied; worth re-measuring
+      on-device.
+      Verified: hard-left neck test shows the lattice holding together —
+      band drags, no rift; magnet-off restores statics; default load
+      regression-free.
 - [x] **`lit` PAINT mode — real-time scene light baked into the divisionist
       colour ratio instead of a white sheen.** User: "instead of adding a
       sheen... add the real time sheen into the pattern colour ratio of the

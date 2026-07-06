@@ -264,12 +264,19 @@
     // its tiles partway back together — that position pull is what makes
     // tension PROPAGATE through the sheet (a band of tiles sharing the strain,
     // like skin) instead of every tile reacting alone at a single seam.
+    // anchor / anchorStatic = per-second spring rates pulling a lattice tile
+    // toward its target (animated pose, or rest for compliant static anchors).
+    // The simulated positions PERSIST between frames — the lattice keeps
+    // relaxing across time like a real atomic lattice, so strain propagates
+    // far beyond iters bond-hops without more per-frame cost, and released
+    // regions spring back over a few frames instead of snapping.
     const MAG = {
-      soft: { strength: 1.8, ang: 1.3, breakBase: 1.1, breakPer: 0.34, maxStretch: 2.8, stiff: 0.42, iters: 4 },  // supple: strain spreads wide, stretches far
-      firm: { strength: 1.2, ang: 0.8, breakBase: 0.55, breakPer: 0.18, maxStretch: 1.9, stiff: 0.75, iters: 3 }, // taut fascia: transmits pull harder, snaps sooner
+      soft: { strength: 1.8, ang: 1.3, breakBase: 1.4, breakPer: 0.34, maxStretch: 2.8, stiff: 0.42, iters: 3, anchor: 6,  anchorStatic: 16 },  // supple: strain spreads wide, stretches far
+      firm: { strength: 1.2, ang: 0.8, breakBase: 0.85, breakPer: 0.2,  maxStretch: 1.9, stiff: 0.7,  iters: 2, anchor: 10, anchorStatic: 24 }, // taut fascia: transmits pull harder, snaps sooner
     };
     let mgDirty = true;                      // neighbour graph must be (re)built
     let mgN = 0, mgNbrIdx = null, mgNbrRest = null, mgNbrRestAng = null, mgNbrCount = null, mgIsMoving = null;
+    let mgLattice = null, mgInLattice = null;   // moving tiles + the static tiles their bonds touch (compliant anchors)
     let mgCurC = null, mgSimC = null, mgRestC = null, mgCurQ = null, mgRestQ = null, mgCurN = null, mgRestN = null, mgScaleY = null;   // animated targets / relaxed / rest positions / orientations (cur + rest) / normals / blink
     let mgMovingSkinned = null;              // cached list of non-rigid leaves (skinned models)
     let litUniform = null;                    // 'lit' PAINT mode: view-space key-light direction, refreshed per frame
@@ -763,10 +770,16 @@
         const shrink = shapeId === 2 ? inset*0.92 : inset;
         s.set(l.s * shrink, l.s * shrink, l.s);
         m.compose(p, q, s); mesh.setMatrixAt(j, m);
-        // rest orientation, for the fascia orientation-drag blend (applyMagnet)
+        // rest orientation (also seeds current — static tiles are never
+        // animated but can now be dragged by the magnet lattice, which reads
+        // mgCurQ), for the fascia orientation-drag blend (applyMagnet)
         mgRestQ[l._g*4]=q.x; mgRestQ[l._g*4+1]=q.y; mgRestQ[l._g*4+2]=q.z; mgRestQ[l._g*4+3]=q.w;
-        if (isSkinned) { l._mesh = mesh; l._idx = j; l._bindQ = q.clone(); l._baseS = s.clone(); }
-        else if (l.isHead) { l._mesh = mesh; l._idx = j; l._baseP = p.clone(); l._baseQ = q.clone(); l._baseS = s.clone(); headLeaves.push(l); }
+        mgCurQ[l._g*4]=q.x; mgCurQ[l._g*4+1]=q.y; mgCurQ[l._g*4+2]=q.z; mgCurQ[l._g*4+3]=q.w;
+        // every tile keeps its instance handle — the magnet lattice can drag
+        // nominally-static tiles (compliant anchors), so all need writability
+        l._mesh = mesh; l._idx = j; l._baseS = s.clone();
+        if (isSkinned) { l._bindQ = q.clone(); }
+        else if (l.isHead) { l._baseP = p.clone(); l._baseQ = q.clone(); headLeaves.push(l); }
         if (rgbMode) {
           linearCoverage(l, _cov3);
           covArr[j*3]=_cov3[0]; covArr[j*3+1]=_cov3[1]; covArr[j*3+2]=_cov3[2];
@@ -969,7 +982,25 @@
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
     makeButtons('paint-group', ['pure','muted','flat','rgb','blobs','lit'], paintMode, x => x, x => { paintMode = x; repaint(); });
     makeButtons('color-group', ['source','importance','material','flat'], colorMode, x => x, x => { colorMode = x; repaint(); });
-    makeButtons('magnet-group', ['off','soft','firm'], magnet, x => x, x => { magnet = x; });
+    makeButtons('magnet-group', ['off','soft','firm'], magnet, x => x, x => {
+      magnet = x;
+      if (x === 'off' && mgLattice) {
+        // restore dragged compliant statics to rest (the animation paths only
+        // rewrite MOVING tiles' matrices) and reset the persistent sim so
+        // re-enabling starts from a clean lattice
+        const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+        for (const l of mgLattice) {
+          const g = l._g;
+          mgSimC[g*3]=mgRestC[g*3]; mgSimC[g*3+1]=mgRestC[g*3+1]; mgSimC[g*3+2]=mgRestC[g*3+2];
+          if (mgIsMoving[g]) continue;
+          q.set(mgRestQ[g*4], mgRestQ[g*4+1], mgRestQ[g*4+2], mgRestQ[g*4+3]);
+          m.makeRotationFromQuaternion(q); m.scale(l._baseS);
+          const e = m.elements; e[12]=mgRestC[g*3]; e[13]=mgRestC[g*3+1]; e[14]=mgRestC[g*3+2];
+          l._mesh.setMatrixAt(l._idx, m);
+          l._mesh.instanceMatrix.needsUpdate = true;
+        }
+      }
+    });
     makeButtons('split-group', Object.keys(SPLITS), colorSplit, x => x, x => { colorSplit = x; repaint(); });
     let idleOn = true, lookCursor = false;
     (function viewButtons(){ const g = document.getElementById('view-group');
@@ -1069,7 +1100,7 @@
           l._mesh.setMatrixAt(l._idx, _headM);
         }
       }
-      if (magnetOn) applyMagnet(headLeaves);
+      if (magnetOn) applyMagnet(headLeaves, dt);
       else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
@@ -1125,7 +1156,7 @@
       out.set(x/len, y/len, z/len, w/len);
     }
     const _spVec = new THREE.Vector3();
-    function updateSkin() {
+    function updateSkin(dt) {
       if (!isSkinned || !currentLeaves) return;
       computeBoneDeltas();
       const magnetOn = magnet !== 'off';
@@ -1158,7 +1189,7 @@
           l._mesh.setMatrixAt(l._idx, _skM2);
         }
       }
-      if (magnetOn) applyMagnet(mgMovingSkinned);
+      if (magnetOn) applyMagnet(mgMovingSkinned, dt);
       else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
@@ -1234,11 +1265,26 @@
           mgNbrRestAng[g*K+k] = Math.acos(dot);
         }
       }
+      // the LATTICE = moving tiles + every static tile their bonds touch.
+      // Statics in the lattice are compliant anchors: they can be dragged a
+      // little (reciprocity — atoms pull back on each other; the chest gives
+      // slightly when the head pulls) while a strong spring holds them near
+      // rest. Statics beyond this ring never move.
+      mgInLattice = new Uint8Array(N);
+      mgLattice = [];
+      for (const l of moving) { mgInLattice[l._g] = 1; mgLattice.push(l); }
+      for (const l of moving) {
+        const g = l._g, cnt = mgNbrCount[g];
+        for (let k = 0; k < cnt; k++) {
+          const j = mgNbrIdx[g*K+k];
+          if (!mgInLattice[j]) { mgInLattice[j] = 1; mgLattice.push(currentLeaves[j]); }
+        }
+      }
     }
     const _magQ = new THREE.Quaternion(), _magQ2 = new THREE.Quaternion(), _magIQ = new THREE.Quaternion(), _magDir = new THREE.Vector3();
     const _magRot = new THREE.Matrix4(), _magLin = new THREE.Matrix4(), _magOut = new THREE.Matrix4();
     const _zAxis = new THREE.Vector3(0, 0, 1);
-    function applyMagnet(moving) {
+    function applyMagnet(moving, dt) {
       ensureMagnetGraph();
       if (!moving || !moving.length) { for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true; return; }
       const cfg = MAG[magnet], K = MAG_K;
@@ -1251,21 +1297,30 @@
         _magDir.copy(_zAxis).applyQuaternion(_magQ.set(mgCurQ[g*4], mgCurQ[g*4+1], mgCurQ[g*4+2], mgCurQ[g*4+3]));
         mgCurN[g*3]=_magDir.x; mgCurN[g*3+1]=_magDir.y; mgCurN[g*3+2]=_magDir.z;
       }
-      // pass 2 — FASCIA RELAXATION (position-based dynamics): start every
-      // moving tile at its animation-driven target, then iterate the bond
-      // network, each over-stretched bond dragging its tile back toward the
-      // neighbour (half-weight when the neighbour is animated too, since it
-      // pulls its own side; full toward a static anchor). This is what makes
-      // the sheet behave like skin/fascia: tension PROPAGATES — a hard pull
-      // in one place drags a whole band of tiles partway along, distributing
-      // the strain across the band instead of tearing at a single seam line.
-      // Broken bonds (past break distance) exert no pull, and RE-LATCH
-      // automatically once back within range — they're magnets, not welds.
-      // Stateless per frame (positions re-seeded from the animation), so
-      // there's no drift and no lag once the strain is gone.
-      for (const l of moving) {
-        const g3 = l._g * 3;
-        mgSimC[g3] = mgCurC[g3]; mgSimC[g3+1] = mgCurC[g3+1]; mgSimC[g3+2] = mgCurC[g3+2];
+      // pass 2 — ATOMIC-LATTICE RELAXATION (position-based dynamics with
+      // persistence + reciprocity):
+      //   · positions PERSIST between frames; an anchor spring eases each
+      //     lattice tile toward its target (the animated pose for moving
+      //     tiles, rest for the compliant static ring) at a dt-scaled rate,
+      //     so strain keeps propagating across FRAMES, not just iters
+      //     bond-hops — the whole lattice deforms elastically like a crystal
+      //     instead of piling all the strain onto the boundary bonds until
+      //     they tear one big rift;
+      //   · bond corrections are SYMMETRIC (Newton's third law): both ends
+      //     of a stretched bond move toward each other, so the nominally
+      //     static side gives a little too (the chest pulls up when the head
+      //     turns), instead of one side absorbing everything;
+      //   · broken bonds (past break distance) exert no pull and RE-LATCH
+      //     automatically once back within range — magnets, not welds; with
+      //     persistence, a released region springs back over a few frames.
+      const dtc = Math.min(0.1, dt || 0.016);
+      const kMove = 1 - Math.exp(-cfg.anchor * dtc), kStat = 1 - Math.exp(-cfg.anchorStatic * dtc);
+      for (const l of mgLattice) {
+        const g3 = l._g * 3, mv = mgIsMoving[l._g];
+        const k = mv ? kMove : kStat, T = mv ? mgCurC : mgRestC;
+        mgSimC[g3]   += (T[g3]   - mgSimC[g3])   * k;
+        mgSimC[g3+1] += (T[g3+1] - mgSimC[g3+1]) * k;
+        mgSimC[g3+2] += (T[g3+2] - mgSimC[g3+2]) * k;
       }
       for (let it = 0; it < cfg.iters; it++) {
         for (const l of moving) {
@@ -1279,15 +1334,27 @@
             const d = Math.sqrt(ox*ox+oy*oy+oz*oz) || 1e-6;   // sqrt, not hypot — ~4x faster in this per-frame hot loop
             const strain = d - mgNbrRest[g*K+k];
             if (strain > breakDist) continue;                  // bond released (re-latches in range)
-            const w = mgIsMoving[j] ? 0.5 : 0.95;              // static anchors pull harder (they won't meet us halfway)
             let c;
-            if (strain > 0) c = (strain * cfg.stiff * w) / d;                       // tension: pull together
-            else if (strain < -0.18 * l.s) c = ((strain + 0.18*l.s) * cfg.stiff * 0.5 * w) / d;  // deep compression: push apart (volume push-back; dead zone so resting contact doesn't jiggle)
+            if (strain > 0) c = (strain * cfg.stiff * 0.5) / d;                     // tension: pull together, half each
+            else if (strain < -0.18 * l.s) c = ((strain + 0.18*l.s) * cfg.stiff * 0.25) / d;  // deep compression: push apart (volume push-back; dead zone so resting contact doesn't jiggle)
             else continue;                                     // gently compressed: skin tolerates this
             px += ox*c; py += oy*c; pz += oz*c;
+            // reciprocal correction — the other end moves too (atoms pull back)
+            mgSimC[j*3] -= ox*c; mgSimC[j*3+1] -= oy*c; mgSimC[j*3+2] -= oz*c;
           }
           mgSimC[g*3] = px; mgSimC[g*3+1] = py; mgSimC[g*3+2] = pz;
         }
+      }
+      // dragged compliant statics: write their instance matrices (rest
+      // orientation and scale, relaxed position) — they're part of the sheet
+      for (const l of mgLattice) {
+        const g = l._g;
+        if (mgIsMoving[g]) continue;
+        _magQ.set(mgRestQ[g*4], mgRestQ[g*4+1], mgRestQ[g*4+2], mgRestQ[g*4+3]);
+        _magOut.makeRotationFromQuaternion(_magQ);
+        _magOut.scale(l._baseS);
+        const oe = _magOut.elements; oe[12]=mgSimC[g*3]; oe[13]=mgSimC[g*3+1]; oe[14]=mgSimC[g*3+2];
+        l._mesh.setMatrixAt(l._idx, _magOut);
       }
       for (const l of moving) {
         const g = l._g, cnt = mgNbrCount[g];
@@ -1360,7 +1427,7 @@
         fpsEl.className = 'v ' + (smoothed >= 50 ? 'fps-good' : smoothed >= 30 ? 'fps-mid' : 'fps-bad');
         acc = 0; frames = 0;
       }
-      if (isSkinned) { if (mixer) mixer.update(dt); updateSkin(); }
+      if (isSkinned) { if (mixer) mixer.update(dt); updateSkin(dt); }
       else { updateMotion(now/1000, dt); updateHeadAndBlink(dt); }
       // 'lit' PAINT mode: refresh the key light's direction in VIEW space (the
       // shader reads the view-space vNormal), so the colour-ratio sheen tracks
