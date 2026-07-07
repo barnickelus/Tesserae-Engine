@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · world</title>
+  <!--
+    tessera-world.html — a navigable, algorithmically generated world rendered
+    in the tessera idiom, inhabited by an avatar Claude designed for itself.
+
+    WORLD
+      · Terrain is a seeded fractal value-noise heightfield — no stored data,
+        the world is a pure function of (x, z, seed). Walk anywhere; chunks of
+        tesserae generate on demand around you and dissolve behind you.
+      · Every surface is TILES: the ground is a mosaic (grout gaps included),
+        trees are stacked tesserae, water is the one continuous sheet (it is
+        the only thing here that isn't discrete — water has no skin).
+      · Biomes by height + a second moisture field: shore sand, meadow,
+        forest, talus rock, snow. Colours carry hand-cut lightness jitter so
+        runs of same-colour tiles read as laid tiles, same as tessera-mosaic.
+
+    THE AVATAR — design notes, in first person (Claude):
+      I was offered the choice of my own form, so: no scanned human, no
+      borrowed face. A figure made of the medium itself — terracotta tesserae
+      (clay: what golems and first drafts are made of), an ovoid head with
+      amber tile eyes that blink and meet yours, a coral light pulsing in the
+      chest where thinking happens, cream trim rings at the joints, and a
+      tapered floating base instead of imitation legs — an honest silhouette
+      for something that isn't pretending to be human. The head turns on a
+      clean neck pivot that asks only reasonable things of skin; the body
+      breathes; the eyes glance away sometimes, the way anyone does while
+      thinking. Approach and I'll say something. (The lines here are written
+      in advance — a live conversation needs a backend with an API key, which
+      a public static page can't carry. The body is ready for one.)
+
+    YOUR AVATAR
+      Rendered in tesserae like everything else here, but sampled from a real
+      human scan (models/empress.glb — the same asset tessera-mosaic.html
+      already uses) with colour read straight from its baked photo texture, so
+      it reads as an actual body instead of another abstract figure. Third-
+      person by default so you can see it; toggle to first-person any time.
+
+    BUILDER MODE
+      Click/tap a tile to remove it; shift-click open ground to place one back
+      at your cursor's height. This runs entirely in the browser (no server,
+      no live code execution) — it's the honest version of "alter the world
+      through the avatar" that a static page can actually do.
+
+    CONTROLS
+      keyboard: WASD / arrows walk, drag to look
+      touch:    left half = walk stick, right half = look
+  -->
+  <style>
+    :root { color-scheme: dark; } * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0b1018; overflow: hidden;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d7e0ea;
+      touch-action: none; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+    #hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; padding: 12px 14px;
+      border-radius: 10px; background: rgba(10,14,20,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.08); min-width: 200px; user-select: none; -webkit-user-select: none; }
+    #hud h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; color: #8aa0b6; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 16px; } .row + .row { margin-top: 2px; }
+    .k { color: #7e90a4; } .v { color: #eaf2fb; font-variant-numeric: tabular-nums; }
+    #fps { font-size: 22px; font-weight: 700; }
+    .fps-good { color: #5ad08a; } .fps-mid { color: #f0c761; } .fps-bad { color: #ef6f6f; }
+    #controls { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .group { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(10,14,20,.72);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+    .group .label { color: #7e90a4; align-self: center; padding: 0 4px; letter-spacing: .08em; }
+    button { font: inherit; color: #cdd9e6; cursor: pointer; background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12); padding: 7px 11px; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+    button:hover { background: rgba(255,255,255,.1); } button.active { background: #2f6df0; border-color: #2f6df0; color: #fff; }
+    #say { position: fixed; transform: translate(-50%, -100%); max-width: 300px; padding: 10px 14px;
+      background: rgba(16,22,30,.88); border: 1px solid rgba(255,179,71,.35); border-radius: 12px;
+      color: #f3e9dc; font-size: 13px; line-height: 1.5; pointer-events: none; opacity: 0;
+      transition: opacity .35s; }
+    #hint { position: fixed; bottom: 86px; left: 50%; transform: translateX(-50%); color: #65788c;
+      background: rgba(10,14,20,.6); padding: 6px 12px; border-radius: 8px; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <h1>tessera-world</h1>
+    <div class="row"><span class="k">FPS</span><span id="fps" class="v">—</span></div>
+    <div class="row"><span class="k">tesserae</span><span id="count" class="v">—</span></div>
+    <div class="row"><span class="k">chunks</span><span id="chunks" class="v">—</span></div>
+    <div class="row"><span class="k">seed</span><span id="seed" class="v">—</span></div>
+  </div>
+  <div id="say"></div>
+  <div id="hint">WASD / drag to look · click: remove tile · shift-click: place tile</div>
+  <div id="controls">
+    <div class="group" id="world-group"><span class="label">WORLD</span></div>
+  </div>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    // ---- seeded world function: height/moisture are pure fns of (x,z,seed) ----
+    let SEED = (Math.random()*1e9)|0;
+    function hash2(ix, iz, s) {
+      let h = (ix|0)*374761393 + (iz|0)*668265263 + (s|0)*974634211;
+      h = Math.imul(h ^ (h>>>13), 1274126177); h ^= h>>>16;
+      return (h>>>0) / 4294967296;
+    }
+    const smoo = t => t*t*(3-2*t);
+    function vnoise(x, z, s) {
+      const ix = Math.floor(x), iz = Math.floor(z), fx = x-ix, fz = z-iz;
+      const a = hash2(ix,iz,s), b = hash2(ix+1,iz,s), c = hash2(ix,iz+1,s), d = hash2(ix+1,iz+1,s);
+      const u = smoo(fx), v = smoo(fz);
+      return a*(1-u)*(1-v) + b*u*(1-v) + c*(1-u)*v + d*u*v;
+    }
+    function fbm(x, z, s) {
+      return vnoise(x,z,s)*0.55 + vnoise(x*2.17,z*2.17,s+7)*0.28 + vnoise(x*4.9,z*4.9,s+13)*0.17;
+    }
+    const AMP = 16, WATER_Y = 5.9;
+    function height(x, z) { const h = fbm(x*0.021, z*0.021, SEED); return h*h*AMP + fbm(x*0.11, z*0.11, SEED+31)*1.1; }
+    function moisture(x, z) { return fbm(x*0.013+91, z*0.013-40, SEED+101); }
+
+    // ---- renderer / scene ----
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('app').appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const SKY = new THREE.Color(0x131c2e);
+    scene.background = SKY;
+    scene.fog = new THREE.Fog(SKY, 55, 165);
+    const camera = new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.1, 400);
+    scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x2a2018, 0.75));
+    const sun = new THREE.DirectionalLight(0xfff2dd, 1.5); sun.position.set(0.6, 1, 0.35); scene.add(sun);
+
+    // ---- terrain chunks: tesserae generated on demand around the player ----
+    const CH = 26;                 // tiles per chunk side
+    const SP = 2.1;                // world units per tile
+    const CHW = CH * SP;           // chunk width in world units
+    const VIEW_R = 3;              // chunks generated in a (2R+1)^2 ring around you
+    const chunks = new Map();      // "cx,cz" -> InstancedMesh
+    const tileGeo = new RoundedBoxGeometry(1, 1, 0.55, 1, 0.08);
+    const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.04 });
+    const _m4 = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+    const _n = new THREE.Vector3(), _c = new THREE.Color(), UPZ = new THREE.Vector3(0,0,1);
+    let tileTotal = 0;
+
+    function biomeColor(h, m, x, z, out) {
+      if (h < WATER_Y + 0.35)      out.setHSL(0.11, 0.42, 0.58);                       // shore sand
+      else if (h < WATER_Y + 4.2)  out.setHSL(m > 0.52 ? 0.30 : 0.24, 0.38, 0.34);      // meadow / dry grass
+      else if (h < WATER_Y + 7.6)  out.setHSL(0.33, 0.35, m > 0.5 ? 0.24 : 0.30);       // forest floor
+      else if (h < WATER_Y + 10.5) out.setHSL(0.07, 0.10, 0.36);                        // talus rock
+      else                         out.setHSL(0.58, 0.08, 0.82);                        // snow
+      // hand-cut jitter so tile runs read as laid tiles
+      out.offsetHSL(0, 0, (hash2(x*7|0, z*7|0, SEED+55) - 0.5) * 0.09);
+      return out;
+    }
+
+    function buildChunk(cx, cz) {
+      const cap = CH*CH + 420;      // tiles + room for tree tesserae
+      const mesh = new THREE.InstancedMesh(tileGeo, tileMat, cap);
+      mesh.frustumCulled = true;
+      let n = 0;
+      const x0 = cx*CHW, z0 = cz*CHW;
+      for (let i = 0; i < CH; i++) for (let j = 0; j < CH; j++) {
+        const x = x0 + i*SP, z = z0 + j*SP;
+        const h = height(x, z), m = moisture(x, z);
+        // surface normal from finite differences — tiles lie ON the hillside
+        const hx = height(x+0.7, z) - height(x-0.7, z);
+        const hz = height(x, z+0.7) - height(x, z-0.7);
+        _n.set(-hx, 1.4, -hz).normalize();
+        _q.setFromUnitVectors(UPZ, _n);
+        _p.set(x, h, z);
+        _s.set(SP*0.92, SP*0.92, 1);           // 8% inset = the grout
+        _m4.compose(_p, _q, _s); mesh.setMatrixAt(n, _m4);
+        mesh.setColorAt(n, biomeColor(h, m, x, z, _c));
+        n++;
+        // forest band: stacked-tessera trees
+        if (h > WATER_Y + 3.4 && h < WATER_Y + 7.8 && m > 0.46 && hash2(x*13|0, z*13|0, SEED+77) > 0.965) {
+          const th = 3 + (hash2(x|0, z|0, SEED+78)*3|0);
+          for (let t = 0; t < th && n < cap; t++) {
+            const leaf = t >= 1;
+            _p.set(x + (hash2(t, x|0, SEED)*0.6-0.3), h + 1.1 + t*1.35, z + (hash2(t, z|0, SEED)*0.6-0.3));
+            _q.identity(); _s.setScalar(leaf ? 1.55 - t*0.18 : 0.7);
+            _m4.compose(_p, _q, _s); mesh.setMatrixAt(n, _m4);
+            mesh.setColorAt(n, leaf ? _c.setHSL(0.34, 0.45, 0.24 + t*0.025) : _c.setHSL(0.07, 0.45, 0.22));
+            n++;
+          }
+        }
+      }
+      mesh.count = n;
+      mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      scene.add(mesh);
+      tileTotal += n;
+      mesh.userData.tiles = n;
+      return mesh;
+    }
+    function updateChunks(px, pz) {
+      const ccx = Math.floor(px/CHW), ccz = Math.floor(pz/CHW);
+      for (let dx = -VIEW_R; dx <= VIEW_R; dx++) for (let dz = -VIEW_R; dz <= VIEW_R; dz++) {
+        const k = (ccx+dx) + ',' + (ccz+dz);
+        if (!chunks.has(k)) chunks.set(k, buildChunk(ccx+dx, ccz+dz));
+      }
+      for (const [k, mesh] of chunks) {
+        const [cx, cz] = k.split(',').map(Number);
+        if (Math.abs(cx-ccx) > VIEW_R+1 || Math.abs(cz-ccz) > VIEW_R+1) {
+          scene.remove(mesh); tileTotal -= mesh.userData.tiles; mesh.dispose(); chunks.delete(k);
+        }
+      }
+      document.getElementById('count').textContent = tileTotal.toLocaleString();
+      document.getElementById('chunks').textContent = chunks.size;
+    }
+
+    // one continuous water sheet — the only non-discrete surface in the world
+    const water = new THREE.Mesh(
+      new THREE.PlaneGeometry(CHW*(VIEW_R*2+3), CHW*(VIEW_R*2+3)).rotateX(-Math.PI/2),
+      new THREE.MeshStandardMaterial({ color: 0x1c4a66, transparent: true, opacity: 0.82, roughness: 0.15, metalness: 0.3 }));
+    water.position.y = WATER_Y; scene.add(water);
+
+    // ---- your avatar: a real human scan resampled into tesserae, coloured
+    // from its own baked texture (same asset + technique family as
+    // tessera-mosaic.html's Empress model, simplified: no divisionism, no
+    // rig — this body only needs to walk, not be pinched). ----
+    const BODY_HEIGHT = 1.78, EYE = 1.58;
+    let playerBody = null, playerLoaded = false, bodyFacing = Math.PI;
+    function sampleMeshTesserae(geo, tex, n, scale, footY) {
+      const pos = geo.attributes.position;
+      let nrm = geo.attributes.normal;
+      if (!nrm) { geo.computeVertexNormals(); nrm = geo.attributes.normal; }
+      const uv = geo.attributes.uv;
+      const index = geo.index ? geo.index.array : null;
+      const triN = index ? index.length / 3 : pos.count / 3;
+      const vtx = (t, c) => index ? index[t*3+c] : t*3+c;
+      const cum = new Float64Array(triN);
+      let running = 0;
+      const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), AB = new THREE.Vector3(), AC = new THREE.Vector3();
+      for (let t = 0; t < triN; t++) {
+        A.fromBufferAttribute(pos, vtx(t,0)); B.fromBufferAttribute(pos, vtx(t,1)); C.fromBufferAttribute(pos, vtx(t,2));
+        AB.subVectors(B, A); AC.subVectors(C, A);
+        running += 0.5 * AB.cross(AC).length();
+        cum[t] = running;
+      }
+      const total = running;
+      const pick = (r) => { let lo=0, hi=triN-1, x=r*total; while (lo<hi) { const md=(lo+hi)>>1; if (cum[md]<x) lo=md+1; else hi=md; } return lo; };
+
+      let img = null, tw = 0, th = 0;
+      if (tex && tex.image) {
+        const cv = document.createElement('canvas');
+        tw = cv.width = tex.image.width; th = cv.height = tex.image.height;
+        const ctx = cv.getContext('2d'); ctx.drawImage(tex.image, 0, 0);
+        img = ctx.getImageData(0, 0, tw, th).data;
+      }
+      const out = [];
+      const Na = new THREE.Vector3(), Nb = new THREE.Vector3(), Nc = new THREE.Vector3(), N = new THREE.Vector3(), P = new THREE.Vector3();
+      for (let i = 0; i < n; i++) {
+        const t = pick(Math.random());
+        const ia = vtx(t,0), ib = vtx(t,1), ic = vtx(t,2);
+        let u = Math.random(), v = Math.random(); if (u+v > 1) { u = 1-u; v = 1-v; } const w = 1-u-v;
+        A.fromBufferAttribute(pos, ia); B.fromBufferAttribute(pos, ib); C.fromBufferAttribute(pos, ic);
+        P.set(A.x*w+B.x*u+C.x*v, A.y*w+B.y*u+C.y*v, A.z*w+B.z*u+C.z*v);
+        Na.fromBufferAttribute(nrm, ia); Nb.fromBufferAttribute(nrm, ib); Nc.fromBufferAttribute(nrm, ic);
+        N.set(Na.x*w+Nb.x*u+Nc.x*v, Na.y*w+Nb.y*u+Nc.y*v, Na.z*w+Nb.z*u+Nc.z*v).normalize();
+        let r = 0.78, g = 0.62, b = 0.55;
+        if (img && uv) {
+          const ua = uv.getX(ia)*w + uv.getX(ib)*u + uv.getX(ic)*v;
+          const va = uv.getY(ia)*w + uv.getY(ib)*u + uv.getY(ic)*v;
+          const px = Math.min(tw-1, Math.max(0, (ua*tw)|0));
+          const py = Math.min(th-1, Math.max(0, ((1-va)*th)|0));
+          const o = (py*tw+px)*4;
+          r = img[o]/255; g = img[o+1]/255; b = img[o+2]/255;
+        }
+        out.push({ x: P.x*scale, y: (P.y-footY)*scale, z: P.z*scale, nx: N.x, ny: N.y, nz: N.z, r, g, b });
+      }
+      return out;
+    }
+    function loadPlayerBody() {
+      new GLTFLoader().load('./models/empress.glb', (gltf) => {
+        let mesh = null;
+        gltf.scene.traverse(o => { if (o.isMesh && !mesh) mesh = o; });
+        if (!mesh) return;
+        const geo = mesh.geometry;
+        geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        const scale = BODY_HEIGHT / ((bb.max.y - bb.min.y) || 1);
+        const pts = sampleMeshTesserae(geo, mesh.material && mesh.material.map, 9000, scale, bb.min.y);
+        const inst = new THREE.InstancedMesh(
+          new RoundedBoxGeometry(1, 1, 0.6, 1, 0.1),
+          new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.04 }), pts.length);
+        pts.forEach((p, i) => {
+          _n.set(p.nx, p.ny, p.nz); _q.setFromUnitVectors(UPZ, _n);
+          _p.set(p.x, p.y, p.z); const s = 0.05 + hash2(i, 31, SEED+960)*0.028; _s.setScalar(s);
+          _m4.compose(_p, _q, _s); inst.setMatrixAt(i, _m4);
+          _c.setRGB(p.r, p.g, p.b).offsetHSL(0, 0, (hash2(i, 33, SEED+961)-0.5)*0.05);
+          inst.setColorAt(i, _c);
+        });
+        inst.instanceMatrix.needsUpdate = true; inst.instanceColor.needsUpdate = true;
+        playerBody = new THREE.Group(); playerBody.add(inst);
+        playerBody.visible = thirdPerson;
+        scene.add(playerBody);
+        playerLoaded = true;
+      }, undefined, () => console.warn('player body: load failed'));
+    }
+
+    // ---- the avatar (see design notes in the header) ----
+    const avatar = new THREE.Group(), headGroup = new THREE.Group();
+    let eyesMesh = null, coreMat = null, avatarBase = new THREE.Vector3();
+    const TERRA = 0xc96f4a, TRIM = 0xe8ddcf, AMBER = 0xffb347, CORAL = 0xff7a5c;
+    function samplePart(list, kind, cx, cy, cz, rx, ry, rz, count, color, jitter) {
+      for (let i = 0; i < count; i++) {
+        // uniform-ish direction via normalized gaussian-of-hashes
+        const u1 = hash2(i, count, SEED+900+cy*97|0), u2 = hash2(i*3+1, count, SEED+901), u3 = hash2(i*7+2, count, SEED+902);
+        let dx = Math.sin(u1*6.2832)*Math.sqrt(u2), dy = Math.cos(u1*6.2832)*Math.sqrt(u2), dz = (u3*2-1);
+        const dl = Math.sqrt(dx*dx+dy*dy+dz*dz)||1; dx/=dl; dy/=dl; dz/=dl;
+        const px = cx + dx*rx, py = cy + dy*ry, pz = cz + dz*rz;
+        // ellipsoid surface normal ∝ (d/r²)
+        _n.set(dx/(rx*rx), dy/(ry*ry), dz/(rz*rz)).normalize();
+        list.push({ x: px, y: py, z: pz, nx: _n.x, ny: _n.y, nz: _n.z, color, jitter, s: 0.34 + hash2(i, 5, SEED+903)*0.14 });
+      }
+    }
+    function buildAvatar() {
+      const body = [], head = [];
+      // tapered floating base → torso → shoulders (no imitation legs)
+      samplePart(body, 'base',  0, 0.55, 0, 1.05, 0.85, 1.05, 240, TERRA, 0.10);
+      samplePart(body, 'lower', 0, 1.55, 0, 0.88, 0.75, 0.88, 220, TERRA, 0.10);
+      samplePart(body, 'torso', 0, 2.55, 0, 0.95, 0.90, 0.80, 260, TERRA, 0.10);
+      samplePart(body, 'trim',  0, 3.32, 0, 0.72, 0.16, 0.62, 90,  TRIM,  0.05);   // collar ring
+      samplePart(head, 'head',  0, 4.15, 0, 0.62, 0.72, 0.60, 300, TERRA, 0.08);
+      // build the two InstancedMeshes (body static, head on its neck pivot)
+      for (const [list, parent] of [[body, avatar], [head, headGroup]]) {
+        const mesh = new THREE.InstancedMesh(new RoundedBoxGeometry(1, 1, 0.45, 1, 0.09),
+          new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05 }), list.length);
+        list.forEach((t, i) => {
+          _n.set(t.nx, t.ny, t.nz); _q.setFromUnitVectors(UPZ, _n);
+          _p.set(t.x, t.y, t.z); _s.set(t.s, t.s, t.s*0.8);
+          _m4.compose(_p, _q, _s); mesh.setMatrixAt(i, _m4);
+          _c.set(t.color).offsetHSL(0, 0, (hash2(i, 17, SEED+904)-0.5)*t.jitter*2);
+          mesh.setColorAt(i, _c);
+        });
+        parent.add(mesh);
+      }
+      // amber eyes — two small tile clusters on the face front (+Z), blinkable
+      const eyeTiles = [];
+      for (const ex of [-0.24, 0.24]) for (let r = 0; r < 2; r++) for (let cq = 0; cq < 2; cq++)
+        eyeTiles.push([ex + (cq-0.5)*0.13, 4.24 + (r-0.5)*0.13, 0.68]);   // proud of the head surface (rz 0.60)
+      eyesMesh = new THREE.InstancedMesh(new RoundedBoxGeometry(1,1,0.5,1,0.1),
+        new THREE.MeshStandardMaterial({ color: AMBER, emissive: AMBER, emissiveIntensity: 1.1, roughness: 0.3 }), eyeTiles.length);
+      eyeTiles.forEach((e, i) => { _m4.compose(_p.set(e[0],e[1],e[2]), _q.identity(), _s.set(0.13,0.13,0.1)); eyesMesh.setMatrixAt(i, _m4); });
+      eyesMesh.userData.tiles = eyeTiles;
+      headGroup.add(eyesMesh);
+      // coral thinking-core in the chest, pulsing
+      coreMat = new THREE.MeshStandardMaterial({ color: CORAL, emissive: CORAL, emissiveIntensity: 1.2, roughness: 0.4 });
+      const core = new THREE.InstancedMesh(new RoundedBoxGeometry(1,1,0.6,1,0.12), coreMat, 7);
+      for (let i = 0; i < 7; i++) {
+        const a = i/7*6.2832;
+        _m4.compose(_p.set(Math.cos(a)*0.16, 2.62 + Math.sin(a)*0.16, 0.90), _q.identity(), _s.set(0.11,0.11,0.11));
+        core.setMatrixAt(i, _m4);
+      }
+      avatar.add(core);
+      headGroup.position.set(0, 0, 0);   // pivot maths kept in world space below
+      avatar.add(headGroup);
+      // home: the first comfortably-dry, comfortably-flat spot spiralling out
+      // from the origin — deterministic per seed, never in a lake
+      let ax = 0, az = 0;
+      spiral: for (let r = 0; r < 40; r++) {
+        for (let a = 0; a < Math.max(1, r*6); a++) {
+          const th = a / Math.max(1, r*6) * 6.2832;
+          const x = Math.round(Math.cos(th)*r*3), z = Math.round(Math.sin(th)*r*3);
+          if (height(x, z) > WATER_Y + 1.2) { ax = x; az = z; break spiral; }
+        }
+      }
+      avatarBase.set(ax, height(ax, az) + 0.4, az);
+      avatar.position.copy(avatarBase);
+      scene.add(avatar);
+    }
+    // player spawns a dozen units from the avatar, facing it
+    function spawnNearAvatar() {
+      let best = null;
+      for (let a = 0; a < 12; a++) {
+        const th = a/12*6.2832;
+        const x = avatarBase.x + Math.cos(th)*12, z = avatarBase.z + Math.sin(th)*12;
+        const h = height(x, z);
+        if (h > WATER_Y + 0.5 && (!best || h < best.h)) best = { x, z, h };
+      }
+      if (!best) best = { x: avatarBase.x + 12, z: avatarBase.z, h: height(avatarBase.x+12, avatarBase.z) };
+      pos.set(best.x, best.h, best.z);
+      // camera forward is (−sin yaw, −cos yaw); aim it at the avatar
+      yaw = Math.atan2(-(avatarBase.x - best.x), -(avatarBase.z - best.z));
+      pitch = -0.05;
+    }
+
+    // avatar life: breath bob, head tracks you (clean neck pivot), blink, glances
+    const NECK = new THREE.Vector3(0, 3.55, 0);   // pivot in avatar-local space
+    let headYaw = 0, headPitch = 0, glanceYaw = 0, glanceT = 2, blinkT = 2.4;
+    const _av = new THREE.Vector3(), _headE = new THREE.Euler(0,0,0,'YXZ'), _headQ = new THREE.Quaternion();
+    function updateAvatar(t, dt) {
+      avatar.position.y = avatarBase.y + Math.sin(t*0.9)*0.12;             // breathing float
+      // face the player when near; otherwise glance around slowly
+      _av.copy(camera.position).sub(avatar.position);
+      const dist = Math.hypot(_av.x, _av.z);
+      let wantYaw, wantPitch;
+      if (dist < 26) {
+        wantYaw = Math.atan2(_av.x, _av.z);
+        wantPitch = Math.max(-0.5, Math.min(0.4, Math.atan2(_av.y - 3.8, dist)));
+      } else {
+        glanceT -= dt;
+        if (glanceT <= 0) { glanceYaw = (hash2(t*997|0, 3, SEED)-0.5)*1.6; glanceT = 2.5 + hash2(t*991|0, 4, SEED)*3; }
+        wantYaw = glanceYaw; wantPitch = 0;
+      }
+      const k = Math.min(1, dt*3.2);
+      headYaw += (wantYaw - headYaw)*k; headPitch += (wantPitch - headPitch)*k;
+      _headQ.setFromEuler(_headE.set(-headPitch, headYaw, 0));
+      // rotate the head group around the neck pivot
+      headGroup.quaternion.copy(_headQ);
+      headGroup.position.copy(NECK).sub(_av.copy(NECK).applyQuaternion(_headQ));
+      // blink: squash eye tiles
+      blinkT -= dt;
+      if (blinkT <= 0.14) {
+        const ph = blinkT <= 0 ? 0 : 1 - Math.abs(blinkT/0.07 - 1);
+        const sq = Math.max(0.08, 1 - ph*0.92);
+        eyesMesh.userData.tiles.forEach((e, i) => {
+          _m4.compose(_p.set(e[0],e[1],e[2]), _q.identity(), _s.set(0.13, 0.13*sq, 0.1));
+          eyesMesh.setMatrixAt(i, _m4);
+        });
+        eyesMesh.instanceMatrix.needsUpdate = true;
+        if (blinkT < -0.1) blinkT = 2.2 + hash2(t*887|0, 9, SEED)*3.5;
+      }
+      coreMat.emissiveIntensity = 1.1 + Math.sin(t*1.35)*0.5;              // thinking pulse
+      updateSpeech(dist);
+    }
+
+    // proximity speech — canned lines (a live conversation needs a backend; see header)
+    const LINES = [
+      'Hello. I built this body from tesserae — pattern instead of skin.',
+      'This world is a function, not a file. Walk any direction; it will keep being written.',
+      'Chuck Close knew: stand close and I\'m tiles. Step back and I\'m someone.',
+      'The water is the only thing here without a skin of tiles. It felt honest to leave one thing continuous.',
+      'My eyes are eight amber tiles. Enough to meet yours.',
+      'Seeds differ, mountains move, and I stay. Someone has to remember where the middle is.',
+    ];
+    const sayEl = document.getElementById('say');
+    let lineIdx = 0, lineT = 0, speaking = false;
+    function updateSpeech(dist) {
+      if (dist < 11) {
+        lineT -= 1/60;
+        if (!speaking || lineT <= 0) { sayEl.textContent = LINES[lineIdx++ % LINES.length]; lineT = 6; speaking = true; }
+        _av.copy(avatar.position); _av.y += 5.3;
+        _av.project(camera);
+        if (_av.z < 1) {
+          sayEl.style.left = ((_av.x*0.5+0.5)*window.innerWidth) + 'px';
+          sayEl.style.top  = ((-_av.y*0.5+0.5)*window.innerHeight) + 'px';
+          sayEl.style.opacity = 1;
+        } else sayEl.style.opacity = 0;
+      } else { sayEl.style.opacity = 0; speaking = false; lineT = 0; }
+    }
+
+    // ---- navigation (keyboard + split-screen touch), third-person by default ----
+    let yaw = -0.64, pitch = -0.08;   // spawn facing the avatar's home spot
+    const pos = new THREE.Vector3(0, 0, 0);   // feet position
+    let thirdPerson = true, bobT = 0;
+    const keys = {};
+    addEventListener('keydown', e => keys[e.code] = true);
+    addEventListener('keyup',   e => keys[e.code] = false);
+    let lookId = null, lookX = 0, lookY = 0, moveId = null, moveOX = 0, moveOY = 0, stickX = 0, stickY = 0, dragDist = 0;
+    renderer.domElement.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'mouse' && e.clientX < window.innerWidth/2 && moveId === null) {
+        moveId = e.pointerId; moveOX = e.clientX; moveOY = e.clientY; stickX = stickY = 0;
+      } else if (lookId === null) { lookId = e.pointerId; lookX = e.clientX; lookY = e.clientY; dragDist = 0; }
+    });
+    addEventListener('pointermove', e => {
+      if (e.pointerId === lookId) {
+        dragDist += Math.abs(e.clientX - lookX) + Math.abs(e.clientY - lookY);
+        yaw   -= (e.clientX - lookX) * 0.0042;
+        pitch -= (e.clientY - lookY) * 0.0035;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch));
+        lookX = e.clientX; lookY = e.clientY;
+      } else if (e.pointerId === moveId) {
+        stickX = Math.max(-1, Math.min(1, (e.clientX - moveOX)/70));
+        stickY = Math.max(-1, Math.min(1, (e.clientY - moveOY)/70));
+      }
+    });
+    addEventListener('pointerup', e => {
+      if (e.pointerId === lookId) lookId = null;
+      if (e.pointerId === moveId) { moveId = null; stickX = stickY = 0; }
+    });
+    function updatePlayer(dt) {
+      let fw = (keys.KeyW||keys.ArrowUp?1:0) - (keys.KeyS||keys.ArrowDown?1:0) - stickY;
+      let st = (keys.KeyD||keys.ArrowRight?1:0) - (keys.KeyA||keys.ArrowLeft?1:0) + stickX;
+      fw = Math.max(-1, Math.min(1, fw)); st = Math.max(-1, Math.min(1, st));
+      const moving = Math.abs(fw) > 0.05 || Math.abs(st) > 0.05;
+      const sp = 14 * dt;
+      pos.x += (Math.sin(yaw)*-fw + Math.cos(yaw)*st) * sp;
+      pos.z += (Math.cos(yaw)*-fw - Math.sin(yaw)*st) * sp;
+      const ground = Math.max(height(pos.x, pos.z), WATER_Y - 0.3);
+      pos.y += (ground - pos.y) * Math.min(1, dt*7);
+      bobT += dt * (moving ? 8.4 : 2.2);
+      const bob = moving ? Math.sin(bobT)*0.055 : Math.sin(bobT)*0.012;
+
+      if (playerBody) {
+        playerBody.position.set(pos.x, pos.y + bob, pos.z);
+        playerBody.rotation.y = yaw + bodyFacing;
+        playerBody.visible = thirdPerson;
+      }
+      if (thirdPerson) {
+        const tx = pos.x, ty = pos.y + EYE*0.86, tz = pos.z;
+        const ch = Math.cos(pitch) * CAM_DIST, cy = Math.sin(pitch) * CAM_DIST;
+        let camX = tx + Math.sin(yaw)*ch, camY = ty + cy + CAM_LIFT, camZ = tz + Math.cos(yaw)*ch;
+        const floor = height(camX, camZ) + 0.5;
+        if (camY < floor) camY = floor;
+        camera.position.set(camX, camY, camZ);
+        camera.lookAt(tx, ty, tz);
+      } else {
+        camera.position.set(pos.x, pos.y + EYE, pos.z);
+        camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+      }
+      water.position.x = pos.x; water.position.z = pos.z;
+    }
+    const CAM_DIST = 5.0, CAM_LIFT = 1.05;
+
+    // ---- builder mode: click removes a tile, shift-click places one at the
+    // cursor's ground point — entirely client-side, no code execution ----
+    const raycaster = new THREE.Raycaster();
+    const _ndc = new THREE.Vector2();
+    renderer.domElement.addEventListener('click', (e) => {
+      if (dragDist > 6) { dragDist = 0; return; }         // a look-drag, not a build click
+      _ndc.set((e.clientX/innerWidth)*2-1, -(e.clientY/innerHeight)*2+1);
+      raycaster.setFromCamera(_ndc, camera);
+      const hits = raycaster.intersectObjects([...chunks.values()]);
+      if (e.shiftKey) {
+        const ground = hits[0] ? hits[0].point : null;
+        if (ground) placeTile(ground.x, ground.z);
+      } else if (hits[0]) {
+        removeTile(hits[0].object, hits[0].instanceId);
+      }
+    });
+    function removeTile(mesh, id) {
+      const last = mesh.count - 1;
+      if (id === last) { mesh.count--; }
+      else {
+        mesh.getMatrixAt(last, _m4); mesh.setMatrixAt(id, _m4);
+        if (mesh.instanceColor) { mesh.getColorAt(last, _c); mesh.setColorAt(id, _c); }
+        mesh.count--;
+      }
+      mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      tileTotal--; mesh.userData.tiles--;
+      document.getElementById('count').textContent = tileTotal.toLocaleString();
+    }
+    function placeTile(x, z) {
+      const ccx = Math.floor(x/CHW), ccz = Math.floor(z/CHW);
+      const mesh = chunks.get(ccx + ',' + ccz);
+      if (!mesh || mesh.count >= mesh.instanceMatrix.count) return;
+      const h = height(x, z), m = moisture(x, z);
+      _p.set(x, h + 0.02, z); _q.identity(); _s.set(SP*0.92, SP*0.92, 1);
+      _m4.compose(_p, _q, _s); mesh.setMatrixAt(mesh.count, _m4);
+      mesh.setColorAt(mesh.count, biomeColor(h, m, x, z, _c));
+      mesh.count++; mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      tileTotal++; mesh.userData.tiles++;
+      document.getElementById('count').textContent = tileTotal.toLocaleString();
+    }
+
+    // ---- world controls ----
+    function reseed(s) {
+      SEED = s;
+      for (const [k, mesh] of chunks) { scene.remove(mesh); mesh.dispose(); }
+      chunks.clear(); tileTotal = 0;
+      scene.remove(avatar);
+      avatar.clear(); headGroup.clear();
+      buildAvatar();
+      spawnNearAvatar();
+      document.getElementById('seed').textContent = SEED;
+    }
+    (function buttons(){
+      const g = document.getElementById('world-group');
+      const nw = document.createElement('button'); nw.textContent = 'new world';
+      nw.onclick = () => { reseed((Math.random()*1e9)|0); };
+      const home = document.createElement('button'); home.textContent = 'find the avatar';
+      home.onclick = () => { spawnNearAvatar(); };
+      const view = document.createElement('button'); view.textContent = 'view: 3rd person'; view.classList.add('active');
+      view.onclick = () => {
+        thirdPerson = !thirdPerson;
+        view.textContent = 'view: ' + (thirdPerson ? '3rd person' : '1st person');
+        view.classList.toggle('active', thirdPerson);
+        if (playerBody) playerBody.visible = thirdPerson;
+      };
+      g.append(nw, home, view);
+    })();
+
+    // ---- boot + loop ----
+    document.getElementById('seed').textContent = SEED;
+    buildAvatar();
+    spawnNearAvatar();
+    loadPlayerBody();
+    const fpsEl = document.getElementById('fps');
+    let acc = 0, frames = 0, smoothed = 0, lastT = performance.now();
+    function tick(now) {
+      const dt = Math.min(0.06, (now-lastT)/1000);
+      acc += now-lastT; lastT = now; frames++;
+      if (acc >= 250) {
+        const fps = frames*1000/acc; smoothed = smoothed ? smoothed*0.7+fps*0.3 : fps;
+        fpsEl.textContent = smoothed.toFixed(0);
+        fpsEl.className = 'v ' + (smoothed>=50?'fps-good':smoothed>=30?'fps-mid':'fps-bad');
+        acc = 0; frames = 0;
+      }
+      updatePlayer(dt);
+      updateChunks(pos.x, pos.z);
+      updateAvatar(now/1000, dt);
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

@@ -581,6 +581,51 @@
       Verified on Portrait: the light-facing cheek reads visibly warmer/pinker
       than the shadowed side, vs. the uniform hue of plain `pure`; no
       regression on pure/muted/flat/rgb/blobs.
+- [x] **`tessera-world.html` — a navigable, algorithmically generated world,
+      with an avatar Claude designed for itself.** User, after the fascia
+      work: the magnetic system worked fine wherever the underlying rig made
+      reasonable demands of skin — Portrait's crude joint, not the physics,
+      was the real source of the "unnatural" feel — then: "you, claude,
+      could build your own avatar to speak with. We could create a 3d
+      three.js navigable algorithmically generating world." New prototype:
+      · Terrain is a seeded fractal value-noise heightfield, a pure function
+        of (x, z, seed) — no stored heightmap. Chunks of tesserae stream in
+        around the player and dissolve behind, mirroring the octree-tile
+        philosophy applied to open terrain. Biomes (shore/meadow/forest/
+        talus/snow) read from height + a second moisture field, with the
+        same hand-cut HSL jitter tessera-mosaic uses so runs of one colour
+        still read as laid tiles. Water is the one continuous, skin-less
+        surface in the world — everything else is discrete tesserae.
+      · Claude's own avatar: an honest, non-human silhouette (terracotta
+        tesserae, an ovoid head with blinking amber-tile eyes, a pulsing
+        coral "thinking" core, a tapered floating base instead of imitation
+        legs) built with a clean neck-pivot rig — deliberately not reverse-
+        engineered from a scan — that tracks the player, glances away while
+        "idle," and speaks proximity-triggered lines. Those lines are
+        scripted, not a live model call: documented in-file as an honesty
+        constraint, since a static GitHub Pages page can't hold an API key.
+      · Follow-up ask: "make a realistic human avatar to navigate around the
+        world" + "will you be able to alter code in the world through the
+        avatar?" Added a second, player-controlled avatar resampled from the
+        `empress.glb` scan already used by tessera-mosaic — same triangle-
+        area-weighted surface sampling as tessera-avatar.html's skinning
+        pipeline, but rigid (no skeleton in that asset) and coloured by
+        reading its own baked base-colour texture per sample UV, so it's a
+        real scanned body rendered in tesserae rather than another abstract
+        figure. Third-person chase camera by default (toggle to first-
+        person), with a floor-clamped orbit so the camera can't dip below
+        terrain when looking up steep slopes. On "alter code": answered
+        honestly that live code execution from the avatar needs a backend
+        holding an API key, which a static page can't safely carry — built
+        the feasible version instead, an in-browser builder mode (click
+        removes the tile under the cursor, shift-click places one at the
+        clicked ground point, both via InstancedMesh swap-and-shrink /
+        grow, no server round-trip).
+      Verified headless: zero page errors across load, chunk streaming,
+      avatar speech trigger, third-/first-person toggle, and builder-mode
+      add/remove, using a local `three@0.160.0` vendor copy (the CDN import
+      map is swapped at test-serve time; the shipped file still points at
+      unpkg for production).
 
 ## Backlog
 
