@@ -172,6 +172,7 @@
     const MODELS = {
       Empress:  './models/empress.glb',
       Portrait: './models/portrait.glb',   // user-supplied face model — hosted locally like Empress
+      Michelle: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Michelle.glb', // skinned + animated, clean full-colour human — the good-quality portrait alternative
       Fox:      KH + 'Fox/glTF-Binary/Fox.glb',                 // skinned + animated
       Human:    KH + 'CesiumMan/glTF-Binary/CesiumMan.glb',      // skinned + animated
       Soldier:  'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb', // skinned + animated (same source proven in tessera-avatar.html)
@@ -613,6 +614,21 @@
         if(sm.z[i]<minz)minz=sm.z[i]; if(sm.z[i]>maxz)maxz=sm.z[i]; }
       const size = Math.max(maxx-minx, maxy-miny, maxz-minz) * 1.001;
       const ox = (minx+maxx-size)/2, oy = (miny+maxy-size)/2, oz = (minz+maxz-size)/2;
+      // SKINNED models: samples (sm.x/y/z) live in the naive world-space
+      // convention buildSampler uses (needed for updateSkin()'s exact
+      // bindMatrix-space recovery — see the comment there). That usually
+      // coincides with true rendered scale, but for a rig whose baked
+      // inverseBindMatrices don't match its node hierarchy's own scale
+      // (found on Michelle: a ~100x mismatch from a Blender/Mixamo cm→m
+      // "Character" wrapper), it can be off by a large, non-uniform-per-
+      // bone factor. Tile POSITION self-corrects every frame through
+      // updateSkin()'s formula, but tile SIZE (l.s, set once below from the
+      // octree cell size) never goes through that formula, so it silently
+      // renders at the wrong scale even once position is right. A single
+      // global ratio against the already-correct Box3-derived `radius` is
+      // an approximation (the true correction isn't uniform per bone), but
+      // enough to make tiles read at the right size.
+      const sizeFix = isSkinned && size > 1e-9 ? (2 * radius / size) : 1;
       const spanY = (maxy-miny) || 1;
       const maxDepth = MAXDEPTH[abstraction];
       const minDepth = maxDepth - 2;              // largest tile = 4x the smallest
@@ -679,7 +695,7 @@
             skinWt = [sm.skinWt[base], sm.skinWt[base+1], sm.skinWt[base+2], sm.skinWt[base+3]];
             rigid = (skinWt[0]+skinWt[1]+skinWt[2]+skinWt[3]) < 0.001;   // unskinned part on an otherwise-skinned model
           }
-          leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s, imp, curv,
+          leaves.push({ x:px, y:py, z:pz, nx:nx2/nl, ny:ny2/nl, nz:nz2/nl, r, g, b, s:c.s*sizeFix, imp, curv,
                         ra: sm.r[ia]*(1-T)+r*T, ga: sm.g[ia]*(1-T)+g*T, ba: sm.b[ia]*(1-T)+b*T,
                         rb: sm.r[ib]*(1-T)+r*T, gb: sm.g[ib]*(1-T)+g*T, bb: sm.b[ib]*(1-T)+b*T,
                         mat: materialOf(r, g, b, _mcol), isEye, isHead, skinIdx, skinWt, rigid,
@@ -946,6 +962,18 @@
       document.getElementById('model').textContent = 'loading ' + name + '…';
       loader.load(MODELS[name], (gltf) => {
         if (gen !== loadGen) return;   // a newer model was selected meanwhile
+        // Force one full top-down matrixWorld propagation before measuring —
+        // gltf.scene has never been part of a live scene graph at this point,
+        // so nested ancestors (e.g. Michelle's Character/Ch03 rig wrapper)
+        // can still be carrying their construction-time identity matrixWorld.
+        // Box3's own internal per-node updateWorldMatrix(false,false) calls
+        // aren't a reliable substitute for a freshly-parsed, never-rendered
+        // hierarchy. Skipping this gave a garbage-scale box for Michelle's
+        // deeper rig (Fox/CesiumMan/Soldier's flatter hierarchies happened
+        // not to expose it) — tiles built, baked 99% "covered", but rendered
+        // as a handful of stray fragments because the camera was framed for
+        // an object ~100x smaller than what actually got drawn.
+        gltf.scene.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(gltf.scene);
         const sph = box.getBoundingSphere(new THREE.Sphere());
         center.copy(sph.center); radius = sph.radius || 1;
@@ -970,7 +998,30 @@
         scene.add(currentRoot);   // kept in-graph so skeleton.update() sees fresh bone matrices each frame
         samples = drawSamples(sampler, KSAMP, views, center);
         buildMosaic(); frameView();
-        if (isSkinned) { if (clips.length) playClip(0); updateSkin(); }
+        if (isSkinned) {
+          if (clips.length) playClip(0);
+          updateSkin();
+          // mgRestC/mgCurC/mgSimC were seeded (in buildMeshes) from the raw
+          // bind-space l.x/y/z — correct for feeding updateSkin()'s per-
+          // frame sp-recovery, but NOT necessarily the true rendered scale
+          // (see the sizeFix note above buildMosaic's octree pass). The
+          // updateSkin() call just above has now written every leaf's TRUE
+          // rendered position into its instance matrix, so re-seed the
+          // magnet rest/current state from there — otherwise the fascia
+          // system reads a false "already stretched ~100x past rest" on
+          // models like Michelle and yanks the whole mosaic back to
+          // build-time scale the instant the magnet turns on.
+          const _magM = new THREE.Matrix4(), _magP = new THREE.Vector3(), _magQ = new THREE.Quaternion(), _magS = new THREE.Vector3();
+          for (const l of currentLeaves) {
+            l._mesh.getMatrixAt(l._idx, _magM);
+            _magM.decompose(_magP, _magQ, _magS);
+            const g = l._g;
+            l._rest = [_magP.x, _magP.y, _magP.z];
+            mgCurC[g*3]=_magP.x; mgCurC[g*3+1]=_magP.y; mgCurC[g*3+2]=_magP.z;
+            mgSimC[g*3]=_magP.x; mgSimC[g*3+1]=_magP.y; mgSimC[g*3+2]=_magP.z;
+            mgRestC[g*3]=_magP.x; mgRestC[g*3+1]=_magP.y; mgRestC[g*3+2]=_magP.z;
+          }
+        }
         document.getElementById('model').textContent = name + ' · ' + (100 - samples.fallbackFrac*100).toFixed(0) + '% covered';
       }, undefined, () => { if (gen === loadGen) document.getElementById('model').textContent = name + ' — load failed'; });
     }
