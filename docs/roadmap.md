@@ -626,6 +626,40 @@
       add/remove, using a local `three@0.160.0` vendor copy (the CDN import
       map is swapped at test-serve time; the shipped file still points at
       unpkg for production).
+- [x] **`tessera-mosaic.html` — Michelle: a clean, full-colour, animated
+      human model.** User: the existing Portrait scan is too low quality;
+      asked for a better one, ideally already riggable for movement. Added
+      Michelle.glb — three.js's own example asset (same family as the
+      already-wired Fox/CesiumMan/Soldier), with a real baked photo texture
+      and real skeletal animation (SambaDance), instead of another static
+      scan.
+      Loading it surfaced a real bug, not just a missing feature: a
+      freshly-parsed GLTF scene, never yet added to a live scene graph, can
+      still carry construction-time identity matrixWorld on nested
+      ancestors — `Box3.setFromObject`'s own internal per-node
+      `updateWorldMatrix(false,false)` calls aren't a reliable substitute
+      for a fresh, never-rendered hierarchy. That gave a garbage-scale
+      bounding box specifically for Michelle's deeper rig (Character/Ch03
+      wrapper) — Fox/CesiumMan/Soldier's flatter hierarchies happened not
+      to expose it. Symptom was deceptive: tiles built, the colour bake
+      even reported ~99% "covered," but the actual render was a handful of
+      stray fragments, because the camera was framed for an object roughly
+      100x smaller than what was actually drawn. Fixed with one explicit
+      `gltf.scene.updateMatrixWorld(true)` before measuring.
+      That alone corrected tile POSITION but not tile SIZE (set once from
+      the octree cell size, in the same pre-fix coordinate convention) or
+      the magnetic-fascia system's rest state (which read the sudden
+      100x jump to true scale as an already-catastrophic stretch and
+      yanked the whole mosaic back to build-time scale the instant the
+      magnet turned on). Fixed both: tile size via a global ratio against
+      the now-correct Box3-derived radius, fascia rest state by re-seeding
+      `mgRestC`/`mgCurC`/`mgSimC` from each leaf's actual post-skin render
+      position instead of its raw bind-space sample position.
+      Verified headless across Empress/Portrait/Michelle, magnet on and
+      off — no regressions, zero page errors. (Fox/CesiumMan/Soldier/
+      Helmet load from jsdelivr, which this sandbox's proxy blocks for
+      testing — unaffected by this change, untested here for that reason
+      only; they'll resolve normally on the deployed page.)
 
 ## Backlog
 
