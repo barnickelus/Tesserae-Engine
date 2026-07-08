@@ -145,6 +145,7 @@
   <div id="note"><div id="model">loading…</div></div>
   <div id="controls">
     <div class="group" id="model-group"><span class="label">MODEL</span></div>
+    <div class="group" id="crop-group"><span class="label">CROP</span></div>
     <div class="group" id="abs-group"><span class="label">ABSTRACTION</span></div>
     <div class="group" id="grout-group"><span class="label">GROUT</span></div>
     <div class="group" id="paint-group"><span class="label">PAINT</span></div>
@@ -220,12 +221,18 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6; controls.minDistance = 0.001;
     const center = new THREE.Vector3(); let radius = 1;
+    // viewCenter/viewRadius drive the CAMERA only — kept separate from
+    // center/radius (which buildMosaic's sizeFix and the colour bake need to
+    // stay the true, whole-model values) so bust-crop mode can frame tight
+    // on just the kept region without corrupting tile-size correction on a
+    // later abstraction-triggered rebuild.
+    const viewCenter = new THREE.Vector3(); let viewRadius = 1;
     function frameView() {
       const vFov = THREE.MathUtils.degToRad(camera.fov);
       const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
-      const dist = 1.3 * radius / Math.sin(Math.min(vFov, hFov) / 2);
-      controls.target.copy(center);
-      camera.position.set(center.x, center.y + radius * 0.1, center.z + dist);
+      const dist = 1.3 * viewRadius / Math.sin(Math.min(vFov, hFov) / 2);
+      controls.target.copy(viewCenter);
+      camera.position.set(viewCenter.x, viewCenter.y + viewRadius * 0.1, viewCenter.z + dist);
       camera.near = Math.max(dist / 1000, 0.001); camera.far = dist * 20;
       camera.updateProjectionMatrix(); controls.update();
     }
@@ -236,6 +243,12 @@
     //            'muted' = source-derived accents over the mean base
     //            'flat'  = one colour per tile
     let abstraction = 20, grout = 'thin', colorMode = 'source', paintMode = 'pure', colorSplit = 'bold', magnet = 'off';
+    // bust crop: skinned models only (Empress/Portrait are already framed as
+    // busts) — keeps only head/neck/shoulder/upper-spine tiles (see
+    // cropSamplesToBust below), so a full-body rig like Michelle can be
+    // viewed and posed close up, the way a face needs to be seen to judge
+    // the tile/magnet effects on it.
+    let bustCrop = false;
     let sampler = null, samples = null;
     let vmeshes = [];
     let currentLeaves = null;   // cached octree leaves — repaint() restyles them without rebuilding the tree
@@ -605,6 +618,39 @@
       return out;
     }
 
+    // keep only samples whose DOMINANT bone is head/neck/shoulder/upper-spine
+    // (bust crop). A fixed Y-height cutoff sounded simpler but breaks on any
+    // non-neutral pose — Michelle's SambaDance crouches and turns, so a
+    // height band grabs disconnected fragments (hair here, a shoulder tip
+    // there) instead of a coherent bust. Bone influence is a property of the
+    // RIG, not the current pose, so this stays a clean head+shoulders cut
+    // through every frame of the animation.
+    const BUST_BONE_RE = /head|neck|shoulder|spine2/i;
+    function cropSamplesToBust(s, skel) {
+      const n = s.x.length;
+      const keepBone = new Uint8Array(skel.bones.length);
+      for (let i = 0; i < skel.bones.length; i++) if (BUST_BONE_RE.test(skel.bones[i].name)) keepBone[i] = 1;
+      const keep = [];
+      for (let i = 0; i < n; i++) {
+        let bi = s.skinIdx[i*4], bw = s.skinWt[i*4];
+        for (let k = 1; k < 4; k++) { const w = s.skinWt[i*4+k]; if (w > bw) { bw = w; bi = s.skinIdx[i*4+k]; } }
+        if (keepBone[bi]) keep.push(i);
+      }
+      const m = keep.length;
+      const out = { x:new Float32Array(m), y:new Float32Array(m), z:new Float32Array(m),
+                    nx:new Float32Array(m), ny:new Float32Array(m), nz:new Float32Array(m),
+                    r:new Float32Array(m), g:new Float32Array(m), b:new Float32Array(m),
+                    skinIdx:new Float32Array(m*4), skinWt:new Float32Array(m*4), fallbackFrac: s.fallbackFrac };
+      for (let k = 0; k < m; k++) {
+        const i = keep[k];
+        out.x[k]=s.x[i]; out.y[k]=s.y[i]; out.z[k]=s.z[i];
+        out.nx[k]=s.nx[i]; out.ny[k]=s.ny[i]; out.nz[k]=s.nz[i];
+        out.r[k]=s.r[i]; out.g[k]=s.g[i]; out.b[k]=s.b[i];
+        for (let q = 0; q < 4; q++) { out.skinIdx[k*4+q]=s.skinIdx[i*4+q]; out.skinWt[k*4+q]=s.skinWt[i*4+q]; }
+      }
+      return out;
+    }
+
     // ---- the octree: subdivide where perception demands it ----
     function buildMosaic() {
       const sm = samples, n = sm.x.length;
@@ -957,7 +1003,9 @@
     const loader = new GLTFLoader();
     let loadGen = 0;   // guards against a slower, earlier-started load (e.g. a big
                        // default model still in flight) clobbering a later pick
+    let currentModelName = 'Empress';
     function loadModel(name) {
+      currentModelName = name;
       const gen = ++loadGen;
       document.getElementById('model').textContent = 'loading ' + name + '…';
       loader.load(MODELS[name], (gltf) => {
@@ -997,7 +1045,8 @@
         currentRoot.traverse((o) => { if (o.isMesh) o.visible = false; });   // tesserae are the visible surface
         scene.add(currentRoot);   // kept in-graph so skeleton.update() sees fresh bone matrices each frame
         samples = drawSamples(sampler, KSAMP, views, center);
-        buildMosaic(); frameView();
+        if (bustCrop && isSkinned) samples = cropSamplesToBust(samples, skeleton);
+        buildMosaic();
         if (isSkinned) {
           if (clips.length) playClip(0);
           updateSkin();
@@ -1010,8 +1059,13 @@
           // magnet rest/current state from there — otherwise the fascia
           // system reads a false "already stretched ~100x past rest" on
           // models like Michelle and yanks the whole mosaic back to
-          // build-time scale the instant the magnet turns on.
+          // build-time scale the instant the magnet turns on. The same
+          // read-back also gives a TRUE-scale bounding sphere for framing —
+          // needed for bust crop (a tight, correctly-scaled close-up) but
+          // computed unconditionally since it's just more accurate than the
+          // whole-model Box3 radius/center even for the uncropped view.
           const _magM = new THREE.Matrix4(), _magP = new THREE.Vector3(), _magQ = new THREE.Quaternion(), _magS = new THREE.Vector3();
+          let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
           for (const l of currentLeaves) {
             l._mesh.getMatrixAt(l._idx, _magM);
             _magM.decompose(_magP, _magQ, _magS);
@@ -1020,8 +1074,16 @@
             mgCurC[g*3]=_magP.x; mgCurC[g*3+1]=_magP.y; mgCurC[g*3+2]=_magP.z;
             mgSimC[g*3]=_magP.x; mgSimC[g*3+1]=_magP.y; mgSimC[g*3+2]=_magP.z;
             mgRestC[g*3]=_magP.x; mgRestC[g*3+1]=_magP.y; mgRestC[g*3+2]=_magP.z;
+            if (_magP.x<minx)minx=_magP.x; if (_magP.x>maxx)maxx=_magP.x;
+            if (_magP.y<miny)miny=_magP.y; if (_magP.y>maxy)maxy=_magP.y;
+            if (_magP.z<minz)minz=_magP.z; if (_magP.z>maxz)maxz=_magP.z;
           }
-        }
+          if (currentLeaves.length) {
+            viewCenter.set((minx+maxx)/2, (miny+maxy)/2, (minz+maxz)/2);
+            viewRadius = Math.max(1e-3, 0.5*Math.hypot(maxx-minx, maxy-miny, maxz-minz));
+          } else { viewCenter.copy(center); viewRadius = radius; }
+        } else { viewCenter.copy(center); viewRadius = radius; }
+        frameView();
         document.getElementById('model').textContent = name + ' · ' + (100 - samples.fallbackFrac*100).toFixed(0) + '% covered';
       }, undefined, () => { if (gen === loadGen) document.getElementById('model').textContent = name + ' — load failed'; });
     }
@@ -1034,6 +1096,17 @@
         if (it === current) b.classList.add('active'); group.appendChild(b); map.set(it, b); }
     }
     makeButtons('model-group', Object.keys(MODELS), 'Empress', x => x, x => loadModel(x));
+    (function cropToggle() {
+      // full-body skinned models only (Empress/Portrait are already a bust);
+      // takes effect on the next load, so toggling reloads the current model
+      const b = document.createElement('button'); b.textContent = 'bust: off';
+      b.onclick = () => {
+        bustCrop = !bustCrop;
+        b.textContent = 'bust: ' + (bustCrop ? 'on' : 'off'); b.classList.toggle('active', bustCrop);
+        loadModel(currentModelName);
+      };
+      document.getElementById('crop-group').appendChild(b);
+    })();
     makeButtons('abs-group', ABS, abstraction, a => a + '%', a => { abstraction = a; if (samples) buildMosaic(); });
     makeButtons('grout-group', Object.keys(GROUTS), grout, x => x, x => { grout = x; repaint(); });
     makeButtons('paint-group', ['pure','muted','flat','rgb','blobs','lit'], paintMode, x => x, x => { paintMode = x; repaint(); });
@@ -1145,15 +1218,18 @@
         const scaleY = (l.isEye && blinking) ? sq : 1;
         _tmpP0.copy(l._baseP).sub(_pivotLocal).applyQuaternion(_headQ).add(_pivotLocal);
         _tmpQ0.copy(_headQ).multiply(l._baseQ);
+        // rigid pose written unconditionally — the fallback for any tile
+        // MAX_LATTICE leaves out of the magnet lattice (see ensureMagnetGraph),
+        // so an excluded tile still tracks the head turn, just without the
+        // extra fascia stretch, instead of freezing at a stale pose
+        _tmpScale.copy(l._baseS); _tmpScale.y *= scaleY;
+        _headM.compose(_tmpP0, _tmpQ0, _tmpScale);
+        l._mesh.setMatrixAt(l._idx, _headM);
         if (magnetOn) {
           const g = l._g;
           mgCurC[g*3]=_tmpP0.x; mgCurC[g*3+1]=_tmpP0.y; mgCurC[g*3+2]=_tmpP0.z;
           mgCurQ[g*4]=_tmpQ0.x; mgCurQ[g*4+1]=_tmpQ0.y; mgCurQ[g*4+2]=_tmpQ0.z; mgCurQ[g*4+3]=_tmpQ0.w;
           mgScaleY[g]=scaleY;
-        } else {
-          _tmpScale.copy(l._baseS); _tmpScale.y *= scaleY;
-          _headM.compose(_tmpP0, _tmpQ0, _tmpScale);
-          l._mesh.setMatrixAt(l._idx, _headM);
         }
       }
       if (magnetOn) applyMagnet(headLeaves, dt);
@@ -1236,13 +1312,16 @@
         _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
         blendedDeltaQuat(si, sw, _deltaQ);
         _skQ.multiplyQuaternions(_deltaQ, l._bindQ);
+        // skinned pose written unconditionally — the fallback for any leaf
+        // MAX_LATTICE leaves out of the magnet lattice (see ensureMagnetGraph),
+        // so an excluded tile still tracks the animation, just without the
+        // extra fascia stretch, instead of freezing at a stale pose
+        _skM2.compose(_skP, _skQ, l._baseS);
+        l._mesh.setMatrixAt(l._idx, _skM2);
         if (magnetOn) {
           const g = l._g;
           mgCurC[g*3]=_skP.x; mgCurC[g*3+1]=_skP.y; mgCurC[g*3+2]=_skP.z;
           mgCurQ[g*4]=_skQ.x; mgCurQ[g*4+1]=_skQ.y; mgCurQ[g*4+2]=_skQ.z; mgCurQ[g*4+3]=_skQ.w;
-        } else {
-          _skM2.compose(_skP, _skQ, l._baseS);
-          l._mesh.setMatrixAt(l._idx, _skM2);
         }
       }
       if (magnetOn) applyMagnet(mgMovingSkinned, dt);
@@ -1300,6 +1379,16 @@
       // pull THEIR neighbours, hop after hop, the way grabbed skin recruits
       // the whole surrounding patch. When only moving tiles had bonds, the
       // recruited skirt was exactly one tile wide and the pull died there.
+      // MAX_CAND bounds the worst case per tile: `cell` is sized from the
+      // MESH-WIDE average tile size, but the octree packs tiles far smaller
+      // than average into high-detail clusters (eyes, hairline) at high
+      // abstraction — those clusters can pile thousands of tiles into the
+      // handful of grid cells a coarse `cell` gives them. Without a cap,
+      // every tile in such a cluster scans (and sorts!) the whole cluster
+      // to find its nearest 6, an O(cluster²) blowup that's the other half
+      // of the 100%-abstraction stall alongside the MAX_LATTICE cap above.
+      // 300 is generous headroom over the K=6 actually kept.
+      const MAX_CAND = 300;
       const cand = [];
       for (const l of currentLeaves) {
         const g = l._g, R = l.s * 2.6, R2 = R*R;
@@ -1307,12 +1396,12 @@
         const ix = Math.floor(cx/cell), iy = Math.floor(cy/cell), iz = Math.floor(cz/cell);
         const rings = Math.max(1, Math.ceil(R/cell));
         cand.length = 0;
-        for (let dx=-rings; dx<=rings; dx++) for (let dy=-rings; dy<=rings; dy++) for (let dz=-rings; dz<=rings; dz++) {
+        search: for (let dx=-rings; dx<=rings; dx++) for (let dy=-rings; dy<=rings; dy++) for (let dz=-rings; dz<=rings; dz++) {
           const arr = grid.get(key(ix+dx,iy+dy,iz+dz)); if (!arr) continue;
           for (const j of arr) {
             if (j === g) continue;
             const ox=mgRestC[j*3]-cx, oy=mgRestC[j*3+1]-cy, oz=mgRestC[j*3+2]-cz, d2=ox*ox+oy*oy+oz*oz;
-            if (d2 <= R2) cand.push([d2, j]);
+            if (d2 <= R2) { cand.push([d2, j]); if (cand.length >= MAX_CAND) break search; }
           }
         }
         cand.sort((a,b)=>a[0]-b[0]);
@@ -1332,19 +1421,44 @@
       // home by an anchor spring — so a hard pull recruits a whole PATCH of
       // surrounding tissue (compounding), not a one-tile skirt. Statics
       // beyond the ring never move.
+      // MAX_LATTICE bounds the per-frame relaxation cost (mgLattice.length *
+      // K * iters, the hot loop in applyMagnet) independent of abstraction.
+      // At 100% abstraction the "moving" set for a bust (headLeaves, ~45%+
+      // of the model by Y-range) is itself thousands of tiles, and RING-hop
+      // recruitment saturates outward until nearly the WHOLE mesh joins the
+      // lattice — a single JS frame then runs long enough that mobile
+      // Safari's/Chrome's unresponsive-page watchdog kills the tab (this is
+      // what read as a "crash": headless testing showed FPS decay to 0 with
+      // flat, non-leaking memory — a stalled frame, not an OOM). Recruitment
+      // just stops early past the cap; leaves left out keep the rigid
+      // head/skin pose written unconditionally below (see updateHeadAndBlink
+      // / updateSkin) instead of the extra fascia stretch, so nothing
+      // freezes — the lattice is just capped to the tiles nearest the
+      // moving region, which is where the effect reads anyway.
+      const MAX_LATTICE = 6000;
       const RING = 4;
       mgInLattice = new Uint8Array(N);
       mgLattice = [];
       let frontier = [];
-      for (const l of moving) { mgInLattice[l._g] = 1; mgLattice.push(l); frontier.push(l._g); }
-      for (let hop = 0; hop < RING; hop++) {
+      // seeding also respects the cap — for skinned models `moving` is every
+      // non-rigid leaf (all of them "animate" every frame), which alone can
+      // exceed MAX_LATTICE at high abstraction before any RING hop runs
+      for (const l of moving) {
+        mgInLattice[l._g] = 1; mgLattice.push(l); frontier.push(l._g);
+        if (mgLattice.length >= MAX_LATTICE) break;
+      }
+      for (let hop = 0; hop < RING && mgLattice.length < MAX_LATTICE; hop++) {
         const next = [];
         for (const g of frontier) {
           const cnt = mgNbrCount[g];
           for (let k = 0; k < cnt; k++) {
             const j = mgNbrIdx[g*K+k];
-            if (!mgInLattice[j]) { mgInLattice[j] = 1; mgLattice.push(currentLeaves[j]); next.push(j); }
+            if (!mgInLattice[j]) {
+              mgInLattice[j] = 1; mgLattice.push(currentLeaves[j]); next.push(j);
+              if (mgLattice.length >= MAX_LATTICE) break;
+            }
           }
+          if (mgLattice.length >= MAX_LATTICE) break;
         }
         frontier = next;
         if (!frontier.length) break;
