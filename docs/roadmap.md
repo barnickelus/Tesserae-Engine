@@ -660,6 +660,54 @@
       Helmet load from jsdelivr, which this sandbox's proxy blocks for
       testing — unaffected by this change, untested here for that reason
       only; they'll resolve normally on the deployed page.)
+- [x] **Bust-crop view + fix a real crash at 100% abstraction + magnet.**
+      User: Michelle is nice but they want a shoulders-up bust — "I want to
+      see how the effects work up close, like on a speaking face" — and
+      separately reported the page crashing whenever abstraction is 100%
+      and the magnet is on.
+      Bust crop: first tried a fixed bind-pose Y-height cutoff (top 32%,
+      keep-above). Looked right on paper but broke visibly on Michelle,
+      whose default clip (SambaDance) crouches and turns — a static height
+      band cut through the moving body at an arbitrary point each frame,
+      producing disconnected floating fragments instead of a coherent bust.
+      Replaced it with a pose-invariant cut: keep only samples whose
+      DOMINANT bone (by skin weight) is head/neck/shoulder/upper-spine —
+      a property of the rig, not the current pose, so the crop stays
+      coherent through the whole animation. New `viewCenter`/`viewRadius`
+      pair (separate from `center`/`radius`, which buildMosaic's sizeFix
+      and the colour bake still need at whole-model scale) frames the
+      camera tight on the actual post-skin rendered extent of whatever's
+      kept, measured by reading back real instance-matrix positions after
+      the first updateSkin() pass rather than trusting any pre-skin
+      estimate. Toggle button reloads the current model with the crop
+      applied/removed.
+      The crash: reproduced headless — heap stayed flat (no leak) but FPS
+      decayed to 0 and stayed there, i.e. a single JS frame blocking
+      indefinitely, which is exactly what trips mobile Safari's/Chrome's
+      unresponsive-page watchdog into killing a tab (read by the user as
+      "crashes"). CPU profiling found two unbounded per-frame costs, both
+      invisible at normal tile counts and both blowing up together only
+      past ~20k tiles:
+      · the magnet lattice's RING-hop bond recruitment had no cap, so a
+        large "moving" set (e.g. a bust's headLeaves at 100% abstraction,
+        already thousands of tiles) saturates outward until nearly the
+        whole mesh joins the per-frame relaxation loop;
+      · the neighbour-graph build's spatial hash sizes its cell from one
+        MESH-WIDE average tile size, but the octree packs tiles far
+        smaller than that average into high-detail clusters (eyes,
+        hairline) at high abstraction — those clusters pile thousands of
+        tiles into a handful of grid cells, making the per-tile candidate
+        scan + sort effectively O(cluster²).
+      Added `MAX_LATTICE` (6000) and `MAX_CAND` (300) caps for both. Tiles
+      a cap leaves out of the lattice now always get their rigid animated/
+      skinned pose written first (previously skipped outright whenever
+      magnet was on) before the lattice pass can overwrite the ones it
+      keeps — so an excluded tile still tracks the animation, just without
+      the extra fascia stretch, instead of freezing at a stale pose.
+      Verified headless: CPU profiling confirms the capped magnet code now
+      costs well under 1s total per rebuild at 100% abstraction on a bust
+      (previously unbounded); bust crop toggles cleanly on/off on
+      Michelle; no regressions on Empress/Portrait at default settings.
 
 ## Backlog
 
