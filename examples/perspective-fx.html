@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Perspective FX — Head-Tracked Off-Axis Render</title>
+<style>
+  :root{
+    --panel-bg: rgba(18,18,22,0.55);
+    --panel-border: rgba(255,255,255,0.08);
+    --accent: #7fd0ff;
+    --text: #e8e8ee;
+    --text-dim: #9a9aa5;
+  }
+  html,body{margin:0;padding:0;overflow:hidden;background:#08080a;height:100%;width:100%;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:var(--text);
+    -webkit-user-select:none;user-select:none;}
+  canvas{display:block;}
+  #video{position:absolute;bottom:12px;left:12px;width:96px;height:72px;border-radius:8px;
+    opacity:0.85;transform:scaleX(-1);object-fit:cover;border:1px solid var(--panel-border);
+    display:none;z-index:5;}
+  #trackDot{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 8px var(--accent);pointer-events:none;display:none;z-index:6;transform:translate(-50%,-50%);}
+
+  #toggleBtn{position:absolute;top:14px;right:14px;z-index:10;background:var(--panel-bg);
+    border:1px solid var(--panel-border);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    color:var(--text);border-radius:10px;padding:8px 12px;font-size:13px;letter-spacing:0.3px;}
+
+  #panel{position:absolute;top:14px;right:14px;width:280px;max-height:calc(100vh - 28px);
+    overflow-y:auto;background:var(--panel-bg);border:1px solid var(--panel-border);
+    backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-radius:14px;
+    padding:16px;box-sizing:border-box;z-index:9;transition:opacity 0.2s, transform 0.2s;}
+  #panel.hidden{opacity:0;pointer-events:none;transform:translateY(-6px);}
+  #panel h1{font-size:13px;font-weight:600;margin:0 0 14px 0;letter-spacing:0.4px;color:var(--text);
+    text-transform:uppercase;opacity:0.8;}
+  .group{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,0.06);}
+  .group:last-child{border-bottom:none;}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+  .row label{font-size:12.5px;color:var(--text-dim);}
+  .row .val{font-size:11.5px;color:var(--accent);font-variant-numeric:tabular-nums;}
+  select, button{background:rgba(255,255,255,0.06);color:var(--text);border:1px solid var(--panel-border);
+    border-radius:8px;padding:7px 9px;font-size:12.5px;width:100%;box-sizing:border-box;}
+  button{cursor:pointer;margin-top:4px;}
+  button.active{background:rgba(127,208,255,0.18);border-color:rgba(127,208,255,0.4);color:var(--accent);}
+  input[type=range]{width:100%;accent-color:var(--accent);height:16px;}
+  input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;}
+  .checkrow{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+  .checkrow label{font-size:12.5px;color:var(--text);}
+  .sub{margin-left:23px;opacity:0.9;}
+  .status{font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.4;}
+  .segbtns{display:flex;gap:6px;}
+  .segbtns button{flex:1;}
+</style>
+</head>
+<body>
+
+<video id="video" playsinline muted></video>
+<div id="trackDot"></div>
+<button id="toggleBtn">⚙ controls</button>
+
+<div id="panel">
+  <h1>Object</h1>
+  <div class="group">
+    <select id="objectSelect">
+      <option value="spike">Ridged Spike</option>
+      <option value="torusKnot">Torus Knot</option>
+      <option value="icosahedron">Pulsing Icosahedron</option>
+      <option value="particles">Particle Swarm</option>
+    </select>
+  </div>
+
+  <h1>Head Tracking</h1>
+  <div class="group">
+    <div class="segbtns">
+      <button id="trackOff" class="active">Off</button>
+      <button id="trackMouse">Mouse</button>
+      <button id="trackWebcam">Webcam</button>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <label>Mirror X</label>
+      <input type="checkbox" id="mirrorX" checked>
+    </div>
+    <button id="calibrateBtn">Re-calibrate neutral distance</button>
+    <div class="status" id="trackStatus">Tracking disabled — static camera.</div>
+  </div>
+
+  <h1>Chromatic Aberration</h1>
+  <div class="group">
+    <div class="checkrow"><input type="checkbox" id="abEnabled" checked><label>Enabled</label></div>
+    <div class="sub">
+      <div class="row"><label>Strength</label><span class="val" id="abAmountVal">0.50</span></div>
+      <input type="range" id="abAmount" min="0" max="1" step="0.01" value="0.5">
+    </div>
+  </div>
+
+  <h1>Tilt-Shift</h1>
+  <div class="group">
+    <div class="checkrow"><input type="checkbox" id="tsEnabled" checked><label>Enabled</label></div>
+    <div class="sub">
+      <div class="row"><label>Focus position</label><span class="val" id="tsFocusVal">0.50</span></div>
+      <input type="range" id="tsFocus" min="0" max="1" step="0.01" value="0.5">
+      <div class="row"><label>Blur strength</label><span class="val" id="tsBlurVal">4.0</span></div>
+      <input type="range" id="tsBlur" min="0" max="10" step="0.1" value="4.0">
+      <div class="row"><label>Sharp band width</label><span class="val" id="tsFeatherVal">0.10</span></div>
+      <input type="range" id="tsFeather" min="0.02" max="0.4" step="0.01" value="0.10">
+      <div class="row" style="margin-top:6px;"><label>Orientation</label></div>
+      <div class="segbtns">
+        <button id="tsHoriz" class="active">Horizontal band</button>
+        <button id="tsVert">Vertical band</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">Effects stack top-to-bottom onto whatever camera view is active (static / mouse / head-tracked). Add more passes in EFFECT PASSES section of source.</div>
+</div>
+
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script>
+(function(){
+
+/* ============================================================
+   BASIC THREE SETUP
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha:false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x08080a, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x08080a, 0.02);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.set(0,0,6);
+
+// Lighting — dark gallery-wall feel
+scene.add(new THREE.AmbientLight(0x2a2a35, 0.6));
+const keyLight = new THREE.PointLight(0xbfe0ff, 2.2, 30);
+keyLight.position.set(2,3,4);
+scene.add(keyLight);
+const rimLight = new THREE.PointLight(0xff66cc, 1.0, 30);
+rimLight.position.set(-3,-1,-2);
+scene.add(rimLight);
+
+const clock = new THREE.Clock();
+
+/* ============================================================
+   OBJECTS  — each exposes userData.update(t)
+   ============================================================ */
+const objectGroup = new THREE.Group();
+scene.add(objectGroup);
+let currentObject = null;
+const objects = {};
+
+// -- Ridged spike on a turntable disc (evokes the reference sculpture) --
+(function buildSpike(){
+  const g = new THREE.Group();
+
+  // Lathe profile with sinusoidal ridge perturbation baked into radius
+  const points = [];
+  const segs = 40;
+  for(let i=0;i<=segs;i++){
+    const tt = i/segs;
+    const y = tt * 3.2 - 0.2;
+    const taper = Math.pow(1-tt, 1.6);
+    const ridge = 1 + 0.12*Math.sin(tt*40.0);
+    const r = Math.max(0.02, 0.55*taper*ridge);
+    points.push(new THREE.Vector2(r, y));
+  }
+  const latheGeo = new THREE.LatheGeometry(points, 48);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x9fb8ff, metalness:0.35, roughness:0.25, flatShading:false,
+    emissive:0x1a2450, emissiveIntensity:0.4
+  });
+  const spike = new THREE.Mesh(latheGeo, mat);
+  spike.position.y = -0.2;
+  g.add(spike);
+
+  const discGeo = new THREE.CylinderGeometry(1.6,1.6,0.12,64);
+  const discMat = new THREE.MeshStandardMaterial({color:0x14141a, metalness:0.6, roughness:0.35});
+  const disc = new THREE.Mesh(discGeo, discMat);
+  disc.position.y = -0.4;
+  g.add(disc);
+
+  const glow = new THREE.PointLight(0xffffff, 1.4, 6);
+  glow.position.set(0.3, -0.1, 0.3);
+  g.add(glow);
+
+  g.userData.update = (t)=>{
+    g.rotation.y = t*0.6;
+    disc.rotation.y = -t*0.35;
+    mat.emissiveIntensity = 0.35 + 0.15*Math.sin(t*2.0);
+    glow.position.x = Math.sin(t*0.8)*0.4;
+    glow.position.z = Math.cos(t*0.8)*0.4;
+  };
+  objects.spike = g;
+})();
+
+// -- Torus knot --
+(function buildTorusKnot(){
+  const geo = new THREE.TorusKnotGeometry(1.05, 0.32, 180, 24);
+  const mat = new THREE.MeshStandardMaterial({color:0xff9a5c, metalness:0.5, roughness:0.2, emissive:0x2a1000, emissiveIntensity:0.3});
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData.update = (t)=>{ mesh.rotation.x = t*0.4; mesh.rotation.y = t*0.55; };
+  objects.torusKnot = mesh;
+})();
+
+// -- Pulsing icosahedron (vertex displacement) --
+(function buildIco(){
+  const geo = new THREE.IcosahedronGeometry(1.3, 4);
+  const basePos = geo.attributes.position.array.slice();
+  const mat = new THREE.MeshStandardMaterial({color:0x8cffc9, metalness:0.2, roughness:0.35, flatShading:true, emissive:0x003322, emissiveIntensity:0.3});
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData.update = (t)=>{
+    const pos = geo.attributes.position;
+    for(let i=0;i<pos.count;i++){
+      const ix=i*3;
+      const bx=basePos[ix], by=basePos[ix+1], bz=basePos[ix+2];
+      const len = Math.sqrt(bx*bx+by*by+bz*bz) || 1;
+      const nx=bx/len, ny=by/len, nz=bz/len;
+      const n = Math.sin(nx*3.0+t*1.6)+Math.sin(ny*3.0+t*1.3)+Math.sin(nz*3.0+t*1.9);
+      const disp = 1 + 0.14*n;
+      pos.setXYZ(i, bx*disp, by*disp, bz*disp);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    mesh.rotation.y = t*0.25;
+  };
+  objects.icosahedron = mesh;
+})();
+
+// -- Particle swarm --
+(function buildParticles(){
+  const COUNT = 1400;
+  const positions = new Float32Array(COUNT*3);
+  const speeds = new Float32Array(COUNT);
+  const radii = new Float32Array(COUNT);
+  const angles0 = new Float32Array(COUNT);
+  const heights = new Float32Array(COUNT);
+  for(let i=0;i<COUNT;i++){
+    const r = 0.4 + Math.random()*1.6;
+    const a = Math.random()*Math.PI*2;
+    const h = (Math.random()-0.5)*2.2;
+    radii[i]=r; angles0[i]=a; heights[i]=h;
+    speeds[i] = 0.2 + Math.random()*0.6;
+    positions[i*3]   = Math.cos(a)*r;
+    positions[i*3+1] = h;
+    positions[i*3+2] = Math.sin(a)*r;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+  const mat = new THREE.PointsMaterial({color:0xaad4ff, size:0.045, transparent:true, opacity:0.9, sizeAttenuation:true});
+  const pts = new THREE.Points(geo, mat);
+  pts.userData.update = (t)=>{
+    const pos = geo.attributes.position;
+    for(let i=0;i<COUNT;i++){
+      const a = angles0[i] + t*speeds[i];
+      const r = radii[i];
+      pos.setXYZ(i, Math.cos(a)*r, heights[i]+Math.sin(t*speeds[i]*1.3+i)*0.15, Math.sin(a)*r);
+    }
+    pos.needsUpdate = true;
+    pts.rotation.y = t*0.05;
+  };
+  objects.particles = pts;
+})();
+
+function selectObject(key){
+  if(currentObject) objectGroup.remove(currentObject);
+  currentObject = objects[key];
+  objectGroup.add(currentObject);
+}
+selectObject('spike');
+document.getElementById('objectSelect').addEventListener('change', e=>selectObject(e.target.value));
+
+/* ============================================================
+   OFF-AXIS / HEAD-COUPLED PROJECTION  (Kooima generalized persp.)
+   ============================================================ */
+// Virtual screen plane in world units, recomputed on resize to match aspect
+let screenHalfH = 1.0;
+let screenHalfW = screenHalfH * (window.innerWidth/window.innerHeight);
+let pa = new THREE.Vector3(-screenHalfW, -screenHalfH, 0); // bottom-left
+let pb = new THREE.Vector3( screenHalfW, -screenHalfH, 0); // bottom-right
+let pc = new THREE.Vector3(-screenHalfW,  screenHalfH, 0); // top-left
+
+function updateScreenCorners(){
+  screenHalfW = screenHalfH * (window.innerWidth/window.innerHeight);
+  pa.set(-screenHalfW, -screenHalfH, 0);
+  pb.set( screenHalfW, -screenHalfH, 0);
+  pc.set(-screenHalfW,  screenHalfH, 0);
+}
+
+const NEAR = 0.1, FAR = 100;
+function setOffAxisProjection(cam, eye){
+  const va = pa.clone().sub(eye);
+  const vb = pb.clone().sub(eye);
+  const vc = pc.clone().sub(eye);
+
+  const vr = pb.clone().sub(pa).normalize();
+  const vu = pc.clone().sub(pa).normalize();
+  const vn = new THREE.Vector3().crossVectors(vr, vu).normalize();
+
+  const d = -va.dot(vn);
+  const nOverD = NEAR / d;
+
+  const l = va.dot(vr) * nOverD;
+  const r = vb.dot(vr) * nOverD;
+  const b = va.dot(vu) * nOverD;
+  const t = vc.dot(vu) * nOverD;
+
+  cam.projectionMatrix.makePerspective(l, r, t, b, NEAR, FAR);
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+
+  const rot = new THREE.Matrix4().makeBasis(vr, vu, vn);
+  cam.quaternion.setFromRotationMatrix(rot);
+  cam.position.copy(eye);
+  cam.updateMatrixWorld(true);
+}
+
+function setStaticProjection(cam){
+  cam.position.set(0,0,6);
+  cam.lookAt(0,0,0);
+  cam.updateProjectionMatrix();
+}
+setStaticProjection(camera);
+
+/* ---- tracking state ---- */
+let trackMode = 'off'; // off | mouse | webcam
+let mirrorX = true;
+let refFaceWidth = null;
+const LATERAL_RANGE = 3.2;
+const VERTICAL_RANGE = 2.2;
+const BASE_DIST = 6.0;
+
+let smoothedEye = new THREE.Vector3(0,0,BASE_DIST);
+const SMOOTH = 0.18; // exponential smoothing factor
+
+function computeEyeFromNormalized(fx, fy, faceWidthNorm){
+  const mirrorSign = mirrorX ? -1 : 1;
+  const ex = mirrorSign * (fx - 0.5) * LATERAL_RANGE;
+  const ey = (0.5 - fy) * VERTICAL_RANGE;
+  let ez = BASE_DIST;
+  if(faceWidthNorm && faceWidthNorm > 0.001){
+    if(refFaceWidth === null) refFaceWidth = faceWidthNorm;
+    const zScale = refFaceWidth / faceWidthNorm;
+    ez = THREE.MathUtils.clamp(BASE_DIST * zScale, BASE_DIST*0.35, BASE_DIST*2.5);
+  }
+  return new THREE.Vector3(ex, ey, ez);
+}
+
+let mouseNorm = {x:0.5, y:0.5};
+window.addEventListener('mousemove', (e)=>{
+  mouseNorm.x = e.clientX / window.innerWidth;
+  mouseNorm.y = e.clientY / window.innerHeight;
+});
+
+/* ---- webcam / mediapipe face detection ---- */
+let mpLoaded = false, mpFaceDetection = null, mpCamera = null;
+const videoEl = document.getElementById('video');
+const trackDotEl = document.getElementById('trackDot');
+const statusEl = document.getElementById('trackStatus');
+
+function loadScript(src){
+  return new Promise((res, rej)=>{
+    const s = document.createElement('script');
+    s.src = src; s.crossOrigin = 'anonymous';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+let lastFaceNorm = null; // {x,y,w}
+async function enableWebcamTracking(){
+  statusEl.textContent = 'Loading tracker…';
+  try{
+    if(!mpLoaded){
+      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js');
+      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
+      mpLoaded = true;
+    }
+    videoEl.style.display = 'block';
+    trackDotEl.style.display = 'block';
+
+    mpFaceDetection = new FaceDetection({
+      locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+    });
+    mpFaceDetection.setOptions({ model:'short', minDetectionConfidence:0.5 });
+    mpFaceDetection.onResults((results)=>{
+      if(results.detections && results.detections.length>0){
+        const box = results.detections[0].boundingBox;
+        lastFaceNorm = { x: box.xCenter, y: box.yCenter, w: box.width };
+        statusEl.textContent = 'Webcam tracking active.';
+        trackDotEl.style.display = 'block';
+        trackDotEl.style.left = (box.xCenter*100)+'%';
+        trackDotEl.style.top = (box.yCenter*100)+'%';
+      } else {
+        statusEl.textContent = 'Webcam active — no face detected.';
+      }
+    });
+
+    mpCamera = new Camera(videoEl, {
+      onFrame: async ()=>{ await mpFaceDetection.send({image: videoEl}); },
+      width: 320, height: 240
+    });
+    await mpCamera.start();
+    statusEl.textContent = 'Webcam tracking active.';
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = 'Webcam/tracker failed to load — falling back to mouse mode.';
+    setTrackMode('mouse');
+  }
+}
+
+function disableWebcamTracking(){
+  if(mpCamera){ try{ mpCamera.stop(); }catch(e){} }
+  videoEl.style.display='none';
+  trackDotEl.style.display='none';
+  lastFaceNorm = null;
+}
+
+function setTrackMode(mode){
+  trackMode = mode;
+  ['trackOff','trackMouse','trackWebcam'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  if(mode==='off'){ document.getElementById('trackOff').classList.add('active'); disableWebcamTracking(); statusEl.textContent='Tracking disabled — static camera.'; refFaceWidth=null; }
+  if(mode==='mouse'){ document.getElementById('trackMouse').classList.add('active'); disableWebcamTracking(); statusEl.textContent='Mouse-driven pseudo head-tracking.'; refFaceWidth=null; }
+  if(mode==='webcam'){ document.getElementById('trackWebcam').classList.add('active'); refFaceWidth=null; enableWebcamTracking(); }
+}
+document.getElementById('trackOff').addEventListener('click', ()=>setTrackMode('off'));
+document.getElementById('trackMouse').addEventListener('click', ()=>setTrackMode('mouse'));
+document.getElementById('trackWebcam').addEventListener('click', ()=>setTrackMode('webcam'));
+document.getElementById('mirrorX').addEventListener('change', e=>{ mirrorX = e.target.checked; });
+document.getElementById('calibrateBtn').addEventListener('click', ()=>{ refFaceWidth = null; });
+
+/* ============================================================
+   EFFECT PASSES  — generic full-screen post-processing stack
+   Add new passes by pushing {id, pass, enabled} onto passStack.
+   ============================================================ */
+const quadVert = `
+  varying vec2 vUv;
+  void main(){
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const passthroughFrag = `
+  uniform sampler2D tDiffuse;
+  varying vec2 vUv;
+  void main(){ gl_FragColor = texture2D(tDiffuse, vUv); }
+`;
+
+const aberrationFrag = `
+  uniform sampler2D tDiffuse;
+  uniform float amount;
+  varying vec2 vUv;
+  void main(){
+    vec2 center = vec2(0.5);
+    vec2 dir = vUv - center;
+    float dist = length(dir);
+    vec2 offset = dir * amount * dist * 0.06;
+    float r = texture2D(tDiffuse, vUv - offset).r;
+    float g = texture2D(tDiffuse, vUv).g;
+    float b = texture2D(tDiffuse, vUv + offset).b;
+    float a = texture2D(tDiffuse, vUv).a;
+    gl_FragColor = vec4(r,g,b,a);
+  }
+`;
+
+const tiltShiftFrag = `
+  uniform sampler2D tDiffuse;
+  uniform vec2 resolution;
+  uniform float focus;
+  uniform float blurStrength;
+  uniform float feather;
+  uniform int orientation;
+  varying vec2 vUv;
+  void main(){
+    float coord = orientation == 0 ? vUv.y : vUv.x;
+    float dist = abs(coord - focus);
+    float blurAmt = smoothstep(feather, feather + 0.25, dist) * blurStrength;
+    vec2 texel = 1.0 / resolution;
+    if(blurAmt < 0.02){
+      gl_FragColor = texture2D(tDiffuse, vUv);
+      return;
+    }
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for(int x=-2; x<=2; x++){
+      for(int y=-2; y<=2; y++){
+        vec2 offset = vec2(float(x), float(y)) * texel * blurAmt;
+        float w = 1.0 / (1.0 + float(x*x+y*y));
+        sum += texture2D(tDiffuse, vUv + offset) * w;
+        total += w;
+      }
+    }
+    gl_FragColor = sum / total;
+  }
+`;
+
+function makePass(fragmentShader, uniforms){
+  const material = new THREE.ShaderMaterial({ uniforms, vertexShader: quadVert, fragmentShader });
+  return { material, uniforms };
+}
+
+const blitPass = makePass(passthroughFrag, { tDiffuse:{value:null} });
+const aberrationPass = makePass(aberrationFrag, { tDiffuse:{value:null}, amount:{value:0.5} });
+const tiltShiftPass = makePass(tiltShiftFrag, {
+  tDiffuse:{value:null}, resolution:{value:new THREE.Vector2(window.innerWidth, window.innerHeight)},
+  focus:{value:0.5}, blurStrength:{value:4.0}, feather:{value:0.10}, orientation:{value:0}
+});
+
+const passStack = [
+  { id:'aberration', pass: aberrationPass, enabled:true },
+  { id:'tiltshift',  pass: tiltShiftPass,  enabled:true },
+];
+
+const quadScene = new THREE.Scene();
+const quadCam = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const quadGeo = new THREE.PlaneBufferGeometry(2,2);
+const quadMesh = new THREE.Mesh(quadGeo, blitPass.material);
+quadScene.add(quadMesh);
+
+let rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
+let rtB = rtA.clone();
+
+function resizeTargets(){
+  rtA.setSize(window.innerWidth, window.innerHeight);
+  rtB.setSize(window.innerWidth, window.innerHeight);
+  tiltShiftPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+}
+
+function renderComposite(){
+  renderer.setRenderTarget(rtA);
+  renderer.render(scene, camera);
+
+  const active = passStack.filter(p=>p.enabled);
+  if(active.length === 0){
+    blitPass.uniforms.tDiffuse.value = rtA.texture;
+    quadMesh.material = blitPass.material;
+    renderer.setRenderTarget(null);
+    renderer.render(quadScene, quadCam);
+    return;
+  }
+
+  let read = rtA, write = rtB;
+  active.forEach((entry, i)=>{
+    entry.pass.uniforms.tDiffuse.value = read.texture;
+    quadMesh.material = entry.pass.material;
+    const isLast = i === active.length - 1;
+    renderer.setRenderTarget(isLast ? null : write);
+    renderer.render(quadScene, quadCam);
+    if(!isLast){ const tmp = read; read = write; write = tmp; }
+  });
+}
+
+/* ---- UI wiring for effect params ---- */
+const abEnabledEl = document.getElementById('abEnabled');
+const abAmountEl = document.getElementById('abAmount');
+const abAmountVal = document.getElementById('abAmountVal');
+abEnabledEl.addEventListener('change', e=>{ passStack[0].enabled = e.target.checked; });
+abAmountEl.addEventListener('input', e=>{
+  aberrationPass.uniforms.amount.value = parseFloat(e.target.value);
+  abAmountVal.textContent = parseFloat(e.target.value).toFixed(2);
+});
+
+const tsEnabledEl = document.getElementById('tsEnabled');
+const tsFocusEl = document.getElementById('tsFocus');
+const tsFocusVal = document.getElementById('tsFocusVal');
+const tsBlurEl = document.getElementById('tsBlur');
+const tsBlurVal = document.getElementById('tsBlurVal');
+const tsFeatherEl = document.getElementById('tsFeather');
+const tsFeatherVal = document.getElementById('tsFeatherVal');
+tsEnabledEl.addEventListener('change', e=>{ passStack[1].enabled = e.target.checked; });
+tsFocusEl.addEventListener('input', e=>{
+  tiltShiftPass.uniforms.focus.value = parseFloat(e.target.value);
+  tsFocusVal.textContent = parseFloat(e.target.value).toFixed(2);
+});
+tsBlurEl.addEventListener('input', e=>{
+  tiltShiftPass.uniforms.blurStrength.value = parseFloat(e.target.value);
+  tsBlurVal.textContent = parseFloat(e.target.value).toFixed(1);
+});
+tsFeatherEl.addEventListener('input', e=>{
+  tiltShiftPass.uniforms.feather.value = parseFloat(e.target.value);
+  tsFeatherVal.textContent = parseFloat(e.target.value).toFixed(2);
+});
+document.getElementById('tsHoriz').addEventListener('click', e=>{
+  tiltShiftPass.uniforms.orientation.value = 0;
+  document.getElementById('tsHoriz').classList.add('active');
+  document.getElementById('tsVert').classList.remove('active');
+});
+document.getElementById('tsVert').addEventListener('click', e=>{
+  tiltShiftPass.uniforms.orientation.value = 1;
+  document.getElementById('tsVert').classList.add('active');
+  document.getElementById('tsHoriz').classList.remove('active');
+});
+
+/* ---- panel toggle ---- */
+const panelEl = document.getElementById('panel');
+const toggleBtn = document.getElementById('toggleBtn');
+toggleBtn.addEventListener('click', ()=> panelEl.classList.toggle('hidden'));
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+function updateCameraFromTracking(){
+  let targetEye;
+  if(trackMode === 'webcam' && lastFaceNorm){
+    targetEye = computeEyeFromNormalized(lastFaceNorm.x, lastFaceNorm.y, lastFaceNorm.w);
+  } else if(trackMode === 'mouse'){
+    targetEye = computeEyeFromNormalized(mouseNorm.x, mouseNorm.y, null);
+  } else {
+    setStaticProjection(camera);
+    return;
+  }
+  smoothedEye.lerp(targetEye, SMOOTH);
+  setOffAxisProjection(camera, smoothedEye);
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  if(currentObject && currentObject.userData.update) currentObject.userData.update(t);
+  updateCameraFromTracking();
+  renderComposite();
+}
+animate();
+
+window.addEventListener('resize', ()=>{
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth/window.innerHeight;
+  updateScreenCorners();
+  resizeTargets();
+});
+
+})();
+</script>
+</body>
+</html>
