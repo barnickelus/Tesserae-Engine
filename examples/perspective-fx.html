@@ -22,6 +22,13 @@
   #trackDot{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 8px var(--accent);pointer-events:none;display:none;z-index:6;transform:translate(-50%,-50%);}
 
+  /* Neon picture-frame around the box opening (shown only in diorama mode).
+     The 3D box interior renders behind this, so the screen edge reads as the
+     mouth of a shadow-box you look into. */
+  #boxFrame{position:absolute;inset:0;pointer-events:none;z-index:4;display:none;box-sizing:border-box;
+    border:7px solid rgba(255,58,92,0.92);
+    box-shadow:inset 0 0 46px rgba(255,58,92,0.32), inset 0 0 4px rgba(255,120,150,0.7), 0 0 22px rgba(255,58,92,0.45);}
+
   #toggleBtn{position:absolute;top:14px;right:14px;z-index:10;background:var(--panel-bg);
     border:1px solid var(--panel-border);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
     color:var(--text);border-radius:10px;padding:8px 12px;font-size:13px;letter-spacing:0.3px;}
@@ -56,17 +63,29 @@
 
 <video id="video" playsinline muted></video>
 <div id="trackDot"></div>
+<div id="boxFrame"></div>
 <button id="toggleBtn">⚙ controls</button>
 
 <div id="panel">
   <h1>Object</h1>
   <div class="group">
     <select id="objectSelect">
+      <option value="gummy" selected>Gummy Bear</option>
       <option value="spike">Ridged Spike</option>
       <option value="torusKnot">Torus Knot</option>
       <option value="icosahedron">Pulsing Icosahedron</option>
       <option value="particles">Particle Swarm</option>
     </select>
+  </div>
+
+  <h1>Diorama Box</h1>
+  <div class="group">
+    <div class="checkrow"><input type="checkbox" id="boxEnabled"><label>Inside-box frame view</label></div>
+    <div class="sub">
+      <div class="row"><label>Box depth</label><span class="val" id="boxDepthVal">4.5</span></div>
+      <input type="range" id="boxDepth" min="2" max="9" step="0.1" value="4.5">
+      <div class="status">Turns the screen into the open mouth of a 3D shadow box — the object sits inside and the walls recede behind the frame. Auto-switches to a tracking mode so the walls parallax as you move.</div>
+    </div>
   </div>
 
   <h1>Head Tracking</h1>
@@ -264,12 +283,58 @@ const objects = {};
   objects.particles = pts;
 })();
 
+// -- Gummy bear — overlapping translucent blobs, candy-glow material --
+(function buildGummyBear(){
+  const g = new THREE.Group();
+  const gummyMat = new THREE.MeshPhysicalMaterial({
+    color:0xff4d3d, metalness:0.0, roughness:0.14,
+    transparent:true, opacity:0.9,
+    emissive:0x6e1400, emissiveIntensity:0.4,
+    clearcoat:0.9, clearcoatRoughness:0.22, side:THREE.FrontSide
+  });
+  const sphereGeo = new THREE.SphereGeometry(1, 32, 24);
+  function blob(x,y,z,sx,sy,sz){
+    const m = new THREE.Mesh(sphereGeo, gummyMat);
+    m.position.set(x,y,z); m.scale.set(sx,sy,sz); g.add(m); return m;
+  }
+  // body → head → snout, then ears / arms / legs — Haribo proportions
+  blob(0, -0.35, 0,    0.86, 0.98, 0.74);   // belly / body
+  blob(0,  0.78, 0.05, 0.60, 0.56, 0.58);   // head
+  blob(0,  0.66, 0.46, 0.26, 0.22, 0.26);   // snout
+  blob(-0.40, 1.16, -0.02, 0.19, 0.20, 0.19); // ear L
+  blob( 0.40, 1.16, -0.02, 0.19, 0.20, 0.19); // ear R
+  blob(-0.66, 0.02, 0.34, 0.27, 0.30, 0.29);  // arm L
+  blob( 0.66, 0.02, 0.34, 0.27, 0.30, 0.29);  // arm R
+  blob(-0.40, -1.12, 0.22, 0.31, 0.30, 0.33); // leg L
+  blob( 0.40, -1.12, 0.22, 0.31, 0.30, 0.33); // leg R
+
+  // tiny pressed-in face: two eyes + a nose, in classic gummy "impressed" style
+  const faceMat = new THREE.MeshStandardMaterial({color:0x3a0d00, roughness:0.45, metalness:0.0});
+  function dot(x,y,z,r){ const d=new THREE.Mesh(new THREE.SphereGeometry(r,16,12), faceMat); d.position.set(x,y,z); g.add(d); }
+  dot(-0.19, 0.88, 0.50, 0.055);   // eye L
+  dot( 0.19, 0.88, 0.50, 0.055);   // eye R
+  dot( 0.0,  0.70, 0.66, 0.05);    // nose
+
+  // internal candy glow so the translucency reads as lit-from-within
+  const core = new THREE.PointLight(0xff6a44, 0.9, 4.5);
+  core.position.set(0, 0.1, 0.1); g.add(core);
+
+  g.scale.setScalar(1.05);
+  g.userData.update = (t)=>{
+    g.rotation.y = t*0.5;
+    g.position.y = Math.sin(t*1.2)*0.06;
+    gummyMat.emissiveIntensity = 0.34 + 0.12*Math.sin(t*2.3);
+    core.intensity = 0.8 + 0.25*Math.sin(t*2.3);
+  };
+  objects.gummy = g;
+})();
+
 function selectObject(key){
   if(currentObject) objectGroup.remove(currentObject);
   currentObject = objects[key];
   objectGroup.add(currentObject);
 }
-selectObject('spike');
+selectObject('gummy');
 document.getElementById('objectSelect').addEventListener('change', e=>selectObject(e.target.value));
 
 /* ============================================================
@@ -322,6 +387,78 @@ function setStaticProjection(cam){
   cam.updateProjectionMatrix();
 }
 setStaticProjection(camera);
+
+/* ============================================================
+   DIORAMA BOX  — the screen becomes the open mouth of a shadow
+   box; five inner walls recede behind the frame so head/mouse
+   parallax reads as looking INTO a real 3D box (the off-axis
+   projection makes the screen plane the box opening exactly).
+   ============================================================ */
+let boxEnabled = false;
+let boxDepth = 4.5;
+let boxRoom = null;
+const boxFrameEl = document.getElementById('boxFrame');
+const boxLight = new THREE.PointLight(0xbfe0ff, 0.0, 24);
+boxLight.position.set(0, 0.4, -1.2);
+scene.add(boxLight);
+
+function makeGridTexture(){
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0c0f16'; ctx.fillRect(0,0,256,256);
+  ctx.strokeStyle = 'rgba(127,208,255,0.22)'; ctx.lineWidth = 2;
+  for(let i=0;i<=8;i++){
+    const p = i/8*256;
+    ctx.beginPath(); ctx.moveTo(p,0); ctx.lineTo(p,256); ctx.moveTo(0,p); ctx.lineTo(256,p); ctx.stroke();
+  }
+  const tex = new THREE.Texture(c);
+  tex.needsUpdate = true; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function disposeBoxRoom(){
+  if(!boxRoom) return;
+  boxRoom.traverse(o=>{
+    if(o.geometry) o.geometry.dispose();
+    if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); }
+  });
+  scene.remove(boxRoom);
+  boxRoom = null;
+}
+
+function buildBoxRoom(){
+  disposeBoxRoom();
+  boxRoom = new THREE.Group();
+  const D = boxDepth, hw = screenHalfW, hh = screenHalfH, cell = 0.4;
+  function wall(w, h, euler, pos){
+    const geo = new THREE.PlaneGeometry(w, h);
+    const tex = makeGridTexture();
+    tex.repeat.set(Math.max(1, Math.round(w/cell)), Math.max(1, Math.round(h/cell)));
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, color: 0x38506e, roughness: 0.92, metalness: 0.04,
+      emissive: 0x0a1424, emissiveIntensity: 0.45, side: THREE.DoubleSide
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.copy(euler); m.position.copy(pos); boxRoom.add(m);
+  }
+  wall(2*hw, 2*hh, new THREE.Euler(0,0,0),          new THREE.Vector3(0, 0, -D));       // back
+  wall(2*hw, D,    new THREE.Euler(-Math.PI/2,0,0), new THREE.Vector3(0, -hh, -D/2));   // floor
+  wall(2*hw, D,    new THREE.Euler(Math.PI/2,0,0),  new THREE.Vector3(0,  hh, -D/2));   // ceiling
+  wall(D, 2*hh,    new THREE.Euler(0,Math.PI/2,0),  new THREE.Vector3(-hw, 0, -D/2));   // left
+  wall(D, 2*hh,    new THREE.Euler(0,-Math.PI/2,0), new THREE.Vector3( hw, 0, -D/2));   // right
+  boxRoom.visible = boxEnabled;
+  scene.add(boxRoom);
+}
+
+function applyBoxLayout(){
+  if(boxEnabled){
+    objectGroup.position.set(0, 0, -boxDepth*0.5);   // sit the object inside the box
+    objectGroup.scale.setScalar(0.5);                // fit within the box mouth
+  } else {
+    objectGroup.position.set(0, 0, 0);
+    objectGroup.scale.setScalar(1);
+  }
+}
 
 /* ---- tracking state ---- */
 let trackMode = 'off'; // off | mouse | webcam
@@ -593,6 +730,26 @@ document.getElementById('tsVert').addEventListener('click', e=>{
   document.getElementById('tsHoriz').classList.remove('active');
 });
 
+/* ---- diorama box wiring ---- */
+const boxEnabledEl = document.getElementById('boxEnabled');
+const boxDepthEl = document.getElementById('boxDepth');
+const boxDepthVal = document.getElementById('boxDepthVal');
+boxEnabledEl.addEventListener('change', e=>{
+  boxEnabled = e.target.checked;
+  boxFrameEl.style.display = boxEnabled ? 'block' : 'none';
+  boxLight.intensity = boxEnabled ? 1.3 : 0.0;
+  // the frame only lines up with the box mouth under off-axis projection,
+  // so switch on a tracking mode if we're currently static
+  if(boxEnabled && trackMode === 'off') setTrackMode('mouse');
+  if(boxEnabled) buildBoxRoom(); else if(boxRoom) boxRoom.visible = false;
+  applyBoxLayout();
+});
+boxDepthEl.addEventListener('input', e=>{
+  boxDepth = parseFloat(e.target.value);
+  boxDepthVal.textContent = boxDepth.toFixed(1);
+  if(boxEnabled){ buildBoxRoom(); applyBoxLayout(); }
+});
+
 /* ---- panel toggle ---- */
 const panelEl = document.getElementById('panel');
 const toggleBtn = document.getElementById('toggleBtn');
@@ -629,6 +786,7 @@ window.addEventListener('resize', ()=>{
   camera.aspect = window.innerWidth/window.innerHeight;
   updateScreenCorners();
   resizeTargets();
+  if(boxEnabled) buildBoxRoom();   // walls track the new opening extents
 });
 
 })();
