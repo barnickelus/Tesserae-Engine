@@ -32,6 +32,9 @@
   #toggleBtn{position:absolute;top:14px;right:14px;z-index:10;background:var(--panel-bg);
     border:1px solid var(--panel-border);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
     color:var(--text);border-radius:10px;padding:8px 12px;font-size:13px;letter-spacing:0.3px;}
+  #fsBtn{position:absolute;top:14px;left:14px;z-index:10;background:var(--panel-bg);
+    border:1px solid var(--panel-border);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    color:var(--text);border-radius:10px;padding:8px 12px;font-size:13px;letter-spacing:0.3px;cursor:pointer;}
 
   #panel{position:absolute;top:14px;right:14px;width:280px;max-height:calc(100vh - 28px);
     overflow-y:auto;background:var(--panel-bg);border:1px solid var(--panel-border);
@@ -64,6 +67,7 @@
 <video id="video" playsinline muted></video>
 <div id="trackDot"></div>
 <div id="boxFrame"></div>
+<button id="fsBtn">⛶ fullscreen</button>
 <button id="toggleBtn">⚙ controls</button>
 
 <div id="panel">
@@ -76,6 +80,7 @@
       <option value="icosahedron">Pulsing Icosahedron</option>
       <option value="particles">Particle Swarm</option>
     </select>
+    <div class="checkrow" style="margin-top:12px;"><input type="checkbox" id="autoSpin" checked><label>Auto-spin</label></div>
   </div>
 
   <h1>Diorama Box</h1>
@@ -100,6 +105,9 @@
       <input type="checkbox" id="mirrorX" checked>
     </div>
     <button id="calibrateBtn">Re-calibrate neutral distance</button>
+    <div class="row" style="margin-top:12px;"><label>Perspective range</label><span class="val" id="perspRangeVal">1.0×</span></div>
+    <input type="range" id="perspRange" min="0.3" max="2.5" step="0.05" value="1.0">
+    <div class="status" style="margin-top:4px;">Higher = extreme shifts let you look right over or under the item.</div>
     <div class="status" id="trackStatus">Tracking disabled — static camera.</div>
   </div>
 
@@ -154,12 +162,18 @@ camera.position.set(0,0,6);
 
 // Lighting — dark gallery-wall feel
 scene.add(new THREE.AmbientLight(0x2a2a35, 0.6));
+// soft sky/ground fill so undersides aren't pure black when you orbit beneath
+scene.add(new THREE.HemisphereLight(0x9fbfff, 0x241a2e, 0.55));
 const keyLight = new THREE.PointLight(0xbfe0ff, 2.2, 30);
 keyLight.position.set(2,3,4);
 scene.add(keyLight);
 const rimLight = new THREE.PointLight(0xff66cc, 1.0, 30);
 rimLight.position.set(-3,-1,-2);
 scene.add(rimLight);
+// dim up-light so the underside of an item reads when viewed from below
+const underLight = new THREE.PointLight(0x6f8cff, 0.9, 30);
+underLight.position.set(0,-4,3);
+scene.add(underLight);
 
 const clock = new THREE.Clock();
 
@@ -205,9 +219,9 @@ const objects = {};
   glow.position.set(0.3, -0.1, 0.3);
   g.add(glow);
 
-  g.userData.update = (t)=>{
-    g.rotation.y = t*0.6;
-    disc.rotation.y = -t*0.35;
+  g.userData.update = (t, s)=>{
+    g.rotation.y = s*0.6;
+    disc.rotation.y = -s*0.35;
     mat.emissiveIntensity = 0.35 + 0.15*Math.sin(t*2.0);
     glow.position.x = Math.sin(t*0.8)*0.4;
     glow.position.z = Math.cos(t*0.8)*0.4;
@@ -220,7 +234,7 @@ const objects = {};
   const geo = new THREE.TorusKnotGeometry(1.05, 0.32, 180, 24);
   const mat = new THREE.MeshStandardMaterial({color:0xff9a5c, metalness:0.5, roughness:0.2, emissive:0x2a1000, emissiveIntensity:0.3});
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.userData.update = (t)=>{ mesh.rotation.x = t*0.4; mesh.rotation.y = t*0.55; };
+  mesh.userData.update = (t, s)=>{ mesh.rotation.x = s*0.4; mesh.rotation.y = s*0.55; };
   objects.torusKnot = mesh;
 })();
 
@@ -230,7 +244,7 @@ const objects = {};
   const basePos = geo.attributes.position.array.slice();
   const mat = new THREE.MeshStandardMaterial({color:0x8cffc9, metalness:0.2, roughness:0.35, flatShading:true, emissive:0x003322, emissiveIntensity:0.3});
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.userData.update = (t)=>{
+  mesh.userData.update = (t, s)=>{
     const pos = geo.attributes.position;
     for(let i=0;i<pos.count;i++){
       const ix=i*3;
@@ -243,7 +257,7 @@ const objects = {};
     }
     pos.needsUpdate = true;
     geo.computeVertexNormals();
-    mesh.rotation.y = t*0.25;
+    mesh.rotation.y = s*0.25;
   };
   objects.icosahedron = mesh;
 })();
@@ -270,7 +284,7 @@ const objects = {};
   geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
   const mat = new THREE.PointsMaterial({color:0xaad4ff, size:0.045, transparent:true, opacity:0.9, sizeAttenuation:true});
   const pts = new THREE.Points(geo, mat);
-  pts.userData.update = (t)=>{
+  pts.userData.update = (t, s)=>{
     const pos = geo.attributes.position;
     for(let i=0;i<COUNT;i++){
       const a = angles0[i] + t*speeds[i];
@@ -278,7 +292,7 @@ const objects = {};
       pos.setXYZ(i, Math.cos(a)*r, heights[i]+Math.sin(t*speeds[i]*1.3+i)*0.15, Math.sin(a)*r);
     }
     pos.needsUpdate = true;
-    pts.rotation.y = t*0.05;
+    pts.rotation.y = s*0.05;
   };
   objects.particles = pts;
 })();
@@ -320,8 +334,8 @@ const objects = {};
   core.position.set(0, 0.1, 0.1); g.add(core);
 
   g.scale.setScalar(1.05);
-  g.userData.update = (t)=>{
-    g.rotation.y = t*0.5;
+  g.userData.update = (t, s)=>{
+    g.rotation.y = s*0.5;
     g.position.y = Math.sin(t*1.2)*0.06;
     gummyMat.emissiveIntensity = 0.34 + 0.12*Math.sin(t*2.3);
     core.intensity = 0.8 + 0.25*Math.sin(t*2.3);
@@ -464,8 +478,15 @@ function applyBoxLayout(){
 let trackMode = 'off'; // off | mouse | webcam
 let mirrorX = true;
 let refFaceWidth = null;
-const LATERAL_RANGE = 3.2;
-const VERTICAL_RANGE = 2.2;
+// off-axis window parallax range (used by the DIORAMA BOX, where the fixed
+// screen-plane is the whole illusion). Kept modest — this is a shadow-box
+// window, not an orbit.
+const LATERAL_RANGE = 3.6;
+const VERTICAL_RANGE = 2.8;
+// orbit sweep (used by normal mode) — this is what actually lets you look
+// right over the top / under the bottom of an item. perspRange scales both.
+const ORBIT_MAX = Math.PI * 0.30;   // ~54° per axis at 1.0×
+let perspRange = 1.0;
 const BASE_DIST = 6.0;
 
 let smoothedEye = new THREE.Vector3(0,0,BASE_DIST);
@@ -473,8 +494,8 @@ const SMOOTH = 0.18; // exponential smoothing factor
 
 function computeEyeFromNormalized(fx, fy, faceWidthNorm){
   const mirrorSign = mirrorX ? -1 : 1;
-  const ex = mirrorSign * (fx - 0.5) * LATERAL_RANGE;
-  const ey = (0.5 - fy) * VERTICAL_RANGE;
+  const ex = mirrorSign * (fx - 0.5) * LATERAL_RANGE * Math.min(perspRange, 1.6);
+  const ey = (0.5 - fy) * VERTICAL_RANGE * Math.min(perspRange, 1.6);
   let ez = BASE_DIST;
   if(faceWidthNorm && faceWidthNorm > 0.001){
     if(refFaceWidth === null) refFaceWidth = faceWidthNorm;
@@ -750,6 +771,31 @@ boxDepthEl.addEventListener('input', e=>{
   if(boxEnabled){ buildBoxRoom(); applyBoxLayout(); }
 });
 
+/* ---- auto-spin + perspective range ---- */
+let autoSpin = true;
+document.getElementById('autoSpin').addEventListener('change', e=>{ autoSpin = e.target.checked; });
+const perspRangeEl = document.getElementById('perspRange');
+const perspRangeVal = document.getElementById('perspRangeVal');
+perspRangeEl.addEventListener('input', e=>{
+  perspRange = parseFloat(e.target.value);
+  perspRangeVal.textContent = perspRange.toFixed(1) + '×';
+});
+
+/* ---- fullscreen ---- */
+const fsBtn = document.getElementById('fsBtn');
+function fsElement(){ return document.fullscreenElement || document.webkitFullscreenElement; }
+fsBtn.addEventListener('click', ()=>{
+  const el = document.documentElement, d = document;
+  if(!fsElement()){
+    (el.requestFullscreen || el.webkitRequestFullscreen || (()=>{})).call(el);
+  } else {
+    (d.exitFullscreen || d.webkitExitFullscreen || (()=>{})).call(d);
+  }
+});
+function syncFsLabel(){ fsBtn.textContent = fsElement() ? '⛶ exit fullscreen' : '⛶ fullscreen'; }
+document.addEventListener('fullscreenchange', syncFsLabel);
+document.addEventListener('webkitfullscreenchange', syncFsLabel);
+
 /* ---- panel toggle ---- */
 const panelEl = document.getElementById('panel');
 const toggleBtn = document.getElementById('toggleBtn');
@@ -758,24 +804,59 @@ toggleBtn.addEventListener('click', ()=> panelEl.classList.toggle('hidden'));
 /* ============================================================
    MAIN LOOP
    ============================================================ */
-function updateCameraFromTracking(){
-  let targetEye;
-  if(trackMode === 'webcam' && lastFaceNorm){
-    targetEye = computeEyeFromNormalized(lastFaceNorm.x, lastFaceNorm.y, lastFaceNorm.w);
-  } else if(trackMode === 'mouse'){
-    targetEye = computeEyeFromNormalized(mouseNorm.x, mouseNorm.y, null);
-  } else {
-    setStaticProjection(camera);
-    return;
+// Orbit eye: swing around the object and look AT it, so extreme shifts
+// genuinely show its top or underside (an off-axis window can't — it keeps a
+// fixed frame). Used in normal mode; the box keeps the off-axis window.
+const _orbitTarget = new THREE.Vector3();
+function orbitEyeFromNormalized(fx, fy, faceWidthNorm){
+  const mirrorSign = mirrorX ? -1 : 1;
+  const maxAng = ORBIT_MAX * perspRange;
+  const yaw   = mirrorSign * (fx - 0.5) * 2 * maxAng;
+  let pitch   = (0.5 - fy) * 2 * maxAng;                 // + = look from above
+  pitch = THREE.MathUtils.clamp(pitch, -1.4, 1.4);        // stay shy of the poles
+  let dist = BASE_DIST;
+  if(faceWidthNorm && faceWidthNorm > 0.001){
+    if(refFaceWidth === null) refFaceWidth = faceWidthNorm;
+    dist = THREE.MathUtils.clamp(BASE_DIST * (refFaceWidth / faceWidthNorm), BASE_DIST*0.4, BASE_DIST*2.2);
   }
-  smoothedEye.lerp(targetEye, SMOOTH);
-  setOffAxisProjection(camera, smoothedEye);
+  const c = objectGroup.position;
+  return new THREE.Vector3(
+    c.x + dist * Math.cos(pitch) * Math.sin(yaw),
+    c.y + dist * Math.sin(pitch),
+    c.z + dist * Math.cos(pitch) * Math.cos(yaw)
+  );
 }
 
+function updateCameraFromTracking(){
+  let fx, fy, fw = null;
+  if(trackMode === 'webcam' && lastFaceNorm){ fx = lastFaceNorm.x; fy = lastFaceNorm.y; fw = lastFaceNorm.w; }
+  else if(trackMode === 'mouse'){ fx = mouseNorm.x; fy = mouseNorm.y; }
+  else { setStaticProjection(camera); return; }
+
+  if(boxEnabled){
+    // diorama: fixed screen-plane window, head/mouse gives parallax into the box
+    smoothedEye.lerp(computeEyeFromNormalized(fx, fy, fw), SMOOTH);
+    setOffAxisProjection(camera, smoothedEye);
+  } else {
+    // normal: orbit around the item and look at it → real over/under angles
+    smoothedEye.lerp(orbitEyeFromNormalized(fx, fy, fw), SMOOTH);
+    camera.position.copy(smoothedEye);
+    camera.up.set(0,1,0);
+    _orbitTarget.copy(objectGroup.position);
+    camera.lookAt(_orbitTarget);
+    camera.updateProjectionMatrix();   // restore standard perspective (box mode overwrites it)
+  }
+}
+
+// spinAccum only advances while auto-spin is on, so toggling it off freezes
+// the object's facing (but its morph/pulse animation, driven by t, continues)
+let spinAccum = 0, lastElapsed = 0;
 function animate(){
   requestAnimationFrame(animate);
   const t = clock.getElapsedTime();
-  if(currentObject && currentObject.userData.update) currentObject.userData.update(t);
+  const dt = t - lastElapsed; lastElapsed = t;
+  if(autoSpin) spinAccum += dt;
+  if(currentObject && currentObject.userData.update) currentObject.userData.update(t, spinAccum);
   updateCameraFromTracking();
   renderComposite();
 }
