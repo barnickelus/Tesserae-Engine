@@ -481,8 +481,12 @@ function buildBoxRoom(){
 
 function applyBoxLayout(){
   if(boxEnabled){
-    objectGroup.position.set(0, 0, -boxDepth*0.5);   // sit the object inside the box
-    objectGroup.scale.setScalar(0.5);                // fit within the box mouth
+    // Sit the item in the FRONT third of the box, not the middle: near the
+    // opening it stays in frame across a much wider viewing sweep, and the
+    // gap to the back wall is bigger, so it parallaxes harder against it —
+    // both of which is what makes the box read as deep rather than static.
+    objectGroup.position.set(0, 0, -boxDepth*0.28);
+    objectGroup.scale.setScalar(0.42);               // fit within the box mouth
   } else {
     objectGroup.position.set(0, 0, 0);
     objectGroup.scale.setScalar(1);
@@ -493,11 +497,23 @@ function applyBoxLayout(){
 let trackMode = 'off'; // off | mouse | webcam
 let mirrorX = true;
 let refFaceWidth = null;
-// off-axis window parallax range (used by the DIORAMA BOX, where the fixed
-// screen-plane is the whole illusion). Kept modest — this is a shadow-box
-// window, not an orbit.
-const LATERAL_RANGE = 3.6;
-const VERTICAL_RANGE = 2.8;
+// Off-axis window parallax (DIORAMA BOX). What matters for how much the view
+// SHIFTS is the eye's ANGLE off the screen centre = atan(offset / eyeDistance),
+// so the old numbers (±1.8 at distance 6, hard-capped at 1.6x) topped out near
+// 26° — roughly a fifth of orbit mode's sweep, which is why the box felt stuck.
+// Fixed three ways: much larger offsets, a CLOSER eye (a nearer viewer sees a
+// window from a steeper angle and gets a wider frustum into the box), and the
+// 1.6x cap removed so the Perspective-range slider keeps working to 2.5x.
+//   at 1.0x → ±2.0 offset at 3.6 distance ≈ 29°;  at 2.5x ≈ 54° (was 26° flat).
+// The offsets stay moderate because of a hard geometric truth: with a fixed
+// window, a deep object leaves view once the eye swings far enough (exactly
+// what a real shadow box does). So the object is ALSO parked nearer the
+// opening (see applyBoxLayout) — that keeps it in frame across a far wider
+// sweep AND increases its parallax against the distant back wall.
+const LATERAL_RANGE = 4.0;
+const VERTICAL_RANGE = 3.0;
+const BOX_EYE_DIST = 3.6;
+const BOX_MAX_TAN = 3.0;   // safety clamp (~72°): past this the off-axis frustum degenerates
 // orbit sweep (used by normal mode) — this is what actually lets you look
 // right over the top / under the bottom of an item. perspRange scales both.
 const ORBIT_MAX = Math.PI * 0.30;   // ~54° per axis at 1.0×
@@ -509,14 +525,25 @@ const SMOOTH = 0.18; // exponential smoothing factor
 
 function computeEyeFromNormalized(fx, fy, faceWidthNorm){
   const mirrorSign = mirrorX ? -1 : 1;
-  const ex = mirrorSign * (fx - 0.5) * LATERAL_RANGE * Math.min(perspRange, 1.6);
-  const ey = (0.5 - fy) * VERTICAL_RANGE * Math.min(perspRange, 1.6);
-  let ez = BASE_DIST;
+  let ez = BOX_EYE_DIST;
   if(faceWidthNorm && faceWidthNorm > 0.001){
     if(refFaceWidth === null) refFaceWidth = faceWidthNorm;
     const zScale = refFaceWidth / faceWidthNorm;
-    ez = THREE.MathUtils.clamp(BASE_DIST * zScale, BASE_DIST*0.35, BASE_DIST*2.5);
+    ez = THREE.MathUtils.clamp(BOX_EYE_DIST * zScale, BOX_EYE_DIST*0.45, BOX_EYE_DIST*2.4);
   }
+  let ex = mirrorSign * (fx - 0.5) * LATERAL_RANGE * perspRange;
+  let ey = (0.5 - fy) * VERTICAL_RANGE * perspRange;
+  // Keep the item in frame: through a window of half-width hw, an eye offset ex
+  // at distance ez sees, at object depth d, a band centred on -ex*d/ez that is
+  // hw*(ez+d)/ez wide. Requiring the object's near EDGE (not just its centre)
+  // to stay inside gives |ex| <= (hw*(ez+d) - objHalf*ez) / d. Adapts by itself
+  // to box depth and to leaning closer.
+  const d = Math.max(0.35, -objectGroup.position.z);
+  const objHalf = 0.55;   // world half-extent of the item at box scale
+  const limX = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfW*(ez+d) - objHalf*ez)/d));
+  const limY = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfH*(ez+d) - objHalf*ez)/d));
+  ex = THREE.MathUtils.clamp(ex, -limX, limX);
+  ey = THREE.MathUtils.clamp(ey, -limY, limY);
   return new THREE.Vector3(ex, ey, ez);
 }
 
@@ -983,7 +1010,7 @@ function updateCameraFromTracking(){
     // closeness from the eye's distance to the SCREEN plane (z=0), not the item:
     // the item sits far behind the screen in box mode, so measuring to it kept
     // closeness pinned at 0 and the curvilinear "lean-in" ramp did nothing here.
-    closeness = THREE.MathUtils.clamp((BASE_DIST - smoothedEye.z) / (BASE_DIST*0.55), 0, 1);
+    closeness = THREE.MathUtils.clamp((BOX_EYE_DIST - smoothedEye.z) / (BOX_EYE_DIST*0.5), 0, 1);
   } else {
     // normal: orbit around the item and look at it → real over/under angles
     smoothedEye.lerp(orbitEyeFromNormalized(fx, fy, fw), SMOOTH);
