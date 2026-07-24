@@ -425,6 +425,10 @@ setStaticProjection(camera);
    ============================================================ */
 let boxEnabled = false;
 let boxDepth = 4.5;
+// proximity staging of the subject inside the box (see updateCameraFromTracking)
+let boxProx = 0;                     // -1 = pulled back, +1 = leaned in
+const BOX_STAGE_FAR  = { depth:0.45, scale:0.16 };   // fraction of boxDepth, world scale
+const BOX_STAGE_NEAR = { depth:0.18, scale:0.60 };   // scale capped so it can't clip the walls
 let boxRoom = null;
 const boxFrameEl = document.getElementById('boxFrame');
 const boxLight = new THREE.PointLight(0xbfe0ff, 0.0, 24);
@@ -481,12 +485,11 @@ function buildBoxRoom(){
 
 function applyBoxLayout(){
   if(boxEnabled){
-    // Sit the item in the FRONT third of the box, not the middle: near the
-    // opening it stays in frame across a much wider viewing sweep, and the
-    // gap to the back wall is bigger, so it parallaxes harder against it —
-    // both of which is what makes the box read as deep rather than static.
-    objectGroup.position.set(0, 0, -boxDepth*0.28);
-    objectGroup.scale.setScalar(0.42);               // fit within the box mouth
+    // neutral staging (see the proximity staging in updateCameraFromTracking,
+    // which moves the subject between BOX_STAGE_FAR and BOX_STAGE_NEAR)
+    boxProx = 0;
+    objectGroup.position.set(0, 0, -boxDepth*0.315);
+    objectGroup.scale.setScalar(0.38);
   } else {
     objectGroup.position.set(0, 0, 0);
     objectGroup.scale.setScalar(1);
@@ -539,7 +542,7 @@ function computeEyeFromNormalized(fx, fy, faceWidthNorm){
   // to stay inside gives |ex| <= (hw*(ez+d) - objHalf*ez) / d. Adapts by itself
   // to box depth and to leaning closer.
   const d = Math.max(0.35, -objectGroup.position.z);
-  const objHalf = 0.55;   // world half-extent of the item at box scale
+  const objHalf = 1.45 * objectGroup.scale.x;   // tracks the staged scale below
   const limX = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfW*(ez+d) - objHalf*ez)/d));
   const limY = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfH*(ez+d) - objHalf*ez)/d));
   ex = THREE.MathUtils.clamp(ex, -limX, limX);
@@ -1007,6 +1010,20 @@ function updateCameraFromTracking(){
     // diorama: fixed screen-plane window, head/mouse gives parallax into the box
     smoothedEye.lerp(computeEyeFromNormalized(fx, fy, fw), SMOOTH);
     setOffAxisProjection(camera, smoothedEye);
+    // PROXIMITY STAGING — why this exists: a literal window cannot dolly-zoom.
+    // Leaning toward a real window shows you MORE of the room, so its contents
+    // get slightly SMALLER relative to the frame (measured: 1.55x total range,
+    // inverted), while orbit mode dollies the camera for a 5.5x range. That gap
+    // is what made the box feel like it barely moved. So the subject is STAGED
+    // like a diorama: lean in and it advances toward the opening and grows,
+    // pull back and it retreats and shrinks — restoring a comparable ~3x range
+    // on top of the (physically correct) window parallax. Bounds keep it from
+    // ever crossing the opening or clipping the walls.
+    const prox = THREE.MathUtils.clamp((BOX_EYE_DIST - smoothedEye.z)/(BOX_EYE_DIST*0.55), -1, 1);
+    boxProx += (prox - boxProx) * 0.12;                 // ease so it never snaps
+    const u = (boxProx + 1) * 0.5;                      // 0 = far .. 1 = near
+    objectGroup.position.z = -boxDepth * THREE.MathUtils.lerp(BOX_STAGE_FAR.depth, BOX_STAGE_NEAR.depth, u);
+    objectGroup.scale.setScalar(THREE.MathUtils.lerp(BOX_STAGE_FAR.scale, BOX_STAGE_NEAR.scale, u));
     // closeness from the eye's distance to the SCREEN plane (z=0), not the item:
     // the item sits far behind the screen in box mode, so measuring to it kept
     // closeness pinned at 0 and the curvilinear "lean-in" ramp did nothing here.
