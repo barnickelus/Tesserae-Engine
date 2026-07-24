@@ -138,6 +138,16 @@
     </div>
   </div>
 
+  <h1>Curvilinear (4-point)</h1>
+  <div class="group">
+    <div class="checkrow"><input type="checkbox" id="curviEnabled"><label>Enabled</label></div>
+    <div class="sub">
+      <div class="row"><label>Curvature</label><span class="val" id="curviAmountVal">0.60</span></div>
+      <input type="range" id="curviAmount" min="0" max="1" step="0.01" value="0.6">
+      <div class="status" style="margin-top:4px;">Bows straight lines (verticals + horizontals) like a wide-angle lens — automatically stronger the closer you lean in (needs webcam depth for the closeness ramp).</div>
+    </div>
+  </div>
+
   <div class="status">Effects stack top-to-bottom onto whatever camera view is active (static / mouse / head-tracked). Add more passes in EFFECT PASSES section of source.</div>
 </div>
 
@@ -511,16 +521,19 @@ window.addEventListener('mousemove', (e)=>{
   mouseNorm.y = e.clientY / window.innerHeight;
 });
 
-/* ---- webcam head tracking (MediaPipe Pose) ----
-   A face detector loses you the instant your head clips out of the top of the
-   webcam frame — which is exactly when you rise up to look down over the item.
-   Pose keeps the SHOULDERS in view, so when the head is gone we infer a virtual
-   head above the shoulder line (raised by ~0.8 shoulder-widths, nudged sideways
-   by the shoulder tilt to read lean). It's an estimate — not a real measurement
-   of your head — but it lets the viewpoint keep climbing past the top of the
-   frame instead of freezing. Shoulder width also serves as a stable depth
-   proxy, so it stays continuous whether the head is in frame or not. */
-let mpLoaded = false, mpPose = null, mpCamera = null;
+/* ---- webcam head tracking (MediaPipe Holistic) ----
+   Holistic gives us BOTH the face mesh (eyelids → blink/wink) AND the pose
+   (shoulders), so two things work at once:
+     · Head out of frame → a face detector would freeze right when you rise up
+       to look down over the item. The shoulders stay in view, so we infer a
+       virtual head above the shoulder line (raised ~0.8 shoulder-widths,
+       nudged sideways by shoulder tilt for lean). Shoulder width is also the
+       depth proxy, kept continuous whether the head is in frame or not.
+     · Wink → normally the viewpoint sits at the midpoint of the two eyes.
+       Close one eye and the view hops to the still-OPEN eye (its real ~6cm-
+       offset monocular position), snapping back to the midpoint when both are
+       open — the way an object jumps against the background when you wink. */
+let mpLoaded = false, mpHolistic = null, mpCamera = null;
 const videoEl = document.getElementById('video');
 const trackDotEl = document.getElementById('trackDot');
 const statusEl = document.getElementById('trackStatus');
@@ -534,27 +547,47 @@ function loadScript(src){
   });
 }
 
-// MediaPipe Pose landmark indices we use
-const POSE = { nose:0, eyeL:2, eyeR:5, shL:11, shR:12 };
 function lmVisible(p){ return p && (p.visibility === undefined || p.visibility > 0.5); }
 
-// Reduce landmarks to a single head estimate {x,y,w,src}. y is image-space
+// FaceMesh eyelid landmark indices for the eye-aspect-ratio (open vs closed).
+// R = image-left eye (viewer's right), L = image-right eye (viewer's left).
+const EYE = {
+  R: { up:159, low:145, out:33,  in:133 },
+  L: { up:386, low:374, in:362,  out:263 }
+};
+const BLINK_CLOSED = 0.16;   // eye-aspect-ratio below this = eye shut
+function eyeAspect(face, e){
+  const v = Math.abs(face[e.up].y - face[e.low].y);
+  const h = Math.abs(face[Object.values(e)[2]].x - face[Object.values(e)[3]].x) || 1e-4;
+  return v / h;
+}
+function eyeCenter(face, e){
+  const a = face[Object.values(e)[2]], b = face[Object.values(e)[3]];
+  return { x:(a.x+b.x)/2, y:(a.y+b.y)/2 };
+}
+
+// Reduce a Holistic result to one viewpoint {x,y,w,src,eye}. y is image-space
 // (0 top, 1 bottom) and may run past [0,1] when inferred above the frame.
-function headFromPose(lm){
-  const nose=lm[POSE.nose], eyeL=lm[POSE.eyeL], eyeR=lm[POSE.eyeR], shL=lm[POSE.shL], shR=lm[POSE.shR];
+function headFromResults(res){
+  const face = res.faceLandmarks, pose = res.poseLandmarks;
   let sw=null, sx=null, sy=null;
-  if(lmVisible(shL) && lmVisible(shR)){
-    sw = Math.hypot(shL.x-shR.x, shL.y-shR.y);
-    sx = (shL.x+shR.x)/2; sy = (shL.y+shR.y)/2;
+  if(pose && lmVisible(pose[11]) && lmVisible(pose[12])){
+    sw = Math.hypot(pose[11].x-pose[12].x, pose[11].y-pose[12].y);
+    sx = (pose[11].x+pose[12].x)/2; sy = (pose[11].y+pose[12].y)/2;
   }
-  // one depth proxy for every branch (shoulder width if we have it) so distance
-  // doesn't pop when the source switches between face and shoulders
-  const depthW = sw || (lmVisible(eyeL)&&lmVisible(eyeR) ? Math.hypot(eyeL.x-eyeR.x, eyeL.y-eyeR.y)*3.4 : 0.15);
-  if(lmVisible(eyeL) && lmVisible(eyeR)) return { x:(eyeL.x+eyeR.x)/2, y:(eyeL.y+eyeR.y)/2, w:depthW, src:'face' };
-  if(lmVisible(nose))                    return { x:nose.x, y:nose.y, w:depthW, src:'face' };
+  if(face && face.length >= 468){
+    const rc = eyeCenter(face, EYE.R), lc = eyeCenter(face, EYE.L);
+    const earR = eyeAspect(face, EYE.R), earL = eyeAspect(face, EYE.L);
+    let vp, eye = 'both';
+    if(earL < BLINK_CLOSED && earR >= BLINK_CLOSED){ vp = rc; eye = 'right'; }   // left shut → see through right
+    else if(earR < BLINK_CLOSED && earL >= BLINK_CLOSED){ vp = lc; eye = 'left'; } // right shut → see through left
+    else { vp = { x:(lc.x+rc.x)/2, y:(lc.y+rc.y)/2 }; }                            // both open (or both shut): midpoint
+    const depthW = sw || Math.hypot(lc.x-rc.x, lc.y-rc.y)*3.4 || 0.15;
+    return { x:vp.x, y:vp.y, w:depthW, src:'face', eye };
+  }
   if(sw){
-    const tilt = (shR.y - shL.y);          // shoulder line slope → lean
-    return { x: sx + tilt*0.6, y: sy - 0.8*sw, w:depthW, src:'shoulders' };
+    const tilt = (pose[12].y - pose[11].y);   // shoulder line slope → lean
+    return { x: sx + tilt*0.6, y: sy - 0.8*sw, w:sw, src:'shoulders', eye:'both' };
   }
   return null;
 }
@@ -564,27 +597,31 @@ async function enableWebcamTracking(){
   statusEl.textContent = 'Loading tracker…';
   try{
     if(!mpLoaded){
-      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js');
+      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js');
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
       mpLoaded = true;
     }
     videoEl.style.display = 'block';
     trackDotEl.style.display = 'block';
 
-    mpPose = new Pose({ locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
-    mpPose.setOptions({ modelComplexity:0, smoothLandmarks:true, enableSegmentation:false,
+    mpHolistic = new Holistic({ locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}` });
+    mpHolistic.setOptions({ modelComplexity:0, smoothLandmarks:true, refineFaceLandmarks:false,
       minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
-    mpPose.onResults((results)=>{
-      const lm = results.poseLandmarks;
-      const h = lm ? headFromPose(lm) : null;
+    mpHolistic.onResults((results)=>{
+      const h = headFromResults(results);
       if(h){
         lastFaceNorm = h;
-        statusEl.textContent = h.src === 'shoulders'
-          ? 'Head out of frame — inferring from shoulders.'
-          : 'Webcam tracking active.';
+        statusEl.textContent =
+          h.src === 'shoulders' ? 'Head out of frame — inferring from shoulders.' :
+          h.eye === 'left'      ? 'Winking → left-eye view.' :
+          h.eye === 'right'     ? 'Winking → right-eye view.' :
+                                  'Webcam tracking active.';
+        const amber = h.src === 'shoulders';
+        const eyed  = h.eye !== 'both';
+        const col = amber ? '#ffb454' : eyed ? '#8cffc9' : 'var(--accent)';
         trackDotEl.style.display = 'block';
-        trackDotEl.style.background = h.src === 'shoulders' ? '#ffb454' : 'var(--accent)';
-        trackDotEl.style.boxShadow = '0 0 8px ' + (h.src === 'shoulders' ? '#ffb454' : 'var(--accent)');
+        trackDotEl.style.background = col;
+        trackDotEl.style.boxShadow = '0 0 8px ' + col;
         trackDotEl.style.left = (Math.max(0, Math.min(1, h.x))*100)+'%';
         trackDotEl.style.top  = (Math.max(0, Math.min(1, h.y))*100)+'%';
       } else {
@@ -593,7 +630,7 @@ async function enableWebcamTracking(){
     });
 
     mpCamera = new Camera(videoEl, {
-      onFrame: async ()=>{ await mpPose.send({image: videoEl}); },
+      onFrame: async ()=>{ await mpHolistic.send({image: videoEl}); },
       width: 320, height: 240
     });
     await mpCamera.start();
@@ -609,7 +646,7 @@ function disableWebcamTracking(){
   if(mpCamera){ try{ mpCamera.stop(); }catch(e){} }
   videoEl.style.display='none';
   trackDotEl.style.display='none';
-  lastFaceNorm = null;
+  lastFaceNorm = null; mpHolistic = null;
 }
 
 function setTrackMode(mode){
@@ -691,6 +728,34 @@ const tiltShiftFrag = `
   }
 `;
 
+// Curvilinear (4/5-point) warp. Rectilinear projection keeps straight lines
+// straight — true 4-point perspective bows them. This is a post-warp barrel
+// distortion (edges reach further into the scene, so verticals + horizontals
+// curve outward like a wide-angle / fisheye), its strength ramped up by how
+// CLOSE the viewpoint is, so leaning in exaggerates the perspective. Outside
+// the source frame it falls to black, giving a clean rounded lens edge rather
+// than smeared border pixels.
+const curvilinearFrag = `
+  uniform sampler2D tDiffuse;
+  uniform float amount;   // 0..1 curvature
+  uniform float aspect;   // width/height, to keep the bulge circular
+  varying vec2 vUv;
+  void main(){
+    vec2 cc = vUv - 0.5;
+    vec2 c = cc; c.x *= aspect;
+    float r2 = dot(c, c);
+    float f = 1.0 + amount * 0.65 * r2;
+    vec2 uv  = cc * f + 0.5;
+    vec2 uvR = cc * (f * (1.0 + 0.010*amount)) + 0.5;
+    vec2 uvB = cc * (f * (1.0 - 0.010*amount)) + 0.5;
+    float inside = step(0.0,uv.x)*step(uv.x,1.0)*step(0.0,uv.y)*step(uv.y,1.0);
+    vec3 col = vec3(texture2D(tDiffuse,uvR).r, texture2D(tDiffuse,uv).g, texture2D(tDiffuse,uvB).b);
+    float vig = smoothstep(1.25, 0.45, length(c));
+    col *= mix(1.0, vig, amount*0.85);
+    gl_FragColor = vec4(col * inside, 1.0);
+  }
+`;
+
 function makePass(fragmentShader, uniforms){
   const material = new THREE.ShaderMaterial({ uniforms, vertexShader: quadVert, fragmentShader });
   return { material, uniforms };
@@ -702,10 +767,14 @@ const tiltShiftPass = makePass(tiltShiftFrag, {
   tDiffuse:{value:null}, resolution:{value:new THREE.Vector2(window.innerWidth, window.innerHeight)},
   focus:{value:0.5}, blurStrength:{value:4.0}, feather:{value:0.10}, orientation:{value:0}
 });
+const curvilinearPass = makePass(curvilinearFrag, {
+  tDiffuse:{value:null}, amount:{value:0.0}, aspect:{value: window.innerWidth/window.innerHeight}
+});
 
 const passStack = [
-  { id:'aberration', pass: aberrationPass, enabled:true },
-  { id:'tiltshift',  pass: tiltShiftPass,  enabled:true },
+  { id:'aberration', pass: aberrationPass,   enabled:true  },
+  { id:'tiltshift',  pass: tiltShiftPass,    enabled:true  },
+  { id:'curvi',      pass: curvilinearPass,  enabled:false }, // warps the final composite
 ];
 
 const quadScene = new THREE.Scene();
@@ -721,6 +790,7 @@ function resizeTargets(){
   rtA.setSize(window.innerWidth, window.innerHeight);
   rtB.setSize(window.innerWidth, window.innerHeight);
   tiltShiftPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+  curvilinearPass.uniforms.aspect.value = window.innerWidth/window.innerHeight;
 }
 
 function renderComposite(){
@@ -808,6 +878,19 @@ boxDepthEl.addEventListener('input', e=>{
   if(boxEnabled){ buildBoxRoom(); applyBoxLayout(); }
 });
 
+/* ---- curvilinear (4-point) ---- */
+let curviEnabled = false, curviBase = 0.6;
+document.getElementById('curviEnabled').addEventListener('change', e=>{
+  curviEnabled = e.target.checked;
+  passStack.find(p=>p.id==='curvi').enabled = curviEnabled;
+});
+const curviAmountEl = document.getElementById('curviAmount');
+const curviAmountVal = document.getElementById('curviAmountVal');
+curviAmountEl.addEventListener('input', e=>{
+  curviBase = parseFloat(e.target.value);
+  curviAmountVal.textContent = curviBase.toFixed(2);
+});
+
 /* ---- auto-spin + perspective range ---- */
 let autoSpin = true;
 document.getElementById('autoSpin').addEventListener('change', e=>{ autoSpin = e.target.checked; });
@@ -864,11 +947,12 @@ function orbitEyeFromNormalized(fx, fy, faceWidthNorm){
   );
 }
 
+let closeness = 0;   // 0 = neutral distance, 1 = leaned right in (drives curvilinear)
 function updateCameraFromTracking(){
   let fx, fy, fw = null;
   if(trackMode === 'webcam' && lastFaceNorm){ fx = lastFaceNorm.x; fy = lastFaceNorm.y; fw = lastFaceNorm.w; }
   else if(trackMode === 'mouse'){ fx = mouseNorm.x; fy = mouseNorm.y; }
-  else { setStaticProjection(camera); return; }
+  else { setStaticProjection(camera); closeness = 0; return; }
 
   if(boxEnabled){
     // diorama: fixed screen-plane window, head/mouse gives parallax into the box
@@ -883,6 +967,9 @@ function updateCameraFromTracking(){
     camera.lookAt(_orbitTarget);
     camera.updateProjectionMatrix();   // restore standard perspective (box mode overwrites it)
   }
+  // how close the eye is to the item (webcam depth or box dolly) → curvilinear
+  const eyeDist = camera.position.distanceTo(objectGroup.position);
+  closeness = THREE.MathUtils.clamp((BASE_DIST - eyeDist) / (BASE_DIST*0.55), 0, 1);
 }
 
 // spinAccum only advances while auto-spin is on, so toggling it off freezes
@@ -895,6 +982,9 @@ function animate(){
   if(autoSpin) spinAccum += dt;
   if(currentObject && currentObject.userData.update) currentObject.userData.update(t, spinAccum);
   updateCameraFromTracking();
+  // curvilinear strength = base, ramped by closeness (lean in → more bow)
+  curvilinearPass.uniforms.amount.value = curviEnabled
+    ? Math.min(1, curviBase * (0.4 + 0.9*closeness)) : 0;
   renderComposite();
 }
 animate();
