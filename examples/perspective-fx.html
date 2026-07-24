@@ -515,7 +515,16 @@ let refFaceWidth = null;
 // sweep AND increases its parallax against the distant back wall.
 const LATERAL_RANGE = 6.6;
 const VERTICAL_RANGE = 5.2;
-const BOX_EYE_DIST = 3.6;
+// THE PICTURE PLANE SETS THE FIELD OF VIEW. In the orbit view the lens is the
+// camera's own fov (45°). In the box view there is no fov property — the lens
+// is IMPLIED by the geometry, 2*atan(screenHalfH / eyeDistance). With the eye
+// hardcoded at 3.6 that worked out to a 31° lens, so the box was quietly
+// rendering the same scene through a much longer lens than the outside view:
+// weaker convergence, flatter depth, and a smaller angular sweep for the same
+// head movement. Deriving the distance from the camera's fov instead makes
+// both views share one perspective strength (and, being closer, widens the
+// sweep too). This was the "picture plane moved and threw off the math" bug.
+const BOX_EYE_DIST = screenHalfH / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
 const BOX_MAX_TAN = 3.0;   // safety clamp (~72°): past this the off-axis frustum degenerates
 // orbit sweep (used by normal mode) — this is what actually lets you look
 // right over the top / under the bottom of an item. perspRange scales both.
