@@ -730,13 +730,16 @@ const EYE = {
   L: { up:386, low:374, in:362,  out:263 }
 };
 const BLINK_CLOSED = 0.16;   // eye-aspect-ratio below this = eye shut
+// (addressed by name, not by Object.values position — the corner landmarks used
+// to be picked positionally, which silently depended on key insertion order and
+// would have swapped eyelids for corners if the keys were ever reordered)
 function eyeAspect(face, e){
   const v = Math.abs(face[e.up].y - face[e.low].y);
-  const h = Math.abs(face[Object.values(e)[2]].x - face[Object.values(e)[3]].x) || 1e-4;
-  return v / h;
+  const h = Math.abs(face[e.out].x - face[e.in].x) || 1e-4;
+  return v / h;                      // lid gap / eye width: ~0.3 open, ~0.03 shut
 }
 function eyeCenter(face, e){
-  const a = face[Object.values(e)[2]], b = face[Object.values(e)[3]];
+  const a = face[e.out], b = face[e.in];
   return { x:(a.x+b.x)/2, y:(a.y+b.y)/2 };
 }
 
