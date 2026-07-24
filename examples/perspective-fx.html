@@ -19,8 +19,8 @@
   #video{position:absolute;bottom:12px;left:12px;width:96px;height:72px;border-radius:8px;
     opacity:0.85;transform:scaleX(-1);object-fit:cover;border:1px solid var(--panel-border);
     display:none;z-index:5;}
-  #trackDot{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);
-    box-shadow:0 0 8px var(--accent);pointer-events:none;display:none;z-index:6;transform:translate(-50%,-50%);}
+  #trackDot{position:fixed;width:8px;height:8px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 5px var(--accent);pointer-events:none;display:none;z-index:6;transform:translate(-50%,-50%);}
 
   /* Neon picture-frame around the box opening (shown only in diorama mode).
      The 3D box interior renders behind this, so the screen edge reads as the
@@ -313,13 +313,15 @@ const objects = {};
 // -- Gummy bear — overlapping translucent blobs, candy-glow material --
 (function buildGummyBear(){
   const g = new THREE.Group();
-  const gummyMat = new THREE.MeshPhysicalMaterial({
-    color:0xff4d3d, metalness:0.0, roughness:0.14,
+  // MeshStandardMaterial (not Physical/clearcoat): the clearcoat lobe roughly
+  // doubled this shader's cost and the gummy has ~9 overlapping blobs — a plain
+  // glossy standard material keeps the candy look far cheaper (FPS).
+  const gummyMat = new THREE.MeshStandardMaterial({
+    color:0xff4d3d, metalness:0.0, roughness:0.16,
     transparent:true, opacity:0.9,
-    emissive:0x6e1400, emissiveIntensity:0.4,
-    clearcoat:0.9, clearcoatRoughness:0.22, side:THREE.FrontSide
+    emissive:0x6e1400, emissiveIntensity:0.4, side:THREE.FrontSide
   });
-  const sphereGeo = new THREE.SphereGeometry(1, 32, 24);
+  const sphereGeo = new THREE.SphereGeometry(1, 24, 16);
   function blob(x,y,z,sx,sy,sz){
     const m = new THREE.Mesh(sphereGeo, gummyMat);
     m.position.set(x,y,z); m.scale.set(sx,sy,sz); g.add(m); return m;
@@ -619,14 +621,19 @@ async function enableWebcamTracking(){
           h.eye === 'left'      ? 'Winking → left-eye view.' :
           h.eye === 'right'     ? 'Winking → right-eye view.' :
                                   'Webcam tracking active.';
+        // pin the indicator INSIDE the little camera PIP (mirrored to match the
+        // flipped video) instead of floating it over the artwork, where it read
+        // as a stray lens-flare dot
         const amber = h.src === 'shoulders';
         const eyed  = h.eye !== 'both';
         const col = amber ? '#ffb454' : eyed ? '#8cffc9' : 'var(--accent)';
+        const vb = videoEl.getBoundingClientRect();
+        const dx = Math.max(0, Math.min(1, h.x)), dy = Math.max(0, Math.min(1, h.y));
         trackDotEl.style.display = 'block';
         trackDotEl.style.background = col;
-        trackDotEl.style.boxShadow = '0 0 8px ' + col;
-        trackDotEl.style.left = (Math.max(0, Math.min(1, h.x))*100)+'%';
-        trackDotEl.style.top  = (Math.max(0, Math.min(1, h.y))*100)+'%';
+        trackDotEl.style.boxShadow = '0 0 5px ' + col;
+        trackDotEl.style.left = (vb.left + (1 - dx)*vb.width) + 'px';
+        trackDotEl.style.top  = (vb.top + dy*vb.height) + 'px';
       } else {
         statusEl.textContent = 'Webcam active — no person detected.';
       }
@@ -638,7 +645,7 @@ async function enableWebcamTracking(){
     let _hframe = 0;
     mpCamera = new Camera(videoEl, {
       onFrame: async ()=>{ if((_hframe++ & 1) === 0) await mpHolistic.send({image: videoEl}); },
-      width: 320, height: 240
+      width: 240, height: 180   // smaller capture → less work for the model (FPS)
     });
     await mpCamera.start();
     statusEl.textContent = 'Webcam tracking active.';
@@ -721,11 +728,13 @@ const tiltShiftFrag = `
       gl_FragColor = texture2D(tDiffuse, vUv);
       return;
     }
+    // 3x3 kernel (was 5x5 = 25 taps) with a slightly wider step — ~64% fewer
+    // texture fetches for the blurred region, barely distinguishable (FPS)
     vec4 sum = vec4(0.0);
     float total = 0.0;
-    for(int x=-2; x<=2; x++){
-      for(int y=-2; y<=2; y++){
-        vec2 offset = vec2(float(x), float(y)) * texel * blurAmt;
+    for(int x=-1; x<=1; x++){
+      for(int y=-1; y<=1; y++){
+        vec2 offset = vec2(float(x), float(y)) * texel * blurAmt * 1.6;
         float w = 1.0 / (1.0 + float(x*x+y*y));
         sum += texture2D(tDiffuse, vUv + offset) * w;
         total += w;
@@ -790,7 +799,7 @@ quadScene.add(quadMesh);
 // The offscreen scene render + intermediate blur passes run at a fraction of
 // resolution (upscaled by the final pass), a big fill-rate saving that the
 // blur + curvilinear warp hide well.
-const RENDER_SCALE = 0.8;
+const RENDER_SCALE = 0.72;
 function rtDims(){ return [Math.max(2, Math.round(window.innerWidth*RENDER_SCALE)),
                            Math.max(2, Math.round(window.innerHeight*RENDER_SCALE))]; }
 let [_rw, _rh] = rtDims();
@@ -971,6 +980,10 @@ function updateCameraFromTracking(){
     // diorama: fixed screen-plane window, head/mouse gives parallax into the box
     smoothedEye.lerp(computeEyeFromNormalized(fx, fy, fw), SMOOTH);
     setOffAxisProjection(camera, smoothedEye);
+    // closeness from the eye's distance to the SCREEN plane (z=0), not the item:
+    // the item sits far behind the screen in box mode, so measuring to it kept
+    // closeness pinned at 0 and the curvilinear "lean-in" ramp did nothing here.
+    closeness = THREE.MathUtils.clamp((BASE_DIST - smoothedEye.z) / (BASE_DIST*0.55), 0, 1);
   } else {
     // normal: orbit around the item and look at it → real over/under angles
     smoothedEye.lerp(orbitEyeFromNormalized(fx, fy, fw), SMOOTH);
@@ -979,10 +992,9 @@ function updateCameraFromTracking(){
     _orbitTarget.copy(objectGroup.position);
     camera.lookAt(_orbitTarget);
     camera.updateProjectionMatrix();   // restore standard perspective (box mode overwrites it)
+    const eyeDist = camera.position.distanceTo(objectGroup.position);
+    closeness = THREE.MathUtils.clamp((BASE_DIST - eyeDist) / (BASE_DIST*0.55), 0, 1);
   }
-  // how close the eye is to the item (webcam depth or box dolly) → curvilinear
-  const eyeDist = camera.position.distanceTo(objectGroup.position);
-  closeness = THREE.MathUtils.clamp((BASE_DIST - eyeDist) / (BASE_DIST*0.55), 0, 1);
 }
 
 // spinAccum only advances while auto-spin is on, so toggling it off freezes
@@ -995,9 +1007,10 @@ function animate(){
   if(autoSpin) spinAccum += dt;
   if(currentObject && currentObject.userData.update) currentObject.userData.update(t, spinAccum);
   updateCameraFromTracking();
-  // curvilinear strength = base, ramped by closeness (lean in → more bow)
+  // curvilinear strength = base (visible floor so it clearly reads even without
+  // webcam depth), ramped up by closeness (lean in → more bow)
   curvilinearPass.uniforms.amount.value = curviEnabled
-    ? Math.min(1, curviBase * (0.4 + 0.9*closeness)) : 0;
+    ? Math.min(1, curviBase * (0.6 + 0.8*closeness)) : 0;
   renderComposite();
 }
 animate();
