@@ -427,8 +427,8 @@ let boxEnabled = false;
 let boxDepth = 4.5;
 // proximity staging of the subject inside the box (see updateCameraFromTracking)
 let boxProx = 0;                     // -1 = pulled back, +1 = leaned in
-const BOX_STAGE_FAR  = { depth:0.45, scale:0.16 };   // fraction of boxDepth, world scale
-const BOX_STAGE_NEAR = { depth:0.18, scale:0.60 };   // scale capped so it can't clip the walls
+const BOX_STAGE_FAR  = { depth:0.42, scale:0.16 };   // fraction of boxDepth, world scale
+const BOX_STAGE_NEAR = { depth:0.16, scale:0.60 };   // scale capped so it can't clip the walls
 let boxRoom = null;
 const boxFrameEl = document.getElementById('boxFrame');
 const boxLight = new THREE.PointLight(0xbfe0ff, 0.0, 24);
@@ -488,7 +488,7 @@ function applyBoxLayout(){
     // neutral staging (see the proximity staging in updateCameraFromTracking,
     // which moves the subject between BOX_STAGE_FAR and BOX_STAGE_NEAR)
     boxProx = 0;
-    objectGroup.position.set(0, 0, -boxDepth*0.315);
+    objectGroup.position.set(0, 0, -boxDepth*0.26);
     objectGroup.scale.setScalar(0.38);
   } else {
     objectGroup.position.set(0, 0, 0);
@@ -507,14 +507,14 @@ let refFaceWidth = null;
 // Fixed three ways: much larger offsets, a CLOSER eye (a nearer viewer sees a
 // window from a steeper angle and gets a wider frustum into the box), and the
 // 1.6x cap removed so the Perspective-range slider keeps working to 2.5x.
-//   at 1.0x → ±2.0 offset at 3.6 distance ≈ 29°;  at 2.5x ≈ 54° (was 26° flat).
+//   at 1.0x → ±2.5 offset at 3.6 distance ≈ 35°;  at 1.9x ≈ 44-53°.
 // The offsets stay moderate because of a hard geometric truth: with a fixed
 // window, a deep object leaves view once the eye swings far enough (exactly
 // what a real shadow box does). So the object is ALSO parked nearer the
 // opening (see applyBoxLayout) — that keeps it in frame across a far wider
 // sweep AND increases its parallax against the distant back wall.
-const LATERAL_RANGE = 4.0;
-const VERTICAL_RANGE = 3.0;
+const LATERAL_RANGE = 6.6;
+const VERTICAL_RANGE = 5.2;
 const BOX_EYE_DIST = 3.6;
 const BOX_MAX_TAN = 3.0;   // safety clamp (~72°): past this the off-axis frustum degenerates
 // orbit sweep (used by normal mode) — this is what actually lets you look
@@ -538,13 +538,15 @@ function computeEyeFromNormalized(fx, fy, faceWidthNorm){
   let ey = (0.5 - fy) * VERTICAL_RANGE * perspRange;
   // Keep the item in frame: through a window of half-width hw, an eye offset ex
   // at distance ez sees, at object depth d, a band centred on -ex*d/ez that is
-  // hw*(ez+d)/ez wide. Requiring the object's near EDGE (not just its centre)
-  // to stay inside gives |ex| <= (hw*(ez+d) - objHalf*ez) / d. Adapts by itself
-  // to box depth and to leaning closer.
+  // hw*(ez+d)/ez wide. Keeping the object's CENTRE inside 85% of that band gives
+  // |ex| <= 0.85*hw*(ez+d)/d. (An earlier version demanded the whole object edge
+  // stay inside, which was the real throttle on the vertical swing — it capped
+  // the box near 29° where orbit mode reaches ~72° for the same head position.
+  // Letting the subject's edges ride out of frame at the extremes is both freer
+  // and truer: that is what a real object does as it passes a window's edge.)
   const d = Math.max(0.35, -objectGroup.position.z);
-  const objHalf = 1.45 * objectGroup.scale.x;   // tracks the staged scale below
-  const limX = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfW*(ez+d) - objHalf*ez)/d));
-  const limY = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.95*(screenHalfH*(ez+d) - objHalf*ez)/d));
+  const limX = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.85*screenHalfW*(ez + d)/d));
+  const limY = Math.min(ez*BOX_MAX_TAN, Math.max(0.2, 0.85*screenHalfH*(ez + d)/d));
   ex = THREE.MathUtils.clamp(ex, -limX, limX);
   ey = THREE.MathUtils.clamp(ey, -limY, limY);
   return new THREE.Vector3(ex, ey, ez);
