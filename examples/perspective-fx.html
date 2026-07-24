@@ -511,8 +511,16 @@ window.addEventListener('mousemove', (e)=>{
   mouseNorm.y = e.clientY / window.innerHeight;
 });
 
-/* ---- webcam / mediapipe face detection ---- */
-let mpLoaded = false, mpFaceDetection = null, mpCamera = null;
+/* ---- webcam head tracking (MediaPipe Pose) ----
+   A face detector loses you the instant your head clips out of the top of the
+   webcam frame — which is exactly when you rise up to look down over the item.
+   Pose keeps the SHOULDERS in view, so when the head is gone we infer a virtual
+   head above the shoulder line (raised by ~0.8 shoulder-widths, nudged sideways
+   by the shoulder tilt to read lean). It's an estimate — not a real measurement
+   of your head — but it lets the viewpoint keep climbing past the top of the
+   frame instead of freezing. Shoulder width also serves as a stable depth
+   proxy, so it stays continuous whether the head is in frame or not. */
+let mpLoaded = false, mpPose = null, mpCamera = null;
 const videoEl = document.getElementById('video');
 const trackDotEl = document.getElementById('trackDot');
 const statusEl = document.getElementById('trackStatus');
@@ -526,37 +534,66 @@ function loadScript(src){
   });
 }
 
-let lastFaceNorm = null; // {x,y,w}
+// MediaPipe Pose landmark indices we use
+const POSE = { nose:0, eyeL:2, eyeR:5, shL:11, shR:12 };
+function lmVisible(p){ return p && (p.visibility === undefined || p.visibility > 0.5); }
+
+// Reduce landmarks to a single head estimate {x,y,w,src}. y is image-space
+// (0 top, 1 bottom) and may run past [0,1] when inferred above the frame.
+function headFromPose(lm){
+  const nose=lm[POSE.nose], eyeL=lm[POSE.eyeL], eyeR=lm[POSE.eyeR], shL=lm[POSE.shL], shR=lm[POSE.shR];
+  let sw=null, sx=null, sy=null;
+  if(lmVisible(shL) && lmVisible(shR)){
+    sw = Math.hypot(shL.x-shR.x, shL.y-shR.y);
+    sx = (shL.x+shR.x)/2; sy = (shL.y+shR.y)/2;
+  }
+  // one depth proxy for every branch (shoulder width if we have it) so distance
+  // doesn't pop when the source switches between face and shoulders
+  const depthW = sw || (lmVisible(eyeL)&&lmVisible(eyeR) ? Math.hypot(eyeL.x-eyeR.x, eyeL.y-eyeR.y)*3.4 : 0.15);
+  if(lmVisible(eyeL) && lmVisible(eyeR)) return { x:(eyeL.x+eyeR.x)/2, y:(eyeL.y+eyeR.y)/2, w:depthW, src:'face' };
+  if(lmVisible(nose))                    return { x:nose.x, y:nose.y, w:depthW, src:'face' };
+  if(sw){
+    const tilt = (shR.y - shL.y);          // shoulder line slope → lean
+    return { x: sx + tilt*0.6, y: sy - 0.8*sw, w:depthW, src:'shoulders' };
+  }
+  return null;
+}
+
+let lastFaceNorm = null; // {x,y,w} — head position in image space, w = depth proxy
 async function enableWebcamTracking(){
   statusEl.textContent = 'Loading tracker…';
   try{
     if(!mpLoaded){
-      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js');
+      await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js');
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
       mpLoaded = true;
     }
     videoEl.style.display = 'block';
     trackDotEl.style.display = 'block';
 
-    mpFaceDetection = new FaceDetection({
-      locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-    });
-    mpFaceDetection.setOptions({ model:'short', minDetectionConfidence:0.5 });
-    mpFaceDetection.onResults((results)=>{
-      if(results.detections && results.detections.length>0){
-        const box = results.detections[0].boundingBox;
-        lastFaceNorm = { x: box.xCenter, y: box.yCenter, w: box.width };
-        statusEl.textContent = 'Webcam tracking active.';
+    mpPose = new Pose({ locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+    mpPose.setOptions({ modelComplexity:0, smoothLandmarks:true, enableSegmentation:false,
+      minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
+    mpPose.onResults((results)=>{
+      const lm = results.poseLandmarks;
+      const h = lm ? headFromPose(lm) : null;
+      if(h){
+        lastFaceNorm = h;
+        statusEl.textContent = h.src === 'shoulders'
+          ? 'Head out of frame — inferring from shoulders.'
+          : 'Webcam tracking active.';
         trackDotEl.style.display = 'block';
-        trackDotEl.style.left = (box.xCenter*100)+'%';
-        trackDotEl.style.top = (box.yCenter*100)+'%';
+        trackDotEl.style.background = h.src === 'shoulders' ? '#ffb454' : 'var(--accent)';
+        trackDotEl.style.boxShadow = '0 0 8px ' + (h.src === 'shoulders' ? '#ffb454' : 'var(--accent)');
+        trackDotEl.style.left = (Math.max(0, Math.min(1, h.x))*100)+'%';
+        trackDotEl.style.top  = (Math.max(0, Math.min(1, h.y))*100)+'%';
       } else {
-        statusEl.textContent = 'Webcam active — no face detected.';
+        statusEl.textContent = 'Webcam active — no person detected.';
       }
     });
 
     mpCamera = new Camera(videoEl, {
-      onFrame: async ()=>{ await mpFaceDetection.send({image: videoEl}); },
+      onFrame: async ()=>{ await mpPose.send({image: videoEl}); },
       width: 320, height: 240
     });
     await mpCamera.start();
