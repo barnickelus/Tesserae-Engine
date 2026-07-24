@@ -75,6 +75,7 @@
   <div class="group">
     <select id="objectSelect">
       <option value="gummy" selected>Gummy Bear</option>
+      <option value="tennis">Tennis Match (pedestal)</option>
       <option value="spike">Ridged Spike</option>
       <option value="torusKnot">Torus Knot</option>
       <option value="icosahedron">Pulsing Icosahedron</option>
@@ -356,6 +357,133 @@ const objects = {};
     core.intensity = 0.8 + 0.25*Math.sin(t*2.3);
   };
   objects.gummy = g;
+})();
+
+// -- Pedestal + two mini players having a tennis rally.
+//    A FIXED diorama: the pedestal is anchored to the box floor (see the
+//    groundMinY handling in the box staging) and deliberately ignores the
+//    auto-spin accumulator — a plinth bolted to the ground shouldn't turntable.
+//    Only the players and the ball move. --
+(function buildTennis(){
+  const g = new THREE.Group();
+  const COURT_Y = 0.09;
+
+  function courtTexture(){
+    const c = document.createElement('canvas'); c.width = 256; c.height = 152;
+    const x = c.getContext('2d');
+    x.fillStyle = '#1d5f8a'; x.fillRect(0,0,256,152);
+    x.fillStyle = '#2a76a8'; x.fillRect(28,20,200,112);
+    x.strokeStyle = 'rgba(255,255,255,0.92)';
+    x.lineWidth = 3; x.strokeRect(14,12,228,128);
+    x.lineWidth = 2;
+    x.beginPath(); x.moveTo(128,12); x.lineTo(128,140); x.stroke();   // net line
+    x.beginPath(); x.moveTo(64,12);  x.lineTo(64,140);  x.stroke();   // service lines
+    x.beginPath(); x.moveTo(192,12); x.lineTo(192,140); x.stroke();
+    x.beginPath(); x.moveTo(64,76);  x.lineTo(192,76);  x.stroke();   // centre service
+    const t = new THREE.Texture(c); t.needsUpdate = true; return t;
+  }
+  function netTexture(){
+    const c = document.createElement('canvas'); c.width = 128; c.height = 32;
+    const x = c.getContext('2d');
+    x.clearRect(0,0,128,32);
+    x.strokeStyle = 'rgba(240,246,255,0.75)'; x.lineWidth = 1;
+    for(let i=0;i<=32;i+=4){ x.beginPath(); x.moveTo(i*4,0); x.lineTo(i*4,32); x.stroke(); }
+    for(let j=0;j<=32;j+=4){ x.beginPath(); x.moveTo(0,j); x.lineTo(128,j); x.stroke(); }
+    x.fillStyle = '#f2f6ff'; x.fillRect(0,0,128,4);                   // white tape along the top
+    const t = new THREE.Texture(c); t.needsUpdate = true; return t;
+  }
+
+  // ---- pedestal (stone plinth) ----
+  // Deliberately dark stone: this scene sits under ambient + hemisphere + key +
+  // rim + underlight + the box light, which blew a light grey out to pure white.
+  const stone = new THREE.MeshStandardMaterial({ color:0x3c4250, roughness:0.92, metalness:0.02 });
+  const trim  = new THREE.MeshStandardMaterial({ color:0x5a6274, roughness:0.7,  metalness:0.12 });
+  function cyl(rt, rb, h, y, mat){
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 22), mat);
+    m.position.y = y; g.add(m); return m;
+  }
+  // short and wide, so the MATCH on top is the subject and the plinth just holds it
+  cyl(0.46, 0.50, 0.10, -0.75, stone);   // base plinth
+  cyl(0.40, 0.44, 0.05, -0.68, trim);
+  cyl(0.20, 0.26, 0.62, -0.34, stone);   // column
+  cyl(0.66, 0.50, 0.07,  0.01, trim);    // capital
+  cyl(0.72, 0.72, 0.05,  0.06, stone);   // table top
+
+  // ---- court + net on top ----
+  const court = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.34, 0.80),
+    new THREE.MeshStandardMaterial({ map: courtTexture(), roughness:0.95, metalness:0.0 }));
+  court.rotation.x = -Math.PI/2; court.position.y = COURT_Y; g.add(court);
+
+  const net = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.78, 0.13),
+    new THREE.MeshStandardMaterial({ map: netTexture(), transparent:true, side:THREE.DoubleSide, roughness:0.9 }));
+  net.rotation.y = Math.PI/2; net.position.set(0, COURT_Y + 0.065, 0); g.add(net);
+
+  // ---- the two players ----
+  function player(colour){
+    const p = new THREE.Group();
+    const kit  = new THREE.MeshStandardMaterial({ color:colour, roughness:0.5, metalness:0.05 });
+    const skin = new THREE.MeshStandardMaterial({ color:0xf1c8a2, roughness:0.7 });
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.041, 0.105, 10), kit);
+    torso.position.y = 0.115; p.add(torso);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.034, 12, 10), skin);
+    head.position.y = 0.196; p.add(head);
+    const legGeo = new THREE.CylinderGeometry(0.014, 0.011, 0.078, 8);
+    for(const dx of [-0.019, 0.019]){
+      const l = new THREE.Mesh(legGeo, kit); l.position.set(dx, 0.039, 0); p.add(l);
+    }
+    // racket arm on a shoulder pivot, so one rotation swings the whole racket
+    const arm = new THREE.Group(); arm.position.set(0, 0.158, 0); p.add(arm);
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.010, 0.085, 8), skin);
+    upper.position.y = -0.042; arm.add(upper);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.052, 6),
+      new THREE.MeshStandardMaterial({ color:0x24242c, roughness:0.6 }));
+    grip.position.y = -0.108; arm.add(grip);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.0055, 6, 18),
+      new THREE.MeshStandardMaterial({ color:0xe4e8f2, metalness:0.35, roughness:0.35 }));
+    rim.position.y = -0.168; rim.rotation.x = Math.PI/2; arm.add(rim);
+    const strings = new THREE.Mesh(new THREE.CircleGeometry(0.033, 16),
+      new THREE.MeshStandardMaterial({ color:0xffffff, transparent:true, opacity:0.22, side:THREE.DoubleSide }));
+    strings.position.y = -0.168; strings.rotation.x = Math.PI/2; arm.add(strings);
+    p.userData.arm = arm;
+    p.scale.setScalar(1.75);   // read clearly at diorama size
+    return p;
+  }
+  const pA = player(0x4f8bff), pB = player(0xff7a4f);
+  pA.rotation.y =  Math.PI/2;   // face each other across the net
+  pB.rotation.y = -Math.PI/2;
+  pA.position.set(-0.55, COURT_Y, 0);
+  pB.position.set( 0.55, COURT_Y, 0);
+  g.add(pA, pB);
+
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 10),
+    new THREE.MeshStandardMaterial({ color:0xdcff4a, emissive:0x556b00, emissiveIntensity:0.5, roughness:0.6 }));
+  g.add(ball);
+
+  const A = 0.48, PERIOD = 1.25;   // rally half-span, seconds per shot
+  g.userData.update = (t)=>{       // note: ignores the spin accumulator by design
+    const ph = (t/PERIOD) % 2, u = ph % 1, out = ph < 1;
+    const bx = out ? THREE.MathUtils.lerp(-A, A, u) : THREE.MathUtils.lerp(A, -A, u);
+    // arc over the net, then a smaller hop after the bounce
+    const h = u < 0.62 ? 0.26*Math.sin(Math.PI*u/0.62)
+                       : 0.075*Math.sin(Math.PI*(u-0.62)/0.38);
+    const bz = 0.10*Math.sin(t*0.8);
+    ball.position.set(bx, COURT_Y + 0.024 + h, bz);
+
+    for(const [pl, px] of [[pA, -0.55], [pB, 0.55]]){
+      const near = Math.max(0, 1 - Math.abs(bx - px)/0.50);   // 0 far .. 1 ball at me
+      const swing = Math.sin(near*Math.PI*0.5);
+      pl.userData.arm.rotation.x = -0.25 - 1.55*swing;        // ready -> follow-through
+      pl.position.z = bz*0.55;                                // track the ball sideways
+      pl.position.x = px + (bx - px)*0.05;                    // lean into the shot
+      pl.position.y = COURT_Y + 0.012*Math.sin(t*6.0 + (px<0?0:1.7))*(1-swing*0.6);
+    }
+  };
+
+  g.scale.setScalar(1.8);              // read at a similar size to the other items
+  g.userData.groundMinY = -0.80*1.8;   // lowest point, in objectGroup units -> anchors to the box floor
+  objects.tennis = g;
 })();
 
 function selectObject(key){
@@ -1035,6 +1163,11 @@ function updateCameraFromTracking(){
     const u = (boxProx + 1) * 0.5;                      // 0 = far .. 1 = near
     objectGroup.position.z = -boxDepth * THREE.MathUtils.lerp(BOX_STAGE_FAR.depth, BOX_STAGE_NEAR.depth, u);
     objectGroup.scale.setScalar(THREE.MathUtils.lerp(BOX_STAGE_FAR.scale, BOX_STAGE_NEAR.scale, u));
+    // An item flagged with groundMinY (the pedestal) is bolted to the box FLOOR
+    // rather than floating at centre: keep its lowest point exactly on the floor
+    // plane as the staged scale changes, so it never sinks or hovers.
+    const gm = currentObject && currentObject.userData.groundMinY;
+    objectGroup.position.y = (gm === undefined) ? 0 : (-screenHalfH - gm*objectGroup.scale.x);
     // closeness from the eye's distance to the SCREEN plane (z=0), not the item:
     // the item sits far behind the screen in box mode, so measuring to it kept
     // closeness pinned at 0 and the curvilinear "lean-in" ramp did nothing here.
