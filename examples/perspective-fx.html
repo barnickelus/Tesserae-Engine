@@ -159,7 +159,10 @@
    BASIC THREE SETUP
    ============================================================ */
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha:false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+// cap the final-pass pixel ratio at 1.5 (from 2): the last post pass runs at
+// the full screen buffer, so on a 2x/3x display that pass alone was drawing
+// 4-9x the fragments — 1.5 is the biggest cheap FPS win with minimal softness
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x08080a, 1);
 document.body.appendChild(renderer.domElement);
@@ -629,8 +632,12 @@ async function enableWebcamTracking(){
       }
     });
 
+    // Holistic (face mesh + pose) is the heaviest thing here — run it on every
+    // OTHER camera frame (~15 Hz). The eye smoothing already interpolates, so
+    // tracking still feels continuous while the model gets half the CPU/GPU.
+    let _hframe = 0;
     mpCamera = new Camera(videoEl, {
-      onFrame: async ()=>{ await mpHolistic.send({image: videoEl}); },
+      onFrame: async ()=>{ if((_hframe++ & 1) === 0) await mpHolistic.send({image: videoEl}); },
       width: 320, height: 240
     });
     await mpCamera.start();
@@ -729,12 +736,13 @@ const tiltShiftFrag = `
 `;
 
 // Curvilinear (4/5-point) warp. Rectilinear projection keeps straight lines
-// straight — true 4-point perspective bows them. This is a post-warp barrel
-// distortion (edges reach further into the scene, so verticals + horizontals
-// curve outward like a wide-angle / fisheye), its strength ramped up by how
-// CLOSE the viewpoint is, so leaning in exaggerates the perspective. Outside
-// the source frame it falls to black, giving a clean rounded lens edge rather
-// than smeared border pixels.
+// straight — true 4-point perspective bows them. This convex bulge magnifies
+// the centre and eases back to identity at the CORNERS, so the frame stays
+// completely filled (no black lens edge). That fill matters inside the diorama
+// box: an outward barrel with a vignette tore the content away from the
+// straight neon frame, leaving black gaps that read as "the effect doesn't
+// work in the box". Verticals + horizontals still bow outward like a wide
+// angle, and the strength ramps with how CLOSE the viewpoint is.
 const curvilinearFrag = `
   uniform sampler2D tDiffuse;
   uniform float amount;   // 0..1 curvature
@@ -743,16 +751,12 @@ const curvilinearFrag = `
   void main(){
     vec2 cc = vUv - 0.5;
     vec2 c = cc; c.x *= aspect;
-    float r2 = dot(c, c);
-    float f = 1.0 + amount * 0.65 * r2;
+    float r2n = dot(c, c) / (0.25*aspect*aspect + 0.25);   // 0 centre .. 1 corner
+    float f = 1.0 - (amount*0.5) * (1.0 - r2n);            // <1 centre (magnify), =1 corner (pinned)
     vec2 uv  = cc * f + 0.5;
-    vec2 uvR = cc * (f * (1.0 + 0.010*amount)) + 0.5;
-    vec2 uvB = cc * (f * (1.0 - 0.010*amount)) + 0.5;
-    float inside = step(0.0,uv.x)*step(uv.x,1.0)*step(0.0,uv.y)*step(uv.y,1.0);
-    vec3 col = vec3(texture2D(tDiffuse,uvR).r, texture2D(tDiffuse,uv).g, texture2D(tDiffuse,uvB).b);
-    float vig = smoothstep(1.25, 0.45, length(c));
-    col *= mix(1.0, vig, amount*0.85);
-    gl_FragColor = vec4(col * inside, 1.0);
+    vec2 uvR = cc * (f * (1.0 + 0.006*amount)) + 0.5;
+    vec2 uvB = cc * (f * (1.0 - 0.006*amount)) + 0.5;
+    gl_FragColor = vec4(texture2D(tDiffuse,uvR).r, texture2D(tDiffuse,uv).g, texture2D(tDiffuse,uvB).b, 1.0);
   }
 `;
 
@@ -783,15 +787,24 @@ const quadGeo = new THREE.PlaneBufferGeometry(2,2);
 const quadMesh = new THREE.Mesh(quadGeo, blitPass.material);
 quadScene.add(quadMesh);
 
-let rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
+// The offscreen scene render + intermediate blur passes run at a fraction of
+// resolution (upscaled by the final pass), a big fill-rate saving that the
+// blur + curvilinear warp hide well.
+const RENDER_SCALE = 0.8;
+function rtDims(){ return [Math.max(2, Math.round(window.innerWidth*RENDER_SCALE)),
+                           Math.max(2, Math.round(window.innerHeight*RENDER_SCALE))]; }
+let [_rw, _rh] = rtDims();
+let rtA = new THREE.WebGLRenderTarget(_rw, _rh, {minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
 let rtB = rtA.clone();
 
 function resizeTargets(){
-  rtA.setSize(window.innerWidth, window.innerHeight);
-  rtB.setSize(window.innerWidth, window.innerHeight);
-  tiltShiftPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+  const [w, h] = rtDims();
+  rtA.setSize(w, h);
+  rtB.setSize(w, h);
+  tiltShiftPass.uniforms.resolution.value.set(w, h);
   curvilinearPass.uniforms.aspect.value = window.innerWidth/window.innerHeight;
 }
+resizeTargets();
 
 function renderComposite(){
   renderer.setRenderTarget(rtA);
