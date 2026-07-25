@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tesserae · forge</title>
+  <!--
+    tessera-forge.html — a live Three.js scene you modify by describing what
+    you want, in words.
+
+    HOW IT ACTUALLY WORKS (the part that decides whether this is useful)
+
+      The naive version of this idea is "ask a model to rewrite the scene
+      file, hot-reload the result." That version breaks constantly: a
+      regenerated module either runs or it doesn't, there is no partial
+      success, nothing is reversible, and a single hallucinated import takes
+      the whole page down.
+
+      So nothing here regenerates the scene. The scene exposes a REGISTRY —
+      a flat, typed, addressable set of parameters (SCHEMA below) — and the
+      only thing a prompt ever produces is a PATCH: a small list of JSON ops
+      against that registry.
+
+          { "op": "set", "key": "light.key.intensity", "value": 5.2 }
+
+      A patch applies deterministically, validates per-key against the
+      schema's type/range/enum, records the prior value of everything it
+      touched, and is therefore exactly invertible. An op naming a key that
+      doesn't exist is dropped, not thrown. A patch that is 80% valid applies
+      80% and tells you about the other 20%. Nothing can put the page in a
+      state you can't step back out of.
+
+      Raw code is still available, but as an escape hatch rather than the
+      mechanism: `spawn` ops run generated JS inside a sandbox group that
+      owns everything it creates, so undoing a spawn is just removing that
+      group. Spawns are always shown before they run and never auto-apply.
+
+    TWO WAYS TO DRIVE IT
+
+      RECIPES (no key, no network) — a local phrase matcher that maps things
+      like "cinematic", "golden hour", "noir", "chrome", "foggy" onto the
+      same op format. This is the whole page working offline, and it doubles
+      as the reference implementation of what a good patch looks like.
+
+      CLAUDE (bring your own key) — a static page cannot hold an API key;
+      there is no server here to keep one in. So the key is yours, typed at
+      runtime, kept in this browser's localStorage and sent to Anthropic and
+      nowhere else. The model gets the schema plus the current state and
+      replies with a patch through a tool call. Same apply path, same undo,
+      same validation as the recipes.
+
+    Drag to orbit, scroll/pinch to zoom.
+  -->
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #06080c; overflow: hidden; color: #d7e0ea;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #app { position: fixed; inset: 0; } canvas { display: block; }
+
+    #panel { position: fixed; top: 0; right: 0; bottom: 0; width: 372px; max-width: 100%;
+      background: rgba(8,11,16,.86); backdrop-filter: blur(14px);
+      border-left: 1px solid rgba(255,255,255,.09);
+      display: flex; flex-direction: column; transition: transform .22s ease; z-index: 5; }
+    #panel.hidden { transform: translateX(100%); }
+    #panelTop { padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,.07); }
+    h1 { margin: 0 0 2px; font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #8aa0b6; }
+    .sub { margin: 0 0 12px; color: #5d6f83; font-size: 11px; line-height: 1.5; }
+
+    .modes { display: flex; gap: 6px; margin-bottom: 10px; }
+    .modes button { flex: 1; }
+    button { font: inherit; color: #cfe0f2; background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 7px 10px; cursor: pointer; }
+    button:hover { background: rgba(47,109,240,.2); border-color: #2f6df0; }
+    button.on { background: rgba(47,109,240,.28); border-color: #2f6df0; color: #eaf2fb; }
+    button:disabled { opacity: .45; cursor: default; }
+    button.ghost { background: transparent; }
+
+    #promptRow { display: flex; gap: 6px; }
+    textarea { flex: 1; resize: none; height: 58px; font: inherit; color: #eaf2fb;
+      background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 8px 9px; }
+    textarea:focus, input:focus { outline: none; border-color: #2f6df0; }
+    #send { align-self: stretch; padding: 0 14px; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+    .chip { font-size: 11px; padding: 4px 8px; border-radius: 999px; color: #9fb4c9;
+      background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); cursor: pointer; }
+    .chip:hover { color: #eaf2fb; border-color: #2f6df0; background: rgba(47,109,240,.18); }
+
+    #keyBox { margin-top: 10px; display: none; }
+    #keyBox.show { display: block; }
+    #keyBox input { width: 100%; font: inherit; color: #eaf2fb; background: rgba(0,0,0,.35);
+      border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 7px 9px; }
+    .warn { color: #d59b5a; font-size: 10.5px; line-height: 1.5; margin: 6px 0 0; }
+
+    #tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,.07); }
+    #tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: #6b7f94;
+      padding: 9px 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+    #tabs button.on { color: #eaf2fb; box-shadow: inset 0 -2px 0 #2f6df0; background: rgba(47,109,240,.08); }
+
+    #body { flex: 1; overflow-y: auto; padding: 12px 16px 24px; }
+    .pane { display: none; } .pane.on { display: block; }
+
+    .grp { margin: 0 0 14px; }
+    .grp > h3 { margin: 0 0 7px; font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: #566a7e; }
+    .ctl { display: grid; grid-template-columns: 104px 1fr 46px; gap: 8px; align-items: center; margin: 0 0 5px; }
+    .ctl label { font-size: 11px; color: #9fb4c9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctl input[type=range] { width: 100%; accent-color: #2f6df0; }
+    .ctl input[type=color] { width: 100%; height: 20px; padding: 0; border: 1px solid rgba(255,255,255,.15);
+      background: none; border-radius: 4px; grid-column: 2 / span 2; }
+    .ctl select { grid-column: 2 / span 2; font: inherit; font-size: 11px; color: #eaf2fb;
+      background: #12171f; border: 1px solid rgba(255,255,255,.13); border-radius: 6px; padding: 3px 5px; }
+    .ctl .val { font-size: 10.5px; color: #6b7f94; text-align: right; }
+    .ctl .chk { grid-column: 2 / span 2; justify-self: start; accent-color: #2f6df0; }
+
+    .entry { border: 1px solid rgba(255,255,255,.09); border-radius: 8px; padding: 9px 10px; margin: 0 0 8px;
+      background: rgba(255,255,255,.03); }
+    .entry .h { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+    .entry .t { color: #eaf2fb; font-size: 12px; }
+    .entry .m { color: #5d6f83; font-size: 10.5px; }
+    pre { margin: 7px 0 0; padding: 8px; background: rgba(0,0,0,.4); border-radius: 6px;
+      font-size: 10.5px; line-height: 1.45; color: #9fd2b0; overflow-x: auto; white-space: pre-wrap;
+      word-break: break-word; max-height: 220px; overflow-y: auto; }
+    pre.code { color: #d5c48a; }
+    .rowbtns { display: flex; gap: 6px; margin-top: 8px; }
+    .rowbtns button { font-size: 11px; padding: 5px 9px; }
+    .err { color: #e0736b; }
+    .ok  { color: #7bc99a; }
+
+    #status { position: fixed; left: 12px; bottom: 12px; z-index: 4; color: #5d6f83; font-size: 11px;
+      background: rgba(8,11,16,.6); padding: 6px 9px; border-radius: 7px; backdrop-filter: blur(6px); }
+    #toggle { position: fixed; top: 12px; right: 12px; z-index: 6; }
+    #panel:not(.hidden) ~ #toggle { right: 384px; }
+
+    @media (max-width: 720px) {
+      #panel { top: auto; width: 100%; height: 62vh; border-left: 0; border-top: 1px solid rgba(255,255,255,.09); }
+      #panel.hidden { transform: translateY(100%); }
+      #panel:not(.hidden) ~ #toggle { right: 12px; }
+      .ctl { grid-template-columns: 92px 1fr 42px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="status">booting…</div>
+
+  <div id="panel">
+    <div id="panelTop">
+      <h1>tessera · forge</h1>
+      <p class="sub">Describe a change. It comes back as a patch of typed ops against the scene registry — validated, applied, and exactly undoable.</p>
+
+      <div class="modes">
+        <button id="mRecipe" class="on">recipes (offline)</button>
+        <button id="mClaude">claude (your key)</button>
+      </div>
+
+      <div id="promptRow">
+        <textarea id="prompt" placeholder="make the lighting more cinematic"></textarea>
+        <button id="send">go</button>
+      </div>
+
+      <div class="chips" id="chips"></div>
+
+      <div id="keyBox">
+        <input id="key" type="password" placeholder="sk-ant-… (stays in this browser)" autocomplete="off" spellcheck="false" />
+        <p class="warn">This page is static — it has no server to keep a key in, so the key is yours: held in this browser's localStorage and sent only to api.anthropic.com. Use a key you can revoke.
+          <button class="ghost" id="forgetKey" style="font-size:10.5px;padding:3px 7px;margin-top:5px">forget key</button>
+        </p>
+      </div>
+    </div>
+
+    <div id="tabs">
+      <button id="tPatch" class="on">patches</button>
+      <button id="tParams">params</button>
+    </div>
+
+    <div id="body">
+      <div id="pPatch" class="pane on"></div>
+      <div id="pParams" class="pane"></div>
+    </div>
+  </div>
+
+  <button id="toggle">panel</button>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ══════════════════════════════════════════════════════════════════════
+       1. THE REGISTRY
+
+       Every knob the scene has, in one flat table of dotted keys. This is the
+       contract: it is what the sliders are generated from, what a patch is
+       validated against, and what gets handed to the model as the description
+       of what it is allowed to touch. Adding a knob here is the only step
+       needed to make it promptable.
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const N = (def, min, max, step, desc) => ({ type:'number', def, min, max, step, desc });
+    const C = (def, desc) => ({ type:'color',  def, desc });
+    const B = (def, desc) => ({ type:'bool',   def, desc });
+    const E = (def, values, desc) => ({ type:'enum', def, values, desc });
+
+    const SCHEMA = {
+      /* — lights. Each directional light is aimed in spherical terms because
+           "put the key light lower and further round" is a thing people say,
+           and (x,y,z) is not. — */
+      'light.key.intensity'  : N(3.4, 0, 14, .05, 'main light strength'),
+      'light.key.color'      : C('#fff0d8', 'main light colour'),
+      'light.key.azimuth'    : N(38, -180, 180, 1, 'main light compass angle, degrees'),
+      'light.key.elevation'  : N(46, -25, 88, 1, 'main light height angle, degrees'),
+      'light.fill.intensity' : N(0.85, 0, 8, .05, 'opposite-side softening light'),
+      'light.fill.color'     : C('#8fb6ff', 'fill light colour'),
+      'light.fill.azimuth'   : N(-125, -180, 180, 1, 'fill light compass angle'),
+      'light.fill.elevation' : N(24, -25, 88, 1, 'fill light height angle'),
+      'light.rim.intensity'  : N(2.1, 0, 14, .05, 'back/edge light strength'),
+      'light.rim.color'      : C('#cfe6ff', 'rim light colour'),
+      'light.rim.azimuth'    : N(168, -180, 180, 1, 'rim light compass angle'),
+      'light.rim.elevation'  : N(34, -25, 88, 1, 'rim light height angle'),
+      'light.ambient.sky'    : N(0.42, 0, 4, .01, 'ambient bounce from above'),
+      'light.ambient.color'  : C('#7f93ad', 'ambient sky colour'),
+      'light.ambient.ground' : C('#241d18', 'ambient bounce colour from the floor'),
+      'light.shadow'         : N(0.9, 0, 1, .01, 'shadow darkness (0 = shadows off)'),
+
+      /* — environment — */
+      'env.zenith'    : C('#0a1524', 'sky colour overhead'),
+      'env.horizon'   : C('#1d2a3a', 'sky colour at the horizon; fog matches it'),
+      'env.fog'       : N(0.028, 0, 0.22, .001, 'exponential fog density'),
+      'env.exposure'  : N(1.0, 0.05, 3.5, .01, 'overall exposure before tone mapping'),
+
+      /* — the subject: a form rebuilt out of tesserae — */
+      'subject.shape'   : E('knot', ['knot','ico','sphere','torus','cube','cone','skull'], 'the underlying form the tesserae are laid over'),
+      'subject.count'   : N(2200, 120, 9000, 20, 'how many tesserae'),
+      'subject.tile'    : N(0.115, 0.02, 0.4, .005, 'size of one tessera'),
+      'subject.jitter'  : N(0.35, 0, 1.6, .01, 'randomness in tile angle and offset'),
+      'subject.lift'    : N(0.0, -0.4, 0.6, .01, 'push tiles out from the surface'),
+      'subject.spin'    : N(0.22, -3, 3, .01, 'subject rotation speed'),
+      'subject.float'   : N(0.35, 0, 1.5, .01, 'how much the subject bobs'),
+      'subject.scale'   : N(1.0, 0.3, 2.4, .01, 'overall size of the subject'),
+
+      /* — materials — */
+      'mat.subject.color'     : C('#c9d6e4', 'tessera colour'),
+      'mat.subject.roughness' : N(0.42, 0, 1, .01, 'tessera roughness; 0 = mirror'),
+      'mat.subject.metalness' : N(0.15, 0, 1, .01, 'tessera metalness'),
+      'mat.subject.emissive'  : C('#000000', 'tessera glow colour'),
+      'mat.subject.glow'      : N(0.0, 0, 6, .01, 'tessera glow strength'),
+      'mat.subject.opacity'   : N(1.0, 0.05, 1, .01, 'tessera opacity'),
+      'mat.subject.flat'      : B(true, 'faceted (flat) shading'),
+      'mat.subject.wireframe' : B(false, 'draw tesserae as wireframe'),
+      'mat.subject.hue'       : N(0.18, 0, 1, .01, 'per-tile colour variation'),
+      'mat.ground.color'      : C('#171c24', 'floor colour'),
+      'mat.ground.roughness'  : N(0.85, 0, 1, .01, 'floor roughness'),
+      'mat.ground.metalness'  : N(0.1, 0, 1, .01, 'floor metalness'),
+      'mat.plinth.color'      : C('#2b3038', 'pedestal colour'),
+      'mat.plinth.roughness'  : N(0.6, 0, 1, .01, 'pedestal roughness'),
+      'mat.plinth.metalness'  : N(0.25, 0, 1, .01, 'pedestal metalness'),
+
+      /* — post: one composite pass, hand-rolled — */
+      'post.bloom'      : N(0.55, 0, 3, .01, 'glow bleed from bright areas'),
+      'post.threshold'  : N(0.78, 0, 2, .01, 'brightness a pixel needs to bloom'),
+      'post.vignette'   : N(0.42, 0, 1, .01, 'darkening toward the frame edges'),
+      'post.grain'      : N(0.035, 0, 0.4, .005, 'film grain'),
+      'post.chroma'     : N(0.35, 0, 4, .01, 'chromatic aberration at the edges'),
+      'post.saturation' : N(1.05, 0, 2.5, .01, 'colour saturation'),
+      'post.contrast'   : N(1.04, 0.4, 2.2, .01, 'contrast'),
+      'post.quality'    : N(0.9, 0.4, 1, .05, 'internal render scale; lower = faster'),
+
+      /* — camera — */
+      'camera.fov'      : N(42, 14, 95, 1, 'lens field of view, degrees'),
+      'camera.autospin' : N(0.06, -1, 1, .01, 'automatic orbit speed'),
+      'camera.height'   : N(1.25, -1, 5, .01, 'what height the camera looks at'),
+    };
+
+    /* Which keys force the subject to be re-tessellated rather than just poked. */
+    const REBUILD = new Set(['subject.shape','subject.count','subject.tile','subject.jitter','subject.lift','mat.subject.hue']);
+
+    /* Live state. Single source of truth; the scene is a projection of this. */
+    const P = {};
+    for (const k in SCHEMA) P[k] = SCHEMA[k].def;
+
+    /* ══════════════════════════════════════════════════════════════════════
+       2. SCENE
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const app = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;   // done by hand in the composite pass
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    app.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x1d2a3a, P['env.fog']);
+
+    const camera = new THREE.PerspectiveCamera(P['camera.fov'], 1, 0.05, 240);
+    camera.position.set(4.6, 3.0, 5.4);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.07;
+    controls.minDistance = 1.6;
+    controls.maxDistance = 34;
+    controls.target.set(0, P['camera.height'], 0);
+
+    /* — sky dome: a two-colour gradient we can recolour from the registry — */
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide, depthWrite: false, fog: false,
+      uniforms: { zenith: { value: new THREE.Color(P['env.zenith']) },
+                  horizon:{ value: new THREE.Color(P['env.horizon']) } },
+      vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fragmentShader: `uniform vec3 zenith, horizon; varying vec3 vP;
+        void main(){ float h = clamp(normalize(vP).y * 0.5 + 0.5, 0.0, 1.0);
+          gl_FragColor = vec4(mix(horizon, zenith, pow(h, 0.75)), 1.0); }`
+    });
+    scene.add(new THREE.Mesh(new THREE.SphereGeometry(110, 32, 20), skyMat));
+
+    /* — lights — */
+    const keyL  = new THREE.DirectionalLight(0xffffff, 1);
+    const fillL = new THREE.DirectionalLight(0xffffff, 1);
+    const rimL  = new THREE.DirectionalLight(0xffffff, 1);
+    const ambL  = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+    keyL.castShadow = true;
+    keyL.shadow.mapSize.set(1024, 1024);
+    keyL.shadow.camera.near = 1; keyL.shadow.camera.far = 40;
+    keyL.shadow.camera.left = -7; keyL.shadow.camera.right = 7;
+    keyL.shadow.camera.top = 7;   keyL.shadow.camera.bottom = -7;
+    keyL.shadow.bias = -0.0012;
+    scene.add(keyL, fillL, rimL, ambL, keyL.target, fillL.target, rimL.target);
+
+    function aimLight(L, azDeg, elDeg, dist) {
+      const az = THREE.MathUtils.degToRad(azDeg), el = THREE.MathUtils.degToRad(elDeg);
+      L.position.set(Math.cos(el) * Math.sin(az) * dist, Math.sin(el) * dist, Math.cos(el) * Math.cos(az) * dist);
+      L.target.position.set(0, 1.1, 0);
+      L.target.updateMatrixWorld();
+    }
+
+    /* — floor: a grout grid drawn once into a canvas, tiled — */
+    function groutTexture() {
+      const s = 256, cv = document.createElement('canvas'); cv.width = cv.height = s;
+      const g = cv.getContext('2d');
+      g.fillStyle = '#ffffff'; g.fillRect(0, 0, s, s);
+      g.fillStyle = 'rgba(0,0,0,.30)';
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        const c = 22 + ((i * 7 + j * 13) % 5) * 6;
+        g.fillStyle = `rgba(${c},${c},${c},.35)`;
+        g.fillRect(i * s / 4 + 2, j * s / 4 + 2, s / 4 - 4, s / 4 - 4);
+      }
+      const t = new THREE.CanvasTexture(cv);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(26, 26);
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      return t;
+    }
+
+    const groundMat = new THREE.MeshStandardMaterial({ color: P['mat.ground.color'], map: groutTexture(),
+      roughness: P['mat.ground.roughness'], metalness: P['mat.ground.metalness'] });
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(46, 72), groundMat);
+    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+    scene.add(ground);
+
+    const plinthMat = new THREE.MeshStandardMaterial({ color: P['mat.plinth.color'],
+      roughness: P['mat.plinth.roughness'], metalness: P['mat.plinth.metalness'] });
+    const plinth = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.32, 1.5, 0.22, 48), plinthMat);
+    base.position.y = 0.11;
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.14, 0.42, 48), plinthMat);
+    shaft.position.y = 0.43;
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(1.18, 1.06, 0.1, 48), plinthMat);
+    cap.position.y = 0.69;
+    for (const m of [base, shaft, cap]) { m.castShadow = true; m.receiveShadow = true; plinth.add(m); }
+    scene.add(plinth);
+    const PLINTH_TOP = 0.74;
+
+    /* — the subject, laid in tesserae over a chosen form — */
+    const subject = new THREE.Group();
+    subject.position.y = PLINTH_TOP + 1.05;
+    scene.add(subject);
+
+    const subjectMat = new THREE.MeshStandardMaterial({ flatShading: true });
+    let tiles = null;
+
+    function sourceGeometry(shape) {
+      switch (shape) {
+        case 'ico':    return new THREE.IcosahedronGeometry(1.0, 2);
+        case 'sphere': return new THREE.SphereGeometry(1.0, 40, 26);
+        case 'torus':  return new THREE.TorusGeometry(0.78, 0.34, 24, 60);
+        case 'cube':   return new THREE.BoxGeometry(1.5, 1.5, 1.5, 8, 8, 8);
+        case 'cone':   return new THREE.ConeGeometry(0.95, 2.0, 40, 12);
+        case 'skull':  return skullGeometry();
+        default:       return new THREE.TorusKnotGeometry(0.72, 0.25, 180, 24);
+      }
+    }
+
+    /* A blunt head: a sphere narrowed at the temples, given a jaw and chin
+       below the equator, a brow ridge, two socket depressions and a nose.
+       A plain squeezed ovoid reads as an egg once it's in tesserae — the
+       sockets and the brow are what make it read as a face. */
+    function skullGeometry() {
+      const g = new THREE.SphereGeometry(1.0, 64, 48);
+      const p = g.attributes.position;
+      const v = new THREE.Vector3();
+      const bump = (d, r) => Math.max(0, 1 - (d / r) * (d / r));   // smooth falloff
+      for (let i = 0; i < p.count; i++) {
+        v.fromBufferAttribute(p, i);
+        v.x *= 0.78; v.z *= 0.95;
+
+        if (v.y < 0) {                             // jaw tapering to a chin
+          const t = -v.y;
+          v.x *= 1 - 0.34 * t * t;
+          v.z += 0.20 * t * t;
+          v.y *= 1.18;
+        } else {
+          v.y *= 0.97;                             // crown, slightly flattened
+        }
+
+        const front = v.z > 0;
+        if (front) {
+          // brow ridge: a horizontal welt across the forehead
+          const brow = bump(Math.abs(v.y - 0.30), 0.16) * bump(Math.max(0, -v.z + 0.55), 0.75) * Math.max(0, 1 - Math.abs(v.x) / 0.62);
+          v.z += 0.085 * brow;
+
+          // eye sockets, one either side, pressed in under the brow
+          for (const sx of [-1, 1]) {
+            const d = Math.hypot((v.x - sx * 0.30) / 0.22, (v.y - 0.10) / 0.15);
+            v.z -= 0.155 * bump(d, 1.0) * Math.max(0, v.z);
+          }
+
+          // nose: a wedge down the midline, widening at the base
+          const nose = bump(v.x / 0.115, 1.0) * bump((v.y + 0.06) / 0.28, 1.0);
+          v.z += 0.20 * nose;
+
+          // mouth line
+          v.z -= 0.05 * bump(Math.abs(v.y + 0.42), 0.07) * Math.max(0, 1 - Math.abs(v.x) / 0.30);
+        }
+        p.setXYZ(i, v.x, v.y, v.z);
+      }
+      g.computeVertexNormals();
+      return g;
+    }
+
+    /* Area-weighted surface sampling, so tiles land evenly rather than
+       clustering wherever the source mesh happens to have small triangles. */
+    function sampleSurface(geo, n, rnd) {
+      const pos = geo.attributes.position, nor = geo.attributes.normal, idx = geo.index;
+      const tri = idx ? idx.count / 3 : pos.count / 3;
+      const gi = i => (idx ? idx.getX(i) : i);
+      const cdf = new Float64Array(tri);
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+      let total = 0;
+      for (let t = 0; t < tri; t++) {
+        a.fromBufferAttribute(pos, gi(3 * t)); b.fromBufferAttribute(pos, gi(3 * t + 1)); c.fromBufferAttribute(pos, gi(3 * t + 2));
+        total += e1.subVectors(b, a).cross(e2.subVectors(c, a)).length() * 0.5;
+        cdf[t] = total;
+      }
+      const na = new THREE.Vector3(), nb = new THREE.Vector3(), nc = new THREE.Vector3();
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const target = rnd() * total;
+        let lo = 0, hi = tri - 1;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (cdf[mid] < target) lo = mid + 1; else hi = mid; }
+        const t = lo;
+        a.fromBufferAttribute(pos, gi(3 * t)); b.fromBufferAttribute(pos, gi(3 * t + 1)); c.fromBufferAttribute(pos, gi(3 * t + 2));
+        na.fromBufferAttribute(nor, gi(3 * t)); nb.fromBufferAttribute(nor, gi(3 * t + 1)); nc.fromBufferAttribute(nor, gi(3 * t + 2));
+        let u = rnd(), w = rnd();
+        if (u + w > 1) { u = 1 - u; w = 1 - w; }
+        const vv = 1 - u - w;
+        out.push({
+          p: new THREE.Vector3(a.x * vv + b.x * u + c.x * w, a.y * vv + b.y * u + c.y * w, a.z * vv + b.z * u + c.z * w),
+          n: new THREE.Vector3(na.x * vv + nb.x * u + nc.x * w, na.y * vv + nb.y * u + nc.y * w, na.z * vv + nb.z * u + nc.z * w).normalize()
+        });
+      }
+      return out;
+    }
+
+    function mulberry(seed) {
+      let s = seed >>> 0;
+      return () => { s |= 0; s = (s + 0x6D2B79F5) | 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    }
+
+    const TILE_GEO = new THREE.BoxGeometry(1, 1, 0.28);
+    const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(),
+          _up = new THREE.Vector3(0, 0, 1), _col = new THREE.Color();
+
+    function buildSubject() {
+      if (tiles) { subject.remove(tiles); tiles.dispose(); tiles = null; }
+      const src = sourceGeometry(P['subject.shape']);
+      const n = Math.round(P['subject.count']);
+      const rnd = mulberry(20260725);
+      const pts = sampleSurface(src, n, rnd);
+      src.dispose();
+
+      tiles = new THREE.InstancedMesh(TILE_GEO, subjectMat, n);
+      tiles.castShadow = true; tiles.receiveShadow = true;
+      const jit = P['subject.jitter'], tile = P['subject.tile'], lift = P['subject.lift'], hue = P['mat.subject.hue'];
+      for (let i = 0; i < n; i++) {
+        const { p, n: nrm } = pts[i];
+        _q.setFromUnitVectors(_up, nrm);
+        if (jit > 0) {
+          const j = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            (rnd() - .5) * jit * .55, (rnd() - .5) * jit * .55, (rnd() - .5) * jit * 1.6));
+          _q.multiply(j);
+        }
+        const sz = tile * (1 + (rnd() - .5) * jit * .5);
+        _s.set(sz, sz, sz);
+        const off = lift + (rnd() - .5) * jit * tile * .5;
+        _m.compose(p.clone().addScaledVector(nrm, off + sz * .14), _q, _s);
+        tiles.setMatrixAt(i, _m);
+        /* Instance colour is a near-white jitter so the registry's
+           mat.subject.color stays the thing that actually sets the hue. */
+        _col.setHSL((rnd() * 0.14 + 0.55) % 1, hue * 0.5, 0.72 + rnd() * 0.24);
+        tiles.setColorAt(i, _col);
+      }
+      tiles.instanceMatrix.needsUpdate = true;
+      if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
+      subject.add(tiles);
+    }
+
+    /* Sandbox for `spawn` ops: generated code only ever gets a group of its
+       own, so undoing it is removing that group. */
+    const spawnRoot = new THREE.Group();
+    scene.add(spawnRoot);
+    const spawned = new Map();   // id -> { group, update }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       3. POST — render to a target, bright-pass, two blurs, one composite.
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const quadScene = new THREE.Scene();
+    const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), null);
+    quadScene.add(quad);
+
+    const VERT = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+    const rtOpts = { type: THREE.HalfFloatType, depthBuffer: true };
+    const rtScene = new THREE.WebGLRenderTarget(2, 2, rtOpts);
+    const rtA = new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: false });
+    const rtB = new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: false });
+
+    const brightMat = new THREE.ShaderMaterial({
+      uniforms: { tSrc: { value: null }, threshold: { value: 0.8 } },
+      vertexShader: VERT,
+      fragmentShader: `uniform sampler2D tSrc; uniform float threshold; varying vec2 vUv;
+        void main(){ vec3 c = texture2D(tSrc, vUv).rgb;
+          float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          gl_FragColor = vec4(c * (max(l - threshold, 0.0) / max(l, 1e-4)), 1.0); }`
+    });
+
+    const blurMat = new THREE.ShaderMaterial({
+      uniforms: { tSrc: { value: null }, dir: { value: new THREE.Vector2() } },
+      vertexShader: VERT,
+      fragmentShader: `uniform sampler2D tSrc; uniform vec2 dir; varying vec2 vUv;
+        void main(){ vec4 s = texture2D(tSrc, vUv) * 0.227027;
+          s += (texture2D(tSrc, vUv + dir * 1.3846) + texture2D(tSrc, vUv - dir * 1.3846)) * 0.316216;
+          s += (texture2D(tSrc, vUv + dir * 3.2308) + texture2D(tSrc, vUv - dir * 3.2308)) * 0.070270;
+          gl_FragColor = s; }`
+    });
+
+    const compMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tScene:{value:null}, tBloom:{value:null}, res:{value:new THREE.Vector2()}, time:{value:0},
+        bloom:{value:0}, vignette:{value:0}, grain:{value:0}, chroma:{value:0},
+        saturation:{value:1}, contrast:{value:1}, exposure:{value:1}
+      },
+      vertexShader: VERT,
+      fragmentShader: `
+        uniform sampler2D tScene, tBloom; uniform vec2 res; uniform float time;
+        uniform float bloom, vignette, grain, chroma, saturation, contrast, exposure;
+        varying vec2 vUv;
+        vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
+        void main(){
+          vec2 c = vUv - 0.5;
+          float r2 = dot(c, c);
+          vec2 off = c * (chroma * 0.004) * (r2 * 4.0);
+          vec3 col = vec3(
+            texture2D(tScene, vUv + off).r,
+            texture2D(tScene, vUv).g,
+            texture2D(tScene, vUv - off).b);
+          col += texture2D(tBloom, vUv).rgb * bloom;
+          col = aces(col * exposure);
+          float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+          col = mix(vec3(l), col, saturation);
+          col = (col - 0.5) * contrast + 0.5;
+          float v = smoothstep(0.78, 0.06, r2 * 2.0);
+          col *= mix(1.0, v, vignette);
+          /* Grain lives in the midtones, the way emulsion does — dumping it
+             flat over the frame just makes the blacks look broken. The time
+             term is wrapped so sin() never loses precision on a long run. */
+          float nz = fract(sin(dot(vUv * res, vec2(12.9898, 78.233)) + fract(time * 0.37) * 61.7) * 43758.5453);
+          float lg = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+          col += (nz - 0.5) * grain * (0.18 + 0.82 * (4.0 * lg * (1.0 - lg)));
+          gl_FragColor = vec4(pow(max(col, 0.0), vec3(1.0 / 2.2)), 1.0);
+        }`
+    });
+
+    function pass(mat, target) {
+      quad.material = mat;
+      renderer.setRenderTarget(target || null);
+      renderer.render(quadScene, quadCam);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       4. APPLYING STATE — every key knows how to project itself onto the scene
+       ══════════════════════════════════════════════════════════════════════ */
+
+    let needsRebuild = true;
+
+    function syncScene() {
+      aimLight(keyL,  P['light.key.azimuth'],  P['light.key.elevation'],  11);
+      aimLight(fillL, P['light.fill.azimuth'], P['light.fill.elevation'], 11);
+      aimLight(rimL,  P['light.rim.azimuth'],  P['light.rim.elevation'],  11);
+      keyL.intensity  = P['light.key.intensity'];   keyL.color.set(P['light.key.color']);
+      fillL.intensity = P['light.fill.intensity'];  fillL.color.set(P['light.fill.color']);
+      rimL.intensity  = P['light.rim.intensity'];   rimL.color.set(P['light.rim.color']);
+      ambL.intensity  = P['light.ambient.sky'];
+      ambL.color.set(P['light.ambient.color']);
+      ambL.groundColor.set(P['light.ambient.ground']);
+      keyL.castShadow = P['light.shadow'] > 0.01;
+      renderer.shadowMap.enabled = keyL.castShadow;
+      ground.material.shadowSide = THREE.FrontSide;
+
+      skyMat.uniforms.zenith.value.set(P['env.zenith']);
+      skyMat.uniforms.horizon.value.set(P['env.horizon']);
+      scene.fog.color.set(P['env.horizon']);
+      scene.fog.density = P['env.fog'];
+
+      subjectMat.color.set(P['mat.subject.color']);
+      subjectMat.roughness = P['mat.subject.roughness'];
+      subjectMat.metalness = P['mat.subject.metalness'];
+      subjectMat.emissive.set(P['mat.subject.emissive']);
+      subjectMat.emissiveIntensity = P['mat.subject.glow'];
+      subjectMat.wireframe = P['mat.subject.wireframe'];
+      const wantTransparent = P['mat.subject.opacity'] < 0.999;
+      if (subjectMat.transparent !== wantTransparent || subjectMat.flatShading !== P['mat.subject.flat']) {
+        subjectMat.transparent = wantTransparent;
+        subjectMat.flatShading = P['mat.subject.flat'];
+        subjectMat.needsUpdate = true;
+      }
+      subjectMat.opacity = P['mat.subject.opacity'];
+      subject.scale.setScalar(P['subject.scale']);
+
+      groundMat.color.set(P['mat.ground.color']);
+      groundMat.roughness = P['mat.ground.roughness'];
+      groundMat.metalness = P['mat.ground.metalness'];
+      plinthMat.color.set(P['mat.plinth.color']);
+      plinthMat.roughness = P['mat.plinth.roughness'];
+      plinthMat.metalness = P['mat.plinth.metalness'];
+
+      compMat.uniforms.bloom.value = P['post.bloom'];
+      compMat.uniforms.vignette.value = P['post.vignette'];
+      compMat.uniforms.grain.value = P['post.grain'];
+      compMat.uniforms.chroma.value = P['post.chroma'];
+      compMat.uniforms.saturation.value = P['post.saturation'];
+      compMat.uniforms.contrast.value = P['post.contrast'];
+      compMat.uniforms.exposure.value = P['env.exposure'];
+      brightMat.uniforms.threshold.value = P['post.threshold'];
+
+      if (camera.fov !== P['camera.fov']) { camera.fov = P['camera.fov']; camera.updateProjectionMatrix(); }
+      controls.target.y += (P['camera.height'] - controls.target.y) * 0.25;
+      controls.autoRotate = Math.abs(P['camera.autospin']) > 0.001;
+      controls.autoRotateSpeed = P['camera.autospin'] * 8;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       5. THE PATCH ENGINE
+
+       An op is validated, coerced, applied, and its prior value recorded.
+       Anything unrecognised is reported and skipped — a partly-wrong patch
+       still does the part that was right.
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const history = [];
+
+    function coerce(key, raw) {
+      const s = SCHEMA[key];
+      if (s.type === 'number') {
+        const v = typeof raw === 'string' ? parseFloat(raw) : raw;
+        if (typeof v !== 'number' || !isFinite(v)) return { err: `${key}: "${raw}" is not a number` };
+        return { value: THREE.MathUtils.clamp(v, s.min, s.max) };
+      }
+      if (s.type === 'bool') {
+        if (typeof raw === 'boolean') return { value: raw };
+        if (raw === 'true' || raw === 1) return { value: true };
+        if (raw === 'false' || raw === 0) return { value: false };
+        return { err: `${key}: "${raw}" is not a boolean` };
+      }
+      if (s.type === 'enum') {
+        const v = String(raw).toLowerCase();
+        if (!s.values.includes(v)) return { err: `${key}: "${raw}" not one of ${s.values.join('/')}` };
+        return { value: v };
+      }
+      // colour
+      const c = new THREE.Color();
+      try { c.set(raw); } catch (e) { return { err: `${key}: "${raw}" is not a colour` }; }
+      return { value: '#' + c.getHexString() };
+    }
+
+    function setKey(key, value) {
+      P[key] = value;
+      if (REBUILD.has(key)) needsRebuild = true;
+      const el = document.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      if (el) writeControl(el, key);
+    }
+
+    function runSpawn(id, code) {
+      const group = new THREE.Group();
+      group.name = 'spawn:' + id;
+      let update = null;
+      const api = { PLINTH_TOP, subject, scene, clamp: THREE.MathUtils.clamp, params: P };
+      const fn = new Function('THREE', 'group', 'api', code);
+      const ret = fn(THREE, group, api);
+      if (typeof ret === 'function') update = ret;
+      spawnRoot.add(group);
+      spawned.set(id, { group, update });
+    }
+
+    function disposeGroup(g) {
+      g.traverse(o => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+      });
+    }
+
+    function applyPatch(ops, label) {
+      const before = {}, added = [], removed = [], notes = [];
+      let touched = 0;
+
+      for (const op of (ops || [])) {
+        const kind = (op && op.op) || 'set';
+
+        if (kind === 'set' || kind === 'nudge') {
+          const key = op.key;
+          if (!(key in SCHEMA)) { notes.push({ err: true, t: `unknown key "${key}" — skipped` }); continue; }
+          let raw = op.value;
+          if (kind === 'nudge') {
+            if (SCHEMA[key].type !== 'number') { notes.push({ err: true, t: `nudge only works on numbers ("${key}")` }); continue; }
+            raw = P[key] + Number(op.value || 0);
+          }
+          const r = coerce(key, raw);
+          if (r.err) { notes.push({ err: true, t: r.err }); continue; }
+          if (!(key in before)) before[key] = P[key];
+          setKey(key, r.value);
+          touched++;
+
+        } else if (kind === 'reset') {
+          for (const k in SCHEMA) {
+            if (P[k] !== SCHEMA[k].def) { if (!(k in before)) before[k] = P[k]; setKey(k, SCHEMA[k].def); touched++; }
+          }
+          for (const [id, s] of spawned) { spawnRoot.remove(s.group); removed.push({ id, ...s }); spawned.delete(id); }
+
+        } else if (kind === 'spawn') {
+          const id = op.id || ('gen' + Math.random().toString(36).slice(2, 8));
+          if (spawned.has(id)) { notes.push({ err: true, t: `spawn id "${id}" already exists — skipped` }); continue; }
+          try { runSpawn(id, String(op.code || '')); added.push(id); touched++; }
+          catch (e) { notes.push({ err: true, t: `spawn "${id}" threw: ${e.message}` }); }
+
+        } else if (kind === 'remove') {
+          const s = spawned.get(op.id);
+          if (!s) { notes.push({ err: true, t: `nothing spawned under id "${op.id}"` }); continue; }
+          spawnRoot.remove(s.group); removed.push({ id: op.id, ...s }); spawned.delete(op.id); touched++;
+
+        } else {
+          notes.push({ err: true, t: `unknown op "${kind}" — skipped` });
+        }
+      }
+
+      if (touched) history.push({ label, before, added, removed });
+      syncScene();
+      return { touched, notes };
+    }
+
+    function undo() {
+      const h = history.pop();
+      if (!h) return null;
+      for (const k in h.before) setKey(k, h.before[k]);
+      for (const id of h.added) {
+        const s = spawned.get(id);
+        if (s) { spawnRoot.remove(s.group); disposeGroup(s.group); spawned.delete(id); }
+      }
+      for (const r of h.removed) { spawnRoot.add(r.group); spawned.set(r.id, { group: r.group, update: r.update }); }
+      syncScene();
+      return h;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       6. RECIPES — the offline half. Phrases → the same op format.
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const RECIPES = [
+      { name: 'cinematic', words: ['cinematic','filmic','movie','dramatic','moody'], ops: [
+        { op:'set', key:'light.key.intensity', value:5.6 },  { op:'set', key:'light.key.color', value:'#ffe6c2' },
+        { op:'set', key:'light.key.elevation', value:26 },   { op:'set', key:'light.key.azimuth', value:52 },
+        { op:'set', key:'light.fill.intensity', value:0.28 },{ op:'set', key:'light.fill.color', value:'#4a6ba8' },
+        { op:'set', key:'light.rim.intensity', value:5.0 },  { op:'set', key:'light.rim.color', value:'#dbe9ff' },
+        { op:'set', key:'light.ambient.sky', value:0.16 },
+        { op:'set', key:'env.zenith', value:'#05080f' },     { op:'set', key:'env.horizon', value:'#111a26' },
+        { op:'set', key:'env.fog', value:0.05 },
+        { op:'set', key:'post.bloom', value:0.9 },           { op:'set', key:'post.threshold', value:0.72 },
+        { op:'set', key:'post.vignette', value:0.72 },       { op:'set', key:'post.grain', value:0.075 },
+        { op:'set', key:'post.contrast', value:1.16 },       { op:'set', key:'post.saturation', value:0.94 },
+        { op:'set', key:'camera.fov', value:32 } ] },
+
+      { name: 'golden hour', words: ['golden','sunset','warm','sunny','dusk','amber'], ops: [
+        { op:'set', key:'light.key.intensity', value:4.6 }, { op:'set', key:'light.key.color', value:'#ffb347' },
+        { op:'set', key:'light.key.elevation', value:9 },   { op:'set', key:'light.key.azimuth', value:74 },
+        { op:'set', key:'light.fill.color', value:'#ff8f5e' }, { op:'set', key:'light.fill.intensity', value:0.7 },
+        { op:'set', key:'light.rim.color', value:'#ffd9a0' },  { op:'set', key:'light.rim.intensity', value:3.2 },
+        { op:'set', key:'light.ambient.color', value:'#c58b5a' }, { op:'set', key:'light.ambient.ground', value:'#3a2416' },
+        { op:'set', key:'env.zenith', value:'#2a3f6b' },    { op:'set', key:'env.horizon', value:'#e08a4a' },
+        { op:'set', key:'env.fog', value:0.05 },            { op:'set', key:'post.bloom', value:0.85 },
+        { op:'set', key:'post.saturation', value:1.2 } ] },
+
+      { name: 'moonlight', words: ['moon','night','cold','blue','midnight','icy'], ops: [
+        { op:'set', key:'light.key.intensity', value:2.0 }, { op:'set', key:'light.key.color', value:'#a9c6ff' },
+        { op:'set', key:'light.key.elevation', value:62 },
+        { op:'set', key:'light.fill.intensity', value:0.3 },{ op:'set', key:'light.fill.color', value:'#3f5c9b' },
+        { op:'set', key:'light.rim.intensity', value:1.8 }, { op:'set', key:'light.rim.color', value:'#cfe0ff' },
+        { op:'set', key:'light.ambient.sky', value:0.22 },  { op:'set', key:'light.ambient.color', value:'#3d5279' },
+        { op:'set', key:'env.zenith', value:'#020409' },    { op:'set', key:'env.horizon', value:'#0b1424' },
+        { op:'set', key:'env.fog', value:0.06 },            { op:'set', key:'env.exposure', value:1.35 },
+        { op:'set', key:'post.saturation', value:0.8 },     { op:'set', key:'post.vignette', value:0.6 } ] },
+
+      { name: 'neon', words: ['neon','cyber','synthwave','vapor','arcade','magenta'], ops: [
+        { op:'set', key:'light.key.color', value:'#ff2bd1' },  { op:'set', key:'light.key.intensity', value:4.2 },
+        { op:'set', key:'light.fill.color', value:'#00e5ff' }, { op:'set', key:'light.fill.intensity', value:2.6 },
+        { op:'set', key:'light.rim.color', value:'#7a2bff' },  { op:'set', key:'light.rim.intensity', value:6.0 },
+        { op:'set', key:'light.ambient.sky', value:0.18 },     { op:'set', key:'light.ambient.color', value:'#4a1f6b' },
+        { op:'set', key:'env.zenith', value:'#07021a' },       { op:'set', key:'env.horizon', value:'#2a0b45' },
+        { op:'set', key:'env.fog', value:0.075 },
+        { op:'set', key:'mat.subject.color', value:'#241640' }, { op:'set', key:'mat.subject.emissive', value:'#ff2bd1' },
+        { op:'set', key:'mat.subject.glow', value:0.14 },       { op:'set', key:'mat.subject.metalness', value:0.7 },
+        { op:'set', key:'mat.subject.roughness', value:0.25 },
+        { op:'set', key:'post.bloom', value:0.95 }, { op:'set', key:'post.threshold', value:0.85 },
+        { op:'set', key:'post.chroma', value:1.4 }, { op:'set', key:'post.saturation', value:1.35 } ] },
+
+      { name: 'noir', words: ['noir','black and white','monochrome','grey','gray','high contrast'], ops: [
+        { op:'set', key:'post.saturation', value:0.0 },  { op:'set', key:'post.contrast', value:1.5 },
+        { op:'set', key:'post.vignette', value:0.9 },    { op:'set', key:'post.grain', value:0.13 },
+        { op:'set', key:'light.key.intensity', value:6.5 }, { op:'set', key:'light.key.elevation', value:60 },
+        { op:'set', key:'light.fill.intensity', value:0.1 }, { op:'set', key:'light.ambient.sky', value:0.08 },
+        { op:'set', key:'env.zenith', value:'#000000' },  { op:'set', key:'env.horizon', value:'#0d0d0d' } ] },
+
+      { name: 'chrome', words: ['chrome','metal','metallic','mirror','polished','steel'], ops: [
+        { op:'set', key:'mat.subject.metalness', value:1.0 }, { op:'set', key:'mat.subject.roughness', value:0.08 },
+        { op:'set', key:'mat.subject.color', value:'#e8eef6' },{ op:'set', key:'mat.subject.flat', value:false },
+        { op:'set', key:'mat.subject.hue', value:0.04 },
+        { op:'set', key:'post.bloom', value:0.9 } ] },
+
+      { name: 'clay', words: ['clay','matte','terracotta','ceramic','unglazed','soft'], ops: [
+        { op:'set', key:'mat.subject.metalness', value:0.0 }, { op:'set', key:'mat.subject.roughness', value:0.95 },
+        { op:'set', key:'mat.subject.color', value:'#c1714b' },{ op:'set', key:'mat.subject.glow', value:0 },
+        { op:'set', key:'mat.subject.hue', value:0.22 },       { op:'set', key:'post.bloom', value:0.2 },
+        { op:'set', key:'post.chroma', value:0.1 } ] },
+
+      { name: 'glass', words: ['glass','crystal','transparent','translucent','ghost'], ops: [
+        { op:'set', key:'mat.subject.opacity', value:0.42 },  { op:'set', key:'mat.subject.roughness', value:0.06 },
+        { op:'set', key:'mat.subject.metalness', value:0.25 },{ op:'set', key:'mat.subject.color', value:'#bfe6ff' },
+        { op:'set', key:'mat.subject.flat', value:false },     { op:'set', key:'post.bloom', value:1.0 } ] },
+
+      { name: 'foggy', words: ['fog','mist','haze','smoke','atmospheric'], ops: [
+        { op:'set', key:'env.fog', value:0.115 }, { op:'set', key:'post.bloom', value:1.0 },
+        { op:'set', key:'light.ambient.sky', value:0.7 }, { op:'set', key:'post.contrast', value:0.9 } ] },
+
+      { name: 'clear the air', words: ['clear','no fog','remove fog','crisp','sharp'], ops: [
+        { op:'set', key:'env.fog', value:0.004 }, { op:'set', key:'post.grain', value:0.01 },
+        { op:'set', key:'post.chroma', value:0.05 } ] },
+
+      { name: 'glow', words: ['glow','bloom','radiant','luminous','emissive','lit up'], ops: [
+        { op:'set', key:'mat.subject.emissive', value:'#66d9ff' }, { op:'set', key:'mat.subject.glow', value:1.4 },
+        { op:'set', key:'post.bloom', value:1.7 }, { op:'set', key:'post.threshold', value:0.45 } ] },
+
+      { name: 'film stock', words: ['grain','film','analog','vintage','retro','8mm'], ops: [
+        { op:'set', key:'post.grain', value:0.17 }, { op:'set', key:'post.chroma', value:0.9 },
+        { op:'set', key:'post.saturation', value:0.86 }, { op:'set', key:'post.vignette', value:0.75 },
+        { op:'set', key:'post.contrast', value:1.12 } ] },
+
+      { name: 'wireframe', words: ['wireframe','wire','skeleton','outline','blueprint'], ops: [
+        { op:'set', key:'mat.subject.wireframe', value:true }, { op:'set', key:'mat.subject.color', value:'#59ffd0' },
+        { op:'set', key:'mat.subject.emissive', value:'#0d5f4d' }, { op:'set', key:'mat.subject.glow', value:1.0 },
+        { op:'set', key:'post.bloom', value:1.0 } ] },
+
+      { name: 'denser mosaic', words: ['more tiles','denser','more tesserae','finer','detailed','higher res'], ops: [
+        { op:'set', key:'subject.count', value:6000 }, { op:'set', key:'subject.tile', value:0.075 } ] },
+      { name: 'coarser mosaic', words: ['fewer tiles','coarser','chunkier','bigger tiles','abstract','blocky'], ops: [
+        { op:'set', key:'subject.count', value:520 }, { op:'set', key:'subject.tile', value:0.24 } ] },
+      { name: 'shatter', words: ['shatter','explode','scatter','loose','fall apart','disintegrate'], ops: [
+        { op:'set', key:'subject.jitter', value:1.35 }, { op:'set', key:'subject.lift', value:0.28 } ] },
+      { name: 'tighten', words: ['tighten','neat','smooth','tidy','solid','together'], ops: [
+        { op:'set', key:'subject.jitter', value:0.06 }, { op:'set', key:'subject.lift', value:0.0 } ] },
+
+      { name: 'spin faster', words: ['spin faster','faster','speed up','rotate more'], ops: [
+        { op:'nudge', key:'subject.spin', value:0.5 }, { op:'nudge', key:'camera.autospin', value:0.06 } ] },
+      { name: 'slow down', words: ['slower','slow down','calm'], ops: [
+        { op:'set', key:'subject.spin', value:0.06 }, { op:'set', key:'camera.autospin', value:0.02 } ] },
+      { name: 'hold still', words: ['stop','still','freeze','hold','static'], ops: [
+        { op:'set', key:'subject.spin', value:0 }, { op:'set', key:'camera.autospin', value:0 },
+        { op:'set', key:'subject.float', value:0 } ] },
+
+      { name: 'long lens', words: ['zoom in','closer','long lens','telephoto','tighter'], ops: [
+        { op:'set', key:'camera.fov', value:22 } ] },
+      { name: 'wide lens', words: ['wide','wider','zoom out','fish','pull back'], ops: [
+        { op:'set', key:'camera.fov', value:84 }, { op:'set', key:'post.chroma', value:1.1 } ] },
+
+      { name: 'bust', words: ['head','skull','bust','face','portrait'], ops: [
+        { op:'set', key:'subject.shape', value:'skull' }, { op:'set', key:'subject.scale', value:1.15 } ] },
+      { name: 'knot',   words: ['knot','torus knot','tangle'],  ops: [ { op:'set', key:'subject.shape', value:'knot' } ] },
+      { name: 'sphere', words: ['sphere','ball','orb','globe'], ops: [ { op:'set', key:'subject.shape', value:'sphere' } ] },
+      { name: 'ico',    words: ['ico','crystal','gem','faceted','polyhedron'], ops: [ { op:'set', key:'subject.shape', value:'ico' } ] },
+      { name: 'torus',  words: ['torus','donut','ring'],        ops: [ { op:'set', key:'subject.shape', value:'torus' } ] },
+      { name: 'cube',   words: ['cube','box','block','square'], ops: [ { op:'set', key:'subject.shape', value:'cube' } ] },
+      { name: 'cone',   words: ['cone','spike','pyramid'],      ops: [ { op:'set', key:'subject.shape', value:'cone' } ] },
+
+      { name: 'brighter', words: ['brighter','lighter','more light','turn it up'], ops: [
+        { op:'nudge', key:'env.exposure', value:0.3 }, { op:'nudge', key:'light.key.intensity', value:1.2 } ] },
+      { name: 'darker', words: ['darker','dimmer','less light','turn it down'], ops: [
+        { op:'nudge', key:'env.exposure', value:-0.25 }, { op:'nudge', key:'light.key.intensity', value:-1.0 } ] },
+
+      { name: 'reset', words: ['reset','default','start over','undo everything','revert'], ops: [ { op:'reset' } ] },
+    ];
+
+    function localPatch(text) {
+      const t = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ') + ' ';
+      const hits = [];
+      for (const r of RECIPES) {
+        let best = 0;
+        for (const w of r.words) if (t.includes(' ' + w + ' ') || t.includes(w)) best = Math.max(best, w.length);
+        if (best) hits.push({ r, score: best });
+      }
+      if (!hits.length) return null;
+      hits.sort((a, b) => b.score - a.score);
+      const take = hits.slice(0, 3);
+      /* Later recipes win on shared keys, so order by ascending score: the
+         strongest match applies last and has the final say. */
+      take.reverse();
+      const ops = [];
+      for (const h of take) ops.push(...h.r.ops);
+      return { ops, label: take.map(h => h.r.name).reverse().join(' + ') };
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       7. CLAUDE — same patch format, produced by a model instead of a table.
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const PATCH_TOOL = {
+      name: 'apply_patch',
+      description: 'Apply a patch of ops to the live Three.js scene. This is the only way to change anything.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Two or three words naming the change, e.g. "overcast morning".' },
+          note:  { type: 'string', description: 'One short sentence on the reasoning, shown to the user.' },
+          ops: {
+            type: 'array',
+            description: 'The ops, applied in order.',
+            items: {
+              type: 'object',
+              properties: {
+                op:    { type: 'string', enum: ['set', 'nudge', 'reset', 'spawn', 'remove'] },
+                key:   { type: 'string', description: 'Registry key, for set/nudge.' },
+                value: { description: 'New value for set; signed delta for nudge.' },
+                id:    { type: 'string', description: 'Identifier, for spawn/remove.' },
+                code:  { type: 'string', description: 'For spawn: a JS function body run as (THREE, group, api). Add objects to `group`. Optionally return an (t, dt) => void updater.' }
+              },
+              required: ['op']
+            }
+          }
+        },
+        required: ['label', 'ops']
+      }
+    };
+
+    function schemaDigest() {
+      const lines = [];
+      for (const k in SCHEMA) {
+        const s = SCHEMA[k];
+        const range = s.type === 'number' ? ` [${s.min}..${s.max}]`
+                    : s.type === 'enum'   ? ` one of ${s.values.join('|')}`
+                    : s.type === 'color'  ? ' #rrggbb' : ' true|false';
+        lines.push(`${k} : ${s.type}${range} — ${s.desc}`);
+      }
+      return lines.join('\n');
+    }
+
+    const SYSTEM = () => `You are the modifier for a live Three.js scene: a mosaic form built from thousands of instanced tiles ("tesserae"), standing on a stone plinth on a tiled floor, under three directional lights, with fog, a gradient sky and a hand-rolled post-processing chain.
+
+You do not write or regenerate the scene. You change it only by calling the apply_patch tool with a list of ops against this registry:
+
+${schemaDigest()}
+
+RULES
+- Prefer "set" ops on registry keys. Respect the stated ranges and types; colours must be #rrggbb.
+- Use "nudge" for relative changes ("a bit warmer", "brighter") — value is a signed delta.
+- Be decisive and thorough: a mood request like "make it stormy" should touch lights, sky, fog AND post, not one key. Six to twenty ops is normal for a mood. A narrow request ("make the tiles bigger") should touch one or two keys and nothing else.
+- Never emit an op for a key that is not in the registry above. There are no other keys.
+- Only use "spawn" when the request genuinely needs new geometry that no registry key can express (e.g. "add floating rings around it"). The code body runs as (THREE, group, api); attach everything to \`group\`; return an optional (t, dt) => void updater. api = { PLINTH_TOP, subject, scene, clamp, params }. No imports, no network, no DOM.
+- "reset" returns everything to defaults; use it only when asked to start over.
+
+CURRENT STATE (only keys that currently differ from their default are listed; everything else is at default):
+${JSON.stringify(Object.fromEntries(Object.keys(SCHEMA).filter(k => P[k] !== SCHEMA[k].def).map(k => [k, P[k]])))}
+
+Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', ') : '(none)'}`;
+
+    async function claudePatch(text) {
+      const key = localStorage.getItem('forge.key');
+      if (!key) throw new Error('No API key set.');
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-opus-5',
+          max_tokens: 8000,
+          thinking: { type: 'adaptive' },
+          system: SYSTEM(),
+          tools: [PATCH_TOOL],
+          messages: [{ role: 'user', content: text }]
+        })
+      });
+      if (!res.ok) {
+        let detail = '';
+        try { const j = await res.json(); detail = j.error?.message || JSON.stringify(j); } catch (e) { detail = await res.text(); }
+        throw new Error(`${res.status} — ${detail}`);
+      }
+      const data = await res.json();
+      const tool = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'apply_patch');
+      if (tool) return { ops: tool.input.ops || [], label: tool.input.label || 'patch', note: tool.input.note || '' };
+
+      /* Fell back to prose — dig a patch out of it rather than giving up. */
+      const say = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+      const m = say.match(/\[[\s\S]*\]/);
+      if (m) { try { return { ops: JSON.parse(m[0]), label: 'patch', note: '' }; } catch (e) { /* fall through */ } }
+      throw new Error('The model replied without a patch: ' + (say.slice(0, 300) || '(empty)'));
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       8. UI
+       ══════════════════════════════════════════════════════════════════════ */
+
+    const $ = id => document.getElementById(id);
+    const panel = $('panel'), pPatch = $('pPatch'), pParams = $('pParams');
+    let mode = 'recipe';
+
+    $('toggle').onclick = () => panel.classList.toggle('hidden');
+    $('tPatch').onclick = () => { $('tPatch').classList.add('on'); $('tParams').classList.remove('on'); pPatch.classList.add('on'); pParams.classList.remove('on'); };
+    $('tParams').onclick = () => { $('tParams').classList.add('on'); $('tPatch').classList.remove('on'); pParams.classList.add('on'); pPatch.classList.remove('on'); };
+
+    function setMode(m) {
+      mode = m;
+      $('mRecipe').classList.toggle('on', m === 'recipe');
+      $('mClaude').classList.toggle('on', m === 'claude');
+      $('keyBox').classList.toggle('show', m === 'claude');
+      if (m === 'claude') $('key').value = localStorage.getItem('forge.key') || '';
+    }
+    $('mRecipe').onclick = () => setMode('recipe');
+    $('mClaude').onclick = () => setMode('claude');
+    $('key').addEventListener('change', e => {
+      const v = e.target.value.trim();
+      if (v) localStorage.setItem('forge.key', v); else localStorage.removeItem('forge.key');
+    });
+    $('forgetKey').onclick = () => { localStorage.removeItem('forge.key'); $('key').value = ''; log('Key removed from this browser.', 'ok'); };
+
+    /* suggestion chips */
+    const SUGGEST = ['make the lighting more cinematic', 'golden hour', 'neon cyberpunk', 'film noir',
+                     'polished chrome', 'foggy and glowing', 'turn it into a bust', 'bigger, chunkier tiles', 'reset'];
+    $('chips').innerHTML = SUGGEST.map(s => `<span class="chip">${s}</span>`).join('');
+    $('chips').addEventListener('click', e => {
+      if (!e.target.classList.contains('chip')) return;
+      $('prompt').value = e.target.textContent; run();
+    });
+
+    /* — the patch log — */
+    function el(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild; }
+    function log(text, cls) {
+      const e = el(`<div class="entry"><div class="m ${cls || ''}">${escapeHtml(text)}</div></div>`);
+      pPatch.prepend(e); return e;
+    }
+    function escapeHtml(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+    function logPatch(label, source, ops, result, note) {
+      const e = el(`
+        <div class="entry">
+          <div class="h"><span class="t"></span><span class="m"></span></div>
+          <div class="m note" style="margin-top:4px"></div>
+          <pre></pre>
+          <div class="rowbtns"><button class="undo">undo</button></div>
+        </div>`);
+      e.querySelector('.t').textContent = label;
+      e.querySelector('.m').textContent = `${source} · ${result.touched} op${result.touched === 1 ? '' : 's'}`;
+      const noteEl = e.querySelector('.note');
+      if (note) noteEl.textContent = note; else noteEl.remove();
+      e.querySelector('pre').textContent = JSON.stringify(ops, null, 1);
+      for (const n of result.notes) {
+        const w = el(`<div class="m ${n.err ? 'err' : ''}" style="margin-top:5px"></div>`);
+        w.textContent = '! ' + n.t; e.insertBefore(w, e.querySelector('pre'));
+      }
+      /* Ops are not independent — a later patch may have overwritten a key
+         this one set — so undoing an entry unwinds everything back to the
+         moment before it, rather than pretending it can be lifted out. */
+      const marker = history.length;
+      const undoBtn = e.querySelector('.undo');
+      if (!result.touched) { undoBtn.remove(); pPatch.prepend(e); rebuildParamPane(); return; }
+      undoBtn.onclick = ev => {
+        while (history.length >= marker && history.length) undo();
+        ev.target.disabled = true; ev.target.textContent = 'undone';
+        rebuildParamPane();
+      };
+      pPatch.prepend(e);
+      rebuildParamPane();
+    }
+
+    /* Spawn ops never run unattended — they get shown and confirmed. */
+    function confirmSpawns(patch, source, note) {
+      const spawnOps = patch.ops.filter(o => o.op === 'spawn');
+      if (!spawnOps.length) return applyNow(patch, source, note);
+      const e = el(`
+        <div class="entry">
+          <div class="h"><span class="t"></span><span class="m">${escapeHtml(source)} · needs review</span></div>
+          <div class="m" style="margin-top:4px">This patch runs generated code. It will live in its own group and undo cleanly, but read it first.</div>
+          <pre class="code"></pre>
+          <div class="rowbtns"><button class="go">run it</button><button class="ghost no">discard</button></div>
+        </div>`);
+      e.querySelector('.t').textContent = patch.label || 'patch';
+      e.querySelector('pre').textContent = spawnOps.map(o => `// ${o.id || '(auto)'}\n${o.code}`).join('\n\n');
+      e.querySelector('.go').onclick = () => { e.remove(); applyNow(patch, source, note); };
+      e.querySelector('.no').onclick = () => e.remove();
+      pPatch.prepend(e);
+    }
+
+    function applyNow(patch, source, note) {
+      const r = applyPatch(patch.ops, patch.label);
+      logPatch(patch.label || 'patch', source, patch.ops, r, note);
+    }
+
+    let busy = false;
+    async function run() {
+      if (busy) return;
+      const text = $('prompt').value.trim();
+      if (!text) return;
+
+      if (mode === 'recipe') {
+        const p = localPatch(text);
+        if (!p) { log(`No recipe matches "${text}". Try one of the chips, or switch to Claude mode for anything the table doesn't cover.`, 'err'); return; }
+        confirmSpawns(p, 'recipes');
+        return;
+      }
+
+      if (!localStorage.getItem('forge.key')) { log('Enter an API key above first.', 'err'); $('key').focus(); return; }
+      busy = true; $('send').disabled = true; $('send').textContent = '…';
+      const pending = log('thinking…');
+      try {
+        const p = await claudePatch(text);
+        pending.remove();
+        confirmSpawns(p, 'claude-opus-5', p.note);
+      } catch (err) {
+        pending.remove();
+        log(String(err.message || err), 'err');
+      } finally {
+        busy = false; $('send').disabled = false; $('send').textContent = 'go';
+      }
+    }
+    $('send').onclick = run;
+    $('prompt').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run(); }
+    });
+
+    /* — parameter pane, generated straight off the schema — */
+    function groupOf(k) { return k.split('.')[0]; }
+
+    function writeControl(row, key) {
+      const s = SCHEMA[key], v = P[key];
+      const input = row.querySelector('input, select');
+      if (s.type === 'number') { input.value = v; row.querySelector('.val').textContent = (+v).toFixed(s.step < 0.01 ? 3 : (s.step < 1 ? 2 : 0)); }
+      else if (s.type === 'bool') input.checked = v;
+      else input.value = v;
+    }
+
+    function buildParamPane() {
+      pParams.innerHTML = '';
+      const groups = {};
+      for (const k in SCHEMA) (groups[groupOf(k)] ||= []).push(k);
+      const head = el(`<div class="rowbtns" style="margin:0 0 12px"><button id="undoBtn">undo last</button><button class="ghost" id="resetBtn">reset all</button><button class="ghost" id="copyBtn">copy state</button></div>`);
+      pParams.appendChild(head);
+      $('undoBtn').onclick = () => { const h = undo(); if (h) { rebuildParamPane(); log(`undid "${h.label}"`, 'ok'); } };
+      $('resetBtn').onclick = () => { const r = applyPatch([{ op: 'reset' }], 'reset'); logPatch('reset', 'panel', [{ op: 'reset' }], r); };
+      $('copyBtn').onclick = () => {
+        const diff = Object.fromEntries(Object.keys(SCHEMA).filter(k => P[k] !== SCHEMA[k].def).map(k => [k, P[k]]));
+        const ops = Object.entries(diff).map(([key, value]) => ({ op: 'set', key, value }));
+        navigator.clipboard?.writeText(JSON.stringify(ops, null, 1));
+        log(`copied ${ops.length} ops to the clipboard`, 'ok');
+      };
+
+      for (const g in groups) {
+        const box = el(`<div class="grp"><h3>${g}</h3></div>`);
+        for (const key of groups[g]) {
+          const s = SCHEMA[key], short = key.slice(g.length + 1);
+          let row;
+          if (s.type === 'number') {
+            row = el(`<div class="ctl"><label title="${escapeHtml(s.desc)}">${short}</label><input type="range" min="${s.min}" max="${s.max}" step="${s.step}"><span class="val"></span></div>`);
+          } else if (s.type === 'color') {
+            row = el(`<div class="ctl"><label title="${escapeHtml(s.desc)}">${short}</label><input type="color"></div>`);
+          } else if (s.type === 'bool') {
+            row = el(`<div class="ctl"><label title="${escapeHtml(s.desc)}">${short}</label><input type="checkbox" class="chk"></div>`);
+          } else {
+            row = el(`<div class="ctl"><label title="${escapeHtml(s.desc)}">${short}</label><select>${s.values.map(v => `<option value="${v}">${v}</option>`).join('')}</select></div>`);
+          }
+          row.dataset.key = key;
+          const input = row.querySelector('input, select');
+          input.addEventListener('input', () => {
+            const raw = s.type === 'bool' ? input.checked : input.value;
+            const r = coerce(key, raw);
+            if (r.err) return;
+            if (!liveDrag) { liveDrag = { key, before: P[key] }; }
+            setKey(key, r.value); syncScene();
+          });
+          input.addEventListener('change', () => {
+            if (liveDrag && liveDrag.key === key && liveDrag.before !== P[key]) {
+              history.push({ label: `panel: ${key}`, before: { [key]: liveDrag.before }, added: [], removed: [] });
+            }
+            liveDrag = null;
+          });
+          writeControl(row, key);
+          box.appendChild(row);
+        }
+        pParams.appendChild(box);
+      }
+    }
+    let liveDrag = null;
+    function rebuildParamPane() { for (const row of pParams.querySelectorAll('[data-key]')) writeControl(row, row.dataset.key); }
+
+    buildParamPane();
+    setMode('recipe');
+
+    /* ══════════════════════════════════════════════════════════════════════
+       9. LOOP
+       ══════════════════════════════════════════════════════════════════════ */
+
+    let W = 0, H = 0, iw = 0, ih = 0;
+    function resize() {
+      W = innerWidth; H = innerHeight;
+      renderer.setSize(W, H, false);
+      camera.aspect = W / H; camera.updateProjectionMatrix();
+      sizeTargets();
+    }
+    function sizeTargets() {
+      const dpr = renderer.getPixelRatio();
+      iw = Math.max(2, Math.round(W * dpr * P['post.quality']));
+      ih = Math.max(2, Math.round(H * dpr * P['post.quality']));
+      rtScene.setSize(iw, ih);
+      rtA.setSize(Math.max(2, iw >> 1), Math.max(2, ih >> 1));
+      rtB.setSize(Math.max(2, iw >> 1), Math.max(2, ih >> 1));
+      compMat.uniforms.res.value.set(iw, ih);
+    }
+    addEventListener('resize', resize);
+
+    const clock = new THREE.Clock();
+    let lastQuality = P['post.quality'];
+    let frames = 0, fpsT = 0, fps = 0;
+
+    function frame() {
+      requestAnimationFrame(frame);
+      const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
+
+      if (needsRebuild) { buildSubject(); needsRebuild = false; }
+      if (lastQuality !== P['post.quality']) { lastQuality = P['post.quality']; sizeTargets(); }
+
+      subject.rotation.y += P['subject.spin'] * dt;
+      subject.position.y = PLINTH_TOP + 1.05 + Math.sin(t * 1.1) * 0.09 * P['subject.float'];
+      for (const s of spawned.values()) if (s.update) { try { s.update(t, dt); } catch (e) { s.update = null; } }
+
+      controls.update();
+
+      /* scene → rtScene → bright → blur h → blur v → composite */
+      renderer.setRenderTarget(rtScene);
+      renderer.clear();
+      renderer.render(scene, camera);
+
+      if (P['post.bloom'] > 0.001) {
+        brightMat.uniforms.tSrc.value = rtScene.texture;
+        pass(brightMat, rtA);
+        blurMat.uniforms.tSrc.value = rtA.texture;
+        blurMat.uniforms.dir.value.set(1.6 / (iw >> 1), 0);
+        pass(blurMat, rtB);
+        blurMat.uniforms.tSrc.value = rtB.texture;
+        blurMat.uniforms.dir.value.set(0, 1.6 / (ih >> 1));
+        pass(blurMat, rtA);
+        compMat.uniforms.tBloom.value = rtA.texture;
+      } else {
+        compMat.uniforms.tBloom.value = rtB.texture;   // whatever is there; bloom is multiplied by 0
+      }
+
+      compMat.uniforms.tScene.value = rtScene.texture;
+      compMat.uniforms.time.value = t;
+      pass(compMat, null);
+
+      frames++;
+      if (t - fpsT > 0.5) { fps = Math.round(frames / (t - fpsT)); frames = 0; fpsT = t; }
+      $('status').textContent = `${fps} fps · ${Math.round(P['subject.count'])} tesserae · ${history.length} patch${history.length === 1 ? '' : 'es'} applied${spawned.size ? ` · ${spawned.size} spawned` : ''}`;
+    }
+
+    resize();
+    syncScene();
+    buildSubject(); needsRebuild = false;
+    frame();
+  </script>
+</body>
+</html>
