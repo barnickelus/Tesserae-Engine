@@ -31,9 +31,16 @@
       state you can't step back out of.
 
       Raw code is still available, but as an escape hatch rather than the
-      mechanism: `spawn` ops run generated JS inside a sandbox group that
-      owns everything it creates, so undoing a spawn is just removing that
-      group. Spawns are always shown before they run and never auto-apply.
+      mechanism: `spawn` ops run generated JS against a Group that owns
+      everything it creates, so undoing a spawn is just removing that group.
+      A spawn can build anything Three.js can — meshes, lights, particles,
+      custom shaders, a per-frame updater — but the obvious routes off the
+      page (fetch, XHR, document, window, localStorage, dynamic import) are
+      shadowed out of its scope, so generated code can't read the API key
+      you put in localStorage and post it somewhere. That is a speed bump
+      and a declaration of intent, NOT a security sandbox: this is your
+      origin and a determined script could still get out. The real control
+      is that a spawn is always shown to you and never auto-applies.
 
     TWO WAYS TO DRIVE IT
 
@@ -91,6 +98,11 @@
     #keyBox.show { display: block; }
     #keyBox input { width: 100%; font: inherit; color: #eaf2fb; background: rgba(0,0,0,.35);
       border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 7px 9px; }
+    #modelRow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    #modelRow select { flex: 1; min-width: 0; font: inherit; font-size: 11px; color: #eaf2fb;
+      background: #12171f; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; padding: 5px 6px; }
+    #spend { flex: 0 0 auto; font-size: 10.5px; color: #6b7f94; white-space: nowrap; }
+    #spend.hot { color: #d59b5a; }
     .warn { color: #d59b5a; font-size: 10.5px; line-height: 1.5; margin: 6px 0 0; }
 
     #tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,.07); }
@@ -175,6 +187,14 @@
 
       <div id="keyBox">
         <input id="key" type="password" placeholder="sk-ant-… (stays in this browser)" autocomplete="off" spellcheck="false" />
+        <div id="modelRow">
+          <select id="model">
+            <option value="claude-opus-5">Opus 5 — sharpest</option>
+            <option value="claude-sonnet-5">Sonnet 5 — ~2.5× cheaper</option>
+            <option value="claude-haiku-4-5">Haiku 4.5 — ~5× cheaper</option>
+          </select>
+          <span id="spend">$0.0000 this session</span>
+        </div>
         <p class="warn">This page is static — it has no server to keep a key in, so the key is yours: held in this browser's localStorage and sent only to api.anthropic.com. Use a key you can revoke.
           <button class="ghost" id="forgetKey" style="font-size:10.5px;padding:3px 7px;margin-top:5px">forget key</button>
         </p>
@@ -739,13 +759,30 @@
       if (el) writeControl(el, key);
     }
 
+    /* Names shadowed out of a spawn's scope. This is a speed bump and a
+       declaration of intent, NOT a security sandbox — generated code runs on
+       this origin and a determined script could still find its way out. The
+       actual control is that you read the code before clicking "run it".
+       What this does buy: the obvious routes off the page are closed, so an
+       API key sitting in localStorage can't be casually read and posted
+       somewhere, and a model that ignores the instructions fails loudly
+       instead of quietly doing something you didn't ask for. */
+    const SPAWN_DENY = ['fetch','XMLHttpRequest','WebSocket','EventSource','navigator',
+      'document','window','self','globalThis','parent','top','opener','frames',
+      'localStorage','sessionStorage','indexedDB','caches','cookieStore',
+      'Worker','SharedWorker','importScripts','postMessage','open'];
+
     function runSpawn(id, code) {
+      /* import() is an operator, not an identifier, so it can't be shadowed —
+         it has to be refused lexically. */
+      if (/\bimport\s*[(．.]/.test(code)) throw new Error('dynamic import is not allowed in a spawn');
+
       const group = new THREE.Group();
       group.name = 'spawn:' + id;
       let update = null;
       const api = { PLINTH_TOP, subject, scene, clamp: THREE.MathUtils.clamp, params: P };
-      const fn = new Function('THREE', 'group', 'api', code);
-      const ret = fn(THREE, group, api);
+      const fn = new Function('THREE', 'group', 'api', ...SPAWN_DENY, code);
+      const ret = fn(THREE, group, api, ...SPAWN_DENY.map(() => undefined));
       if (typeof ret === 'function') update = ret;
       spawnRoot.add(group);
       spawned.set(id, { group, update });
@@ -1037,6 +1074,30 @@ ${JSON.stringify(Object.fromEntries(Object.keys(SCHEMA).filter(k => P[k] !== SCH
 
 Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', ') : '(none)'}`;
 
+    /* USD per million tokens, [input, output]. Standard list rates — if a
+       model is running an introductory discount the readout below reads high,
+       which is the safe direction to be wrong in when you're watching a
+       balance. Not a bill; the console is the authority. */
+    const PRICES = {
+      'claude-opus-5':    [5, 25],
+      'claude-sonnet-5':  [3, 15],
+      'claude-haiku-4-5': [1,  5],
+    };
+    let spendTotal = 0, spendCalls = 0;
+
+    function chargeFor(model, usage) {
+      const [pin, pout] = PRICES[model] || PRICES['claude-opus-5'];
+      const i = usage?.input_tokens || 0, o = usage?.output_tokens || 0;
+      const cost = (i * pin + o * pout) / 1e6;
+      spendTotal += cost; spendCalls++;
+      const el = $('spend');
+      el.textContent = `$${spendTotal.toFixed(4)} · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`;
+      el.classList.toggle('hot', spendTotal > 1);
+      return { cost, i, o };
+    }
+
+    function currentModel() { return localStorage.getItem('forge.model') || 'claude-opus-5'; }
+
     async function claudePatch(text) {
       const key = localStorage.getItem('forge.key');
       if (!key) throw new Error('No API key set.');
@@ -1049,7 +1110,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
           'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-          model: 'claude-opus-5',
+          model: currentModel(),
           max_tokens: 8000,
           thinking: { type: 'adaptive' },
           system: SYSTEM(),
@@ -1063,13 +1124,17 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         throw new Error(`${res.status} — ${detail}`);
       }
       const data = await res.json();
+      const bill = chargeFor(data.model || currentModel(), data.usage);
+      const cost = `${bill.i} in / ${bill.o} out · ~$${bill.cost.toFixed(4)}`;
+
       const tool = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'apply_patch');
-      if (tool) return { ops: tool.input.ops || [], label: tool.input.label || 'patch', note: tool.input.note || '' };
+      if (tool) return { ops: tool.input.ops || [], label: tool.input.label || 'patch',
+                         note: tool.input.note || '', cost };
 
       /* Fell back to prose — dig a patch out of it rather than giving up. */
       const say = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
       const m = say.match(/\[[\s\S]*\]/);
-      if (m) { try { return { ops: JSON.parse(m[0]), label: 'patch', note: '' }; } catch (e) { /* fall through */ } }
+      if (m) { try { return { ops: JSON.parse(m[0]), label: 'patch', note: '', cost }; } catch (e) { /* fall through */ } }
       throw new Error('The model replied without a patch: ' + (say.slice(0, 300) || '(empty)'));
     }
 
@@ -1094,8 +1159,12 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       $('mRecipe').classList.toggle('on', m === 'recipe');
       $('mClaude').classList.toggle('on', m === 'claude');
       $('keyBox').classList.toggle('show', m === 'claude');
-      if (m === 'claude') $('key').value = localStorage.getItem('forge.key') || '';
+      if (m === 'claude') {
+        $('key').value = localStorage.getItem('forge.key') || '';
+        $('model').value = currentModel();
+      }
     }
+    $('model') && ($('model').onchange = e => localStorage.setItem('forge.model', e.target.value));
     $('mRecipe').onclick = () => setMode('recipe');
     $('mClaude').onclick = () => setMode('claude');
     $('key').addEventListener('change', e => {
@@ -1195,7 +1264,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       try {
         const p = await claudePatch(text);
         pending.remove();
-        confirmSpawns(p, 'claude-opus-5', p.note);
+        confirmSpawns(p, `${currentModel()}${p.cost ? ' · ' + p.cost : ''}`, p.note);
       } catch (err) {
         pending.remove();
         log(String(err.message || err), 'err');
