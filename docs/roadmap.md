@@ -759,6 +759,27 @@
       stubbed endpoint — request shape, tool_use parsing, the spawn review
       gate, spawn execution, spawn undo, and a 401 surfacing the API's own
       message. Zero page errors.
+      Follow-up, framing: the panel sits ON the canvas, so the middle of the
+      window is not the middle of what you can see — on a phone it's a sheet
+      over the lower half and the visible strip is under half the frame the
+      camera was set up for. Two corrections, both driven by the panel's
+      measured box rather than a breakpoint guess: `setViewOffset` recentres
+      the frame on the visible strip, and `fitCamera` dollies out (never in,
+      so it can't undo a zoom you chose) when the subject wouldn't fit.
+      The first attempt at the second one used a hardcoded bounding radius
+      and silently did nothing, because the guess was ~30% under the real
+      value — laid tesserae extend past the source surface by lift, jitter
+      and half a tile diagonal. Fixed by measuring the radius during
+      buildSubject instead of assuming it, and by charging fitCamera for the
+      gap between the orbit target and the subject's actual centre. Added a
+      `window.forge` handle exposing `projectSubject()` so the framing is
+      measured rather than eyeballed off screenshots — which is how the bad
+      radius hid, since the page looked plausible and was wrong. Verified
+      across phone portrait/landscape, tablet and desktop, panel open and
+      closed, including a 2.4x-scaled cube (dolly 7.2 → 26.7 on phone
+      portrait): all twelve cases fully inside the visible strip, centred
+      within 5px. Mobile sheet also trimmed — description hidden, chips on
+      one scrollable row — so it shows eight slider rows instead of three.
 
 ## Backlog
 

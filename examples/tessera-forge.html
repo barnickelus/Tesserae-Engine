@@ -133,9 +133,21 @@
     #panel:not(.hidden) ~ #toggle { right: 384px; }
 
     @media (max-width: 720px) {
-      #panel { top: auto; width: 100%; height: 62vh; border-left: 0; border-top: 1px solid rgba(255,255,255,.09); }
+      /* The panel becomes a sheet over the canvas, so every row it spends on
+         chrome is a row of the scene you can't see. Header shrinks to the
+         two things you actually operate: the prompt and the mode. */
+      #panel { top: auto; width: 100%; height: 56vh; border-left: 0; border-top: 1px solid rgba(255,255,255,.09); }
       #panel.hidden { transform: translateY(100%); }
       #panel:not(.hidden) ~ #toggle { right: 12px; }
+      #panelTop { padding: 10px 12px 8px; }
+      h1 { margin-bottom: 8px; }
+      .sub { display: none; }
+      textarea { height: 44px; }
+      .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-top: 8px;
+        padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+      .chips::-webkit-scrollbar { display: none; }
+      .chip { flex: 0 0 auto; }
+      #body { padding: 10px 12px 20px; }
       .ctl { grid-template-columns: 92px 1fr 42px; }
     }
   </style>
@@ -275,7 +287,7 @@
       /* — camera — */
       'camera.fov'      : N(42, 14, 95, 1, 'lens field of view, degrees'),
       'camera.autospin' : N(0.06, -1, 1, .01, 'automatic orbit speed'),
-      'camera.height'   : N(1.25, -1, 5, .01, 'what height the camera looks at'),
+      'camera.height'   : N(1.79, -1, 5, .01, 'what height the camera looks at'),
     };
 
     /* Which keys force the subject to be re-tessellated rather than just poked. */
@@ -387,6 +399,10 @@
 
     const subjectMat = new THREE.MeshStandardMaterial({ flatShading: true });
     let tiles = null;
+    /* Real bounding radius of the laid tesserae, in local units — measured
+       rather than assumed, because it swings from ~1.0 (knot) to ~1.4 (cube
+       corner) and grows with tile size, lift and jitter. fitCamera needs it. */
+    let subjectRadius = 1.2;
 
     function sourceGeometry(shape) {
       switch (shape) {
@@ -505,6 +521,7 @@
       tiles = new THREE.InstancedMesh(TILE_GEO, subjectMat, n);
       tiles.castShadow = true; tiles.receiveShadow = true;
       const jit = P['subject.jitter'], tile = P['subject.tile'], lift = P['subject.lift'], hue = P['mat.subject.hue'];
+      let maxR = 0;
       for (let i = 0; i < n; i++) {
         const { p, n: nrm } = pts[i];
         _q.setFromUnitVectors(_up, nrm);
@@ -516,7 +533,9 @@
         const sz = tile * (1 + (rnd() - .5) * jit * .5);
         _s.set(sz, sz, sz);
         const off = lift + (rnd() - .5) * jit * tile * .5;
-        _m.compose(p.clone().addScaledVector(nrm, off + sz * .14), _q, _s);
+        const c = p.clone().addScaledVector(nrm, off + sz * .14);
+        maxR = Math.max(maxR, c.length() + sz * 0.71);   // + half a tile's diagonal
+        _m.compose(c, _q, _s);
         tiles.setMatrixAt(i, _m);
         /* Instance colour is a near-white jitter so the registry's
            mat.subject.color stays the thing that actually sets the hue. */
@@ -526,6 +545,7 @@
       tiles.instanceMatrix.needsUpdate = true;
       if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
       subject.add(tiles);
+      subjectRadius = maxR || 1.2;
     }
 
     /* Sandbox for `spawn` ops: generated code only ever gets a group of its
@@ -671,6 +691,11 @@
       controls.target.y += (P['camera.height'] - controls.target.y) * 0.25;
       controls.autoRotate = Math.abs(P['camera.autospin']) > 0.001;
       controls.autoRotateSpeed = P['camera.autospin'] * 8;
+
+      /* A patch can scale the subject up or narrow the lens; refit so it
+         still fits the visible strip. Only ever pushes out, so it can't
+         undo a zoom the user chose. */
+      if (W) fitCamera();
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -1056,7 +1081,11 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
     const panel = $('panel'), pPatch = $('pPatch'), pParams = $('pParams');
     let mode = 'recipe';
 
-    $('toggle').onclick = () => panel.classList.toggle('hidden');
+    $('toggle').onclick = () => {
+      panel.classList.toggle('hidden');
+      /* wait out the slide, then reframe on the newly visible area */
+      setTimeout(() => { updateViewOffset(); fitCamera(); }, 240);
+    };
     $('tPatch').onclick = () => { $('tPatch').classList.add('on'); $('tParams').classList.remove('on'); pPatch.classList.add('on'); pParams.classList.remove('on'); };
     $('tParams').onclick = () => { $('tParams').classList.add('on'); $('tPatch').classList.remove('on'); pParams.classList.add('on'); pPatch.classList.remove('on'); };
 
@@ -1251,10 +1280,56 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
        ══════════════════════════════════════════════════════════════════════ */
 
     let W = 0, H = 0, iw = 0, ih = 0;
+
+    /* The panel sits ON the canvas, so the middle of the window is not the
+       middle of what you can see — and on a phone, where it's a sheet over
+       the bottom half, the visible strip is far smaller than the frame the
+       camera was set up for. Two corrections, both derived from the panel's
+       real measured box rather than a guessed breakpoint:
+         · recentre, so the subject lands in the middle of the visible strip;
+         · refit, so it isn't larger than that strip can hold. */
+    function visibleRect() {
+      const open = !panel.classList.contains('hidden');
+      if (!open) return { w: W, h: H };
+      const b = panel.getBoundingClientRect();
+      return {
+        w: b.height >= H - 1 ? Math.max(80, W - b.width)  : W,   // docked to a side
+        h: b.width  >= W - 1 ? Math.max(80, H - b.height) : H    // docked to the bottom
+      };
+    }
+
+    function updateViewOffset() {
+      const v = visibleRect();
+      if (v.w === W && v.h === H) camera.clearViewOffset();
+      else camera.setViewOffset(W, H, (W - v.w) / 2, (H - v.h) / 2, W, H);
+    }
+
+    /* Push the camera back only when the subject would not fit the visible
+       strip. Never pulls in, so a zoom the user chose is left alone. */
+    const _dir = new THREE.Vector3();
+    function fitCamera() {
+      const v = visibleRect();
+      const tV = Math.tan(THREE.MathUtils.degToRad(P['camera.fov']) / 2);
+      const halfV = Math.atan(tV * (v.h / H));
+      const halfH = Math.atan(tV * (W / H) * (v.w / W));
+      /* The orbit target is not always the subject's centre, so anything the
+         target sits away from the centre has to be paid for in radius too. */
+      const dy = Math.abs(subject.position.y - controls.target.y);
+      const R = subjectRadius * P['subject.scale'] + dy;
+      const need = R / Math.max(0.05, Math.sin(Math.min(halfV, halfH))) * 1.2;
+      const have = camera.position.distanceTo(controls.target);
+      if (have < need) {
+        _dir.subVectors(camera.position, controls.target).normalize();
+        camera.position.copy(controls.target).addScaledVector(_dir, Math.min(need, controls.maxDistance));
+      }
+    }
+
     function resize() {
       W = innerWidth; H = innerHeight;
       renderer.setSize(W, H, false);
       camera.aspect = W / H; camera.updateProjectionMatrix();
+      updateViewOffset();
+      fitCamera();
       sizeTargets();
     }
     function sizeTargets() {
@@ -1276,7 +1351,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       requestAnimationFrame(frame);
       const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
 
-      if (needsRebuild) { buildSubject(); needsRebuild = false; }
+      if (needsRebuild) { buildSubject(); needsRebuild = false; fitCamera(); }
       if (lastQuality !== P['post.quality']) { lastQuality = P['post.quality']; sizeTargets(); }
 
       subject.rotation.y += P['subject.spin'] * dt;
@@ -1313,9 +1388,37 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       $('status').textContent = `${fps} fps · ${Math.round(P['subject.count'])} tesserae · ${history.length} patch${history.length === 1 ? '' : 'es'} applied${spawned.size ? ` · ${spawned.size} spawned` : ''}`;
     }
 
+    /* A handle for measuring the page from outside — used by the headless
+       framing checks, and handy in a console when a patch does something
+       you didn't expect. Read-only by convention; ops still go through
+       applyPatch so history stays honest. */
+    window.forge = {
+      THREE, scene, camera, controls, subject, renderer,
+      params: P, schema: SCHEMA, history, spawned,
+      get subjectRadius() { return subjectRadius; },
+      visibleRect, applyPatch, undo, localPatch,
+      /* where the subject actually lands on screen, in CSS pixels */
+      projectSubject() {
+        const r = subjectRadius * P['subject.scale'];
+        const c = subject.position;
+        const v = new THREE.Vector3();
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (let i = 0; i < 26; i++) {
+          const a = i * 2.399963, z = 1 - (2 * i + 1) / 26, s = Math.sqrt(1 - z * z);
+          v.set(c.x + r * s * Math.cos(a), c.y + r * z, c.z + r * s * Math.sin(a)).project(camera);
+          const px = (v.x * 0.5 + 0.5) * W, py = (1 - (v.y * 0.5 + 0.5)) * H;
+          x0 = Math.min(x0, px); x1 = Math.max(x1, px);
+          y0 = Math.min(y0, py); y1 = Math.max(y1, py);
+        }
+        return { x0, y0, x1, y1, W, H };
+      }
+    };
+
     resize();
     syncScene();
     buildSubject(); needsRebuild = false;
+    controls.target.y = P['camera.height'];   // no lerp on the very first frame
+    fitCamera();
     frame();
   </script>
 </body>
