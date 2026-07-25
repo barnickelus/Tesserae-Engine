@@ -780,6 +780,31 @@
       portrait): all twelve cases fully inside the visible strip, centred
       within 5px. Mobile sheet also trimmed — description hidden, chips on
       one scrollable row — so it shows eight slider rows instead of three.
+      Follow-up, spawn hardening + cost visibility: user was about to put a
+      real key on a $5 balance into the page, which made two things worth
+      checking rather than assuming. First, probing the spawn path showed
+      `import()`, `fetch` and `document` all executing — the "no imports, no
+      network, no DOM" line in the system prompt was an INSTRUCTION to the
+      model, not an enforced boundary, and generated code could therefore
+      have read `forge.key` out of localStorage and posted it anywhere.
+      Fixed by passing the dangerous globals as shadowing parameters to the
+      spawn's Function (fetch, XHR, WebSocket, document, window, self,
+      globalThis, localStorage, navigator, Worker, …) and refusing dynamic
+      `import()` lexically, since it's an operator and can't be shadowed.
+      Verified all seven probes now throw and apply zero ops, while a spawn
+      building meshes, a PointLight, a Points cloud, a custom ShaderMaterial
+      and a per-frame updater still works untouched. Documented honestly as
+      a speed bump, not a sandbox — same origin, determined code still gets
+      out; the review gate is the actual control.
+      Second, measured the real request instead of estimating it: 4828 chars
+      of system prompt + 981 of tool schema ≈ 1.6k input tokens per prompt.
+      Added a model selector (Opus 5 / Sonnet 5 / Haiku 4.5, persisted) and
+      a spend readout that reads `usage` off each response and prices it
+      from a list-rate table — per-patch in the log line, running total
+      beside the key field. At a measured 1633 in / 880 out that's $0.0302,
+      $0.0181 and $0.0060 a prompt respectively, so a $5 balance is roughly
+      165, 275 or 830 prompts. Deliberately uses standard rates, so during
+      an introductory discount the readout reads high rather than low.
 
 ## Backlog
 
