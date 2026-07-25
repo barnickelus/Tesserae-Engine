@@ -709,6 +709,57 @@
       (previously unbounded); bust crop toggles cleanly on/off on
       Michelle; no regressions on Empress/Portrait at default settings.
 
+- [x] **tessera-forge — a Three.js scene you modify by describing it.**
+      User wanted a page that "modifies three.js" from a prompt, working
+      from a Grok sketch: a panel that sends targeted prompts to an LLM,
+      which returns updated code that the frontend merges and hot-reloads.
+      That framing is where this idea usually dies, so the page doesn't
+      follow it. Regenerated modules are all-or-nothing — a snippet either
+      runs or it takes the page down; there is no partial success, no
+      validation surface, and nothing to undo, because "the previous
+      module" isn't a state you can restore once the scene has drifted.
+      Inverted it: the scene publishes a REGISTRY (`SCHEMA`) of ~55 flat,
+      typed, dotted keys — `light.key.elevation`, `post.chroma`,
+      `subject.tile`, each with a type, a range or enum, and a one-line
+      description. Nothing regenerates the scene; the only thing a prompt
+      ever produces is a PATCH, a small list of JSON ops against that
+      registry (`set`, `nudge`, `reset`, plus `spawn`/`remove`). Every op
+      is coerced and clamped per-key before it lands, an op naming a key
+      that doesn't exist is reported and skipped rather than thrown, and
+      the prior value of everything touched is recorded — so a patch is
+      exactly invertible and a patch that is 80% valid applies 80% and
+      tells you about the rest. The registry is also what generates the
+      slider panel and what's handed to the model as the description of
+      what it may touch, so adding a knob is one line in one place.
+      Raw code survives as an escape hatch rather than the mechanism:
+      `spawn` ops run generated JS inside a Group they exclusively own, so
+      undoing one is removing that group. Spawns are always shown for
+      review and never auto-apply.
+      Two drivers, one apply path. RECIPES is a local phrase→ops table (30
+      entries: cinematic, golden hour, moonlight, neon, noir, chrome, clay,
+      glass, fog, film stock, wireframe, shape swaps, density, spin, lens)
+      — the whole page works offline with no key, and it doubles as the
+      reference for what a good patch looks like. CLAUDE mode is
+      bring-your-own-key, because a static page has no server to keep a key
+      in; the key stays in this browser's localStorage and goes only to
+      api.anthropic.com. The model gets the registry digest plus the
+      current diff-from-defaults and answers through an `apply_patch` tool
+      call, with a fallback that digs a JSON array out of prose if it
+      replies in text instead.
+      Scene: a mosaic form (torus knot / ico / sphere / torus / cube / cone
+      / a sculpted head) laid in area-weighted instanced tesserae on a
+      plinth, three spherically-aimed lights, gradient sky, exponential
+      fog, and a hand-rolled post chain — render target → bright pass →
+      two-tap separable blur → one composite doing chroma, bloom, ACES,
+      exposure, saturation, contrast, vignette and midtone-weighted grain.
+      Verified headless: recipes apply and stack; undo unwinds a patch and
+      everything after it back to exact prior values (confirmed returning
+      to defaults after four stacked patches); the slider panel writes into
+      the same history; the BYOK path was driven end to end against a
+      stubbed endpoint — request shape, tool_use parsing, the spawn review
+      gate, spawn execution, spawn undo, and a 401 surfacing the API's own
+      message. Zero page errors.
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
