@@ -805,6 +805,34 @@
       $0.0181 and $0.0060 a prompt respectively, so a $5 balance is roughly
       165, 275 or 830 prompts. Deliberately uses standard rates, so during
       an introductory discount the readout reads high rather than low.
+      Follow-up, second provider: user's key turned out to be an OpenAI one,
+      which the page would have rejected with a bare 401. Rather than send
+      them to buy a second key, added OpenAI alongside Anthropic — cheap to
+      do precisely because of the original architecture. Nothing downstream
+      of the request knows which company answered: a provider only has to
+      take a system prompt plus a sentence and return { ops, label, note },
+      so the whole addition is a `send` function and a PROVIDERS entry. The
+      system prompt, tool schema, validation, undo and patch log are shared
+      verbatim (verified byte-identical across both requests). This is the
+      dividend of emitting a patch instead of code — with the "regenerate
+      the module" design, swapping model families would have meant redoing
+      the parsing and re-tuning the prompt for a different code style.
+      Anthropic uses x-api-key + the browser-access header + adaptive
+      thinking; OpenAI uses Bearer auth and chat/completions function
+      calling, deliberately sending no max_tokens and no temperature since
+      the accepted parameter names differ across their model generations and
+      a rejected parameter reads as a broken page. Model choice is a fixed
+      list for Anthropic (stable ids) and free text for OpenAI (ids move —
+      a stale hardcoded one fails as a confusing 404). Keys and model
+      choices are stored per provider, so both can sit side by side.
+      Pricing is only applied to models whose rate the page actually knows;
+      for anything else it reports tokens and says "rate unknown" rather
+      than inventing a figure someone might budget against. Pasting a key
+      whose prefix belongs to the other provider now warns immediately
+      instead of surfacing later as a 401. Verified both paths against
+      stubs — headers, body shape, tool call parsing, usage accounting, the
+      unknown-key warning, and per-provider persistence — plus a regression
+      pass on spawn hardening and framing.
 
 ## Backlog
 
