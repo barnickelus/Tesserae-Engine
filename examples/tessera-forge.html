@@ -49,12 +49,19 @@
       same op format. This is the whole page working offline, and it doubles
       as the reference implementation of what a good patch looks like.
 
-      CLAUDE (bring your own key) — a static page cannot hold an API key;
-      there is no server here to keep one in. So the key is yours, typed at
-      runtime, kept in this browser's localStorage and sent to Anthropic and
-      nowhere else. The model gets the schema plus the current state and
-      replies with a patch through a tool call. Same apply path, same undo,
-      same validation as the recipes.
+      LLM (bring your own key) — a static page cannot hold an API key; there
+      is no server here to keep one in. So the key is yours, typed at
+      runtime, kept in this browser's localStorage and sent to the provider
+      you picked and nowhere else. The model gets the schema plus the
+      current state and replies with a patch through a tool call. Same apply
+      path, same undo, same validation as the recipes.
+
+      Anthropic and OpenAI are both supported, because nothing downstream of
+      the request knows which one answered — a provider only has to take a
+      system prompt and a sentence and come back with { ops, label, note }.
+      That is the dividend of having prompts emit a patch instead of code:
+      swapping the model out is thirty lines, not a rewrite. Adding a third
+      provider means adding a `send` function to PROVIDERS.
 
     Drag to orbit, scroll/pinch to zoom.
   -->
@@ -98,9 +105,13 @@
     #keyBox.show { display: block; }
     #keyBox input { width: 100%; font: inherit; color: #eaf2fb; background: rgba(0,0,0,.35);
       border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 7px 9px; }
+    #keyBox > select { width: 100%; font: inherit; font-size: 11px; color: #eaf2fb; margin-bottom: 6px;
+      background: #12171f; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; padding: 6px; }
     #modelRow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
-    #modelRow select { flex: 1; min-width: 0; font: inherit; font-size: 11px; color: #eaf2fb;
+    #modelRow select, #modelRow input { flex: 1; min-width: 0; font: inherit; font-size: 11px; color: #eaf2fb;
       background: #12171f; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; padding: 5px 6px; }
+    #modelRow input { background: rgba(0,0,0,.35); }
+    #modelRow .off { display: none; }
     #spend { flex: 0 0 auto; font-size: 10.5px; color: #6b7f94; white-space: nowrap; }
     #spend.hot { color: #d59b5a; }
     .warn { color: #d59b5a; font-size: 10.5px; line-height: 1.5; margin: 6px 0 0; }
@@ -175,7 +186,7 @@
 
       <div class="modes">
         <button id="mRecipe" class="on">recipes (offline)</button>
-        <button id="mClaude">claude (your key)</button>
+        <button id="mClaude">LLM (your key)</button>
       </div>
 
       <div id="promptRow">
@@ -186,18 +197,18 @@
       <div class="chips" id="chips"></div>
 
       <div id="keyBox">
-        <input id="key" type="password" placeholder="sk-ant-… (stays in this browser)" autocomplete="off" spellcheck="false" />
+        <select id="provider">
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+        </select>
+        <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
         <div id="modelRow">
-          <select id="model">
-            <option value="claude-opus-5">Opus 5 — sharpest</option>
-            <option value="claude-sonnet-5">Sonnet 5 — ~2.5× cheaper</option>
-            <option value="claude-haiku-4-5">Haiku 4.5 — ~5× cheaper</option>
-          </select>
-          <span id="spend">$0.0000 this session</span>
+          <select id="model"></select>
+          <input id="modelText" type="text" placeholder="model id" autocomplete="off" spellcheck="false" />
+          <span id="spend">$0.0000 · 0 calls</span>
         </div>
-        <p class="warn">This page is static — it has no server to keep a key in, so the key is yours: held in this browser's localStorage and sent only to api.anthropic.com. Use a key you can revoke.
-          <button class="ghost" id="forgetKey" style="font-size:10.5px;padding:3px 7px;margin-top:5px">forget key</button>
-        </p>
+        <p class="warn" id="keyWarn"></p>
+        <p class="warn"><button class="ghost" id="forgetKey" style="font-size:10.5px;padding:3px 7px">forget key</button></p>
       </div>
     </div>
 
@@ -1083,24 +1094,77 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       'claude-sonnet-5':  [3, 15],
       'claude-haiku-4-5': [1,  5],
     };
-    let spendTotal = 0, spendCalls = 0;
+    let spendTotal = 0, spendCalls = 0, spendTok = 0, spendKnown = true;
 
+    /* Returns the log line for one call. Prices are only applied to models
+       this page actually knows the rate for — for anything else it reports
+       tokens and says so, rather than inventing a number you might budget
+       against. Anthropic list rates; during an introductory discount this
+       reads high, which is the safe direction to be wrong in. */
     function chargeFor(model, usage) {
-      const [pin, pout] = PRICES[model] || PRICES['claude-opus-5'];
-      const i = usage?.input_tokens || 0, o = usage?.output_tokens || 0;
-      const cost = (i * pin + o * pout) / 1e6;
-      spendTotal += cost; spendCalls++;
+      const i = usage?.in || 0, o = usage?.out || 0;
+      const rate = PRICES[model];
+      spendCalls++; spendTok += i + o;
       const el = $('spend');
-      el.textContent = `$${spendTotal.toFixed(4)} · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`;
+      if (rate) {
+        spendTotal += (i * rate[0] + o * rate[1]) / 1e6;
+      } else {
+        spendKnown = false;
+      }
+      el.textContent = spendKnown
+        ? `$${spendTotal.toFixed(4)} · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`
+        : `${spendTok.toLocaleString()} tok · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`;
       el.classList.toggle('hot', spendTotal > 1);
-      return { cost, i, o };
+      const cost = rate ? `~$${((i * rate[0] + o * rate[1]) / 1e6).toFixed(4)}` : 'rate unknown';
+      return `${i} in / ${o} out · ${cost}`;
     }
 
-    function currentModel() { return localStorage.getItem('forge.model') || 'claude-opus-5'; }
+    /* Nothing above this point knows or cares which company's model wrote a
+       patch — that's the payoff of making prompts emit ops instead of code.
+       A provider only has to do two things: take a system prompt plus a
+       sentence, and come back with { ops, label, note }. */
+    const PROVIDERS = {
+      anthropic: {
+        label: 'Anthropic (Claude)',
+        keyHint: 'sk-ant-… (stays in this browser)',
+        keyRe: /^sk-ant-/,
+        models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+        modelLabels: { 'claude-opus-5':'Opus 5 — sharpest',
+                       'claude-sonnet-5':'Sonnet 5 — ~2.5× cheaper',
+                       'claude-haiku-4-5':'Haiku 4.5 — ~5× cheaper' },
+        console: 'https://console.anthropic.com/settings/keys',
+        send: sendAnthropic
+      },
+      openai: {
+        label: 'OpenAI',
+        keyHint: 'sk-… or sk-proj-… (stays in this browser)',
+        keyRe: /^sk-/,
+        /* Free text rather than a fixed list: OpenAI's model names move, and
+           a stale hardcoded id fails with a confusing 404 rather than an
+           obvious one. Type whatever your dashboard lists. */
+        models: null,
+        modelDefault: 'gpt-4o',
+        console: 'https://platform.openai.com/api-keys',
+        send: sendOpenAI
+      }
+    };
 
-    async function claudePatch(text) {
-      const key = localStorage.getItem('forge.key');
-      if (!key) throw new Error('No API key set.');
+    function currentProvider() { return localStorage.getItem('forge.provider') || 'anthropic'; }
+    function currentModel() {
+      const p = currentProvider();
+      return localStorage.getItem('forge.model.' + p)
+          || (PROVIDERS[p].models ? PROVIDERS[p].models[0] : PROVIDERS[p].modelDefault);
+    }
+    function currentKey() { return localStorage.getItem('forge.key.' + currentProvider()) || ''; }
+
+    async function readError(res) {
+      let detail = '';
+      try { const j = await res.json(); detail = j.error?.message || JSON.stringify(j); }
+      catch (e) { detail = await res.text(); }
+      return new Error(`${res.status} — ${detail}`);
+    }
+
+    async function sendAnthropic(system, text, model, key) {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -1110,32 +1174,72 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
           'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-          model: currentModel(),
-          max_tokens: 8000,
+          model, max_tokens: 8000,
           thinking: { type: 'adaptive' },
-          system: SYSTEM(),
+          system,
           tools: [PATCH_TOOL],
           messages: [{ role: 'user', content: text }]
         })
       });
-      if (!res.ok) {
-        let detail = '';
-        try { const j = await res.json(); detail = j.error?.message || JSON.stringify(j); } catch (e) { detail = await res.text(); }
-        throw new Error(`${res.status} — ${detail}`);
-      }
+      if (!res.ok) throw await readError(res);
       const data = await res.json();
-      const bill = chargeFor(data.model || currentModel(), data.usage);
-      const cost = `${bill.i} in / ${bill.o} out · ~$${bill.cost.toFixed(4)}`;
-
       const tool = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'apply_patch');
-      if (tool) return { ops: tool.input.ops || [], label: tool.input.label || 'patch',
-                         note: tool.input.note || '', cost };
+      return {
+        model: data.model || model,
+        usage: { in: data.usage?.input_tokens || 0, out: data.usage?.output_tokens || 0 },
+        input: tool ? tool.input : null,
+        text: (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
+      };
+    }
 
-      /* Fell back to prose — dig a patch out of it rather than giving up. */
-      const say = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-      const m = say.match(/\[[\s\S]*\]/);
+    async function sendOpenAI(system, text, model, key) {
+      /* No max_tokens / temperature on purpose: the parameter names and which
+         values are accepted differ across OpenAI's model generations, and a
+         rejected parameter is a 400 that looks like the page is broken. The
+         defaults are fine for a patch this small. */
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + key },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'system', content: system }, { role: 'user', content: text }],
+          tools: [{ type: 'function', function: {
+            name: PATCH_TOOL.name,
+            description: PATCH_TOOL.description,
+            parameters: PATCH_TOOL.input_schema
+          } }],
+          tool_choice: { type: 'function', function: { name: PATCH_TOOL.name } }
+        })
+      });
+      if (!res.ok) throw await readError(res);
+      const data = await res.json();
+      const msg = data.choices?.[0]?.message;
+      const call = msg?.tool_calls?.find(c => c.function?.name === PATCH_TOOL.name);
+      let input = null;
+      if (call) { try { input = JSON.parse(call.function.arguments); } catch (e) { /* fall through to prose */ } }
+      return {
+        model: data.model || model,
+        usage: { in: data.usage?.prompt_tokens || 0, out: data.usage?.completion_tokens || 0 },
+        input,
+        text: msg?.content || ''
+      };
+    }
+
+    async function llmPatch(text) {
+      const prov = PROVIDERS[currentProvider()];
+      const key = currentKey();
+      if (!key) throw new Error('No API key set.');
+      const r = await prov.send(SYSTEM(), text, currentModel(), key);
+      const cost = chargeFor(r.model, r.usage);
+
+      if (r.input) return { ops: r.input.ops || [], label: r.input.label || 'patch',
+                            note: r.input.note || '', cost };
+
+      /* Replied in prose instead of calling the tool — dig a patch out of it
+         rather than giving up. */
+      const m = (r.text || '').match(/\[[\s\S]*\]/);
       if (m) { try { return { ops: JSON.parse(m[0]), label: 'patch', note: '', cost }; } catch (e) { /* fall through */ } }
-      throw new Error('The model replied without a patch: ' + (say.slice(0, 300) || '(empty)'));
+      throw new Error('The model replied without a patch: ' + ((r.text || '').slice(0, 300) || '(empty)'));
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -1159,19 +1263,56 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       $('mRecipe').classList.toggle('on', m === 'recipe');
       $('mClaude').classList.toggle('on', m === 'claude');
       $('keyBox').classList.toggle('show', m === 'claude');
-      if (m === 'claude') {
-        $('key').value = localStorage.getItem('forge.key') || '';
-        $('model').value = currentModel();
-      }
+      if (m === 'claude') syncKeyBox();
     }
-    $('model') && ($('model').onchange = e => localStorage.setItem('forge.model', e.target.value));
+
+    /* The key box reshapes itself per provider: a fixed model list where the
+       names are stable (Anthropic), a free-text field where they aren't
+       (OpenAI), and the right console link either way. */
+    function syncKeyBox() {
+      const id = currentProvider(), prov = PROVIDERS[id];
+      $('provider').value = id;
+      $('key').value = currentKey();
+      $('key').placeholder = prov.keyHint;
+
+      const sel = $('model'), txt = $('modelText');
+      sel.classList.toggle('off', !prov.models);
+      txt.classList.toggle('off', !!prov.models);
+      if (prov.models) {
+        sel.innerHTML = prov.models.map(m =>
+          `<option value="${m}">${prov.modelLabels?.[m] || m}</option>`).join('');
+        sel.value = currentModel();
+      } else {
+        txt.value = currentModel();
+      }
+
+      $('keyWarn').innerHTML = `This page is static — it has no server to keep a key in, so the key is yours: `
+        + `held in this browser's localStorage and sent only to ${id === 'openai' ? 'api.openai.com' : 'api.anthropic.com'}. `
+        + `Use a key you can revoke — <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">get one here</a>.`;
+    }
+
+    $('provider').onchange = e => { localStorage.setItem('forge.provider', e.target.value); syncKeyBox(); };
+    $('model').onchange = e => localStorage.setItem('forge.model.' + currentProvider(), e.target.value);
+    $('modelText').addEventListener('change', e => {
+      const v = e.target.value.trim();
+      if (v) localStorage.setItem('forge.model.' + currentProvider(), v);
+    });
     $('mRecipe').onclick = () => setMode('recipe');
     $('mClaude').onclick = () => setMode('claude');
     $('key').addEventListener('change', e => {
-      const v = e.target.value.trim();
-      if (v) localStorage.setItem('forge.key', v); else localStorage.removeItem('forge.key');
+      const v = e.target.value.trim(), id = currentProvider();
+      if (!v) { localStorage.removeItem('forge.key.' + id); return; }
+      localStorage.setItem('forge.key.' + id, v);
+      /* Pasting an OpenAI key into Anthropic mode is the one mistake this
+         box invites, and it otherwise surfaces as a bare 401. Say so now. */
+      const other = Object.entries(PROVIDERS).find(([k, p]) => k !== id && p.keyRe.test(v) && !PROVIDERS[id].keyRe.test(v));
+      if (other) log(`That key looks like it belongs to ${other[1].label}, but the provider is set to ${PROVIDERS[id].label}. Switch the provider above, or it will come back 401.`, 'err');
     });
-    $('forgetKey').onclick = () => { localStorage.removeItem('forge.key'); $('key').value = ''; log('Key removed from this browser.', 'ok'); };
+    $('forgetKey').onclick = () => {
+      localStorage.removeItem('forge.key.' + currentProvider());
+      $('key').value = '';
+      log(`${PROVIDERS[currentProvider()].label} key removed from this browser.`, 'ok');
+    };
 
     /* suggestion chips */
     const SUGGEST = ['make the lighting more cinematic', 'golden hour', 'neon cyberpunk', 'film noir',
@@ -1258,11 +1399,11 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         return;
       }
 
-      if (!localStorage.getItem('forge.key')) { log('Enter an API key above first.', 'err'); $('key').focus(); return; }
+      if (!currentKey()) { log(`Enter a ${PROVIDERS[currentProvider()].label} key above first.`, 'err'); $('key').focus(); return; }
       busy = true; $('send').disabled = true; $('send').textContent = '…';
       const pending = log('thinking…');
       try {
-        const p = await claudePatch(text);
+        const p = await llmPatch(text);
         pending.remove();
         confirmSpawns(p, `${currentModel()}${p.cost ? ' · ' + p.cost : ''}`, p.note);
       } catch (err) {
