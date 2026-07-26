@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Tessera Forge · OpenAI Lab</title>
+  <style>
+    :root { color-scheme: dark; --panel: rgba(7,10,15,.92); --line: rgba(255,255,255,.12); --text:#dce8f5; --muted:#7890a8; --accent:#4d83ff; --ok:#79d59e; --err:#ef8178; --warn:#e1ad67; }
+    * { box-sizing: border-box; }
+    html,body { margin:0;width:100%;height:100%;overflow:hidden;background:#05070a;color:var(--text);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    #forgeFrame { position:fixed;inset:0;width:100%;height:100%;border:0;background:#05070a; }
+    #openaiPanel { position:fixed;z-index:20;left:12px;top:12px;width:min(390px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;backdrop-filter:blur(16px);box-shadow:0 16px 48px rgba(0,0,0,.35); }
+    #openaiPanel.collapsed .panelBody { display:none; }
+    .panelHead { display:flex;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line); }
+    .panelTitle { flex:1; }
+    .panelTitle strong { display:block;font-size:12px;text-transform:uppercase;letter-spacing:.16em; }
+    .panelTitle span { display:block;color:var(--muted);font-size:10.5px;margin-top:2px; }
+    button,input,select,textarea { font:inherit;color:var(--text);background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:8px; }
+    button { padding:7px 10px;cursor:pointer; }
+    button:hover { border-color:var(--accent);background:rgba(77,131,255,.18); }
+    button:disabled { opacity:.45;cursor:default; }
+    button.primary { background:rgba(77,131,255,.25);border-color:var(--accent); }
+    button.ghost { background:transparent; }
+    .panelBody { padding:12px; }
+    label { display:block;color:#a9bed3;font-size:10.5px;margin:0 0 4px; }
+    input,select,textarea { width:100%;padding:8px 9px;outline:none; }
+    input:focus,select:focus,textarea:focus { border-color:var(--accent); }
+    textarea { height:72px;resize:vertical;min-height:52px; }
+    .grid { display:grid;grid-template-columns:1fr 132px;gap:8px;margin-bottom:9px; }
+    .row { display:flex;gap:7px;align-items:center; }
+    .row>* { flex:1; }
+    .row>button { flex:0 0 auto; }
+    #connection { display:inline-flex;align-items:center;min-height:30px;padding:0 9px;border:1px solid var(--line);border-radius:8px;color:var(--muted);white-space:nowrap; }
+    #connection.ok { color:var(--ok);border-color:rgba(121,213,158,.45); }
+    #connection.err { color:var(--err);border-color:rgba(239,129,120,.45); }
+    #connection.warn { color:var(--warn);border-color:rgba(225,173,103,.45); }
+    .help { color:var(--muted);font-size:10.5px;margin:7px 0 10px; }
+    .help b { color:var(--warn);font-weight:normal; }
+    .divider { height:1px;background:var(--line);margin:11px 0; }
+    #log { margin-top:10px;display:grid;gap:7px; }
+    .entry { border:1px solid var(--line);border-radius:8px;padding:8px 9px;background:rgba(255,255,255,.035); }
+    .entryHead { display:flex;justify-content:space-between;gap:8px; }
+    .entryTitle { color:#edf5ff; }
+    .entryMeta { color:var(--muted);font-size:10.5px;text-align:right; }
+    .entryNote { color:#9fb6cc;font-size:10.5px;margin-top:4px; }
+    .entry.err .entryNote { color:var(--err); }
+    pre { white-space:pre-wrap;word-break:break-word;max-height:210px;overflow:auto;margin:7px 0 0;padding:7px;border-radius:6px;background:rgba(0,0,0,.35);color:#a9d9b9;font-size:10.5px; }
+    .actions { display:flex;gap:6px;margin-top:7px; }
+    .actions button { padding:5px 8px;font-size:10.5px; }
+    #loadingCover { position:fixed;inset:0;z-index:10;display:grid;place-items:center;pointer-events:none;color:#8da3ba;background:#05070a;transition:opacity .25s ease; }
+    #loadingCover.ready { opacity:0; }
+    @media (max-width:720px) { #openaiPanel{top:8px;left:8px;width:calc(100% - 16px);max-height:48vh}.grid{grid-template-columns:1fr}.panelTitle span{display:none} }
+  </style>
+</head>
+<body>
+  <iframe id="forgeFrame" src="./tessera-forge.html" title="Tessera Forge"></iframe>
+  <div id="loadingCover">loading Tessera Forge…</div>
+  <section id="openaiPanel" aria-label="OpenAI controls">
+    <div class="panelHead">
+      <div class="panelTitle"><strong>OpenAI Forge Lab</strong><span>Separate page — the original Forge file is untouched.</span></div>
+      <button id="collapse" class="ghost" type="button">hide</button>
+    </div>
+    <div class="panelBody">
+      <div class="grid">
+        <div><label for="endpoint">OpenAI proxy URL</label><input id="endpoint" type="url" placeholder="https://your-worker.workers.dev" autocomplete="off" spellcheck="false" /></div>
+        <div><label for="model">Model</label><select id="model"><option value="gpt-5-mini">GPT-5 mini</option><option value="gpt-5">GPT-5</option><option value="gpt-5-nano">GPT-5 nano</option></select></div>
+      </div>
+      <div class="row"><button id="test" type="button">test connection</button><span id="connection" class="warn" aria-live="polite">not configured</span><button id="forget" class="ghost" type="button">forget</button></div>
+      <p class="help">The page stores only the proxy URL and model in this browser. <b>Do not paste an OpenAI API key here.</b> The key belongs in the Worker secret named <code>OPENAI_API_KEY</code>.</p>
+      <div class="divider"></div>
+      <label for="prompt">Describe a scene change</label>
+      <textarea id="prompt" placeholder="make the scene feel like a storm is approaching"></textarea>
+      <div class="row" style="margin-top:7px"><button id="run" class="primary" type="button">generate patch</button><button id="undo" class="ghost" type="button">undo last</button></div>
+      <div id="log" aria-live="polite"></div>
+    </div>
+  </section>
+  <script>
+    (()=>{
+      'use strict';
+      const $=id=>document.getElementById(id),frame=$('forgeFrame'),panel=$('openaiPanel'),endpointInput=$('endpoint'),modelSelect=$('model'),connection=$('connection'),promptInput=$('prompt'),runButton=$('run'),testButton=$('test'),logBox=$('log');
+      let forge=null,busy=false;
+      const PATCH_TOOL={name:'apply_patch',description:'Apply a patch of ops to the live Three.js scene. This is the only way to change anything.',input_schema:{type:'object',properties:{label:{type:'string',description:'Two or three words naming the change.'},note:{type:'string',description:'One short sentence explaining the choices.'},ops:{type:'array',description:'Operations to apply in order.',items:{type:'object',properties:{op:{type:'string',enum:['set','nudge','reset','spawn','remove']},key:{type:'string',description:'Registry key for set or nudge.'},value:{description:'New value for set, or signed delta for nudge.'},id:{type:'string',description:'Identifier for spawn or remove.'},code:{type:'string',description:'For spawn: JavaScript body run as (THREE, group, api).'}},required:['op']}}},required:['label','ops']}};
+      function setConnection(text,cls='warn'){connection.textContent=text;connection.className=cls}
+      function currentEndpoint(){return endpointInput.value.trim().replace(/\/+$/,'')}
+      function saveSettings(){const endpoint=currentEndpoint();if(endpoint)localStorage.setItem('forge.openai.endpoint',endpoint);else localStorage.removeItem('forge.openai.endpoint');localStorage.setItem('forge.openai.model',modelSelect.value);setConnection(endpoint?'saved · not tested':'not configured','warn')}
+      function schemaDigest(){const lines=[];for(const [key,s] of Object.entries(forge.schema)){const range=s.type==='number'?` [${s.min}..${s.max}]`:s.type==='enum'?` one of ${s.values.join('|')}`:s.type==='color'?' #rrggbb':' true|false';lines.push(`${key} : ${s.type}${range} — ${s.desc}`)}return lines.join('\n')}
+      function instructions(){const changed={};for(const [key,s] of Object.entries(forge.schema))if(forge.params[key]!==s.def)changed[key]=forge.params[key];const spawned=forge.spawned&&forge.spawned.size?[...forge.spawned.keys()].join(', '):'(none)';return `You modify a live Three.js scene made from thousands of mosaic tiles (tesserae), on a plinth, under directional lights, fog, a gradient sky and post processing.\n\nYou never regenerate the page. Change it only by calling apply_patch with operations against this registry:\n\n${schemaDigest()}\n\nRULES\n- Prefer set ops. Respect ranges, types and enums; colours must be #rrggbb.\n- Use nudge for relative changes.\n- Be decisive: a mood request should usually coordinate lighting, environment, material and post-processing.\n- Never name a registry key that is not listed.\n- Use spawn only when new geometry is genuinely required. Spawn code receives (THREE, group, api), must attach objects to group, may return an updater, and may not use imports, network or DOM.\n- Use reset only when the user asks to start over.\n\nCURRENT NONDEFAULT STATE:\n${JSON.stringify(changed)}\n\nSPAWNED OBJECT IDS:\n${spawned}`}
+      async function requestPatch(text){if(!forge)throw new Error('Forge is still loading.');const endpoint=currentEndpoint();if(!endpoint)throw new Error('Enter the Worker proxy URL first.');const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:modelSelect.value,prompt:text,instructions:instructions(),tool:PATCH_TOOL})});if(!response.ok){let detail='';try{const data=await response.json();detail=data.error?.message||data.error||JSON.stringify(data)}catch{detail=await response.text()}throw new Error(`${response.status} — ${detail}`)}const data=await response.json();const call=(data.output||[]).find(item=>item.type==='function_call'&&item.name==='apply_patch');if(!call){const prose=(data.output||[]).flatMap(item=>item.content||[]).filter(item=>item.type==='output_text').map(item=>item.text).join('\n');throw new Error(`OpenAI returned no apply_patch call${prose?`: ${prose.slice(0,240)}`:'.'}`)}let patch;try{patch=JSON.parse(call.arguments||'{}')}catch{throw new Error('OpenAI returned malformed patch arguments.')}return{ops:Array.isArray(patch.ops)?patch.ops:[],label:patch.label||'OpenAI patch',note:patch.note||'',model:data.model||modelSelect.value,usage:data.usage||null}}
+      function addEntry({title,meta='',note='',ops=null,error=false,actions=[]}){const entry=document.createElement('div');entry.className=`entry${error?' err':''}`;const head=document.createElement('div');head.className='entryHead';const t=document.createElement('span');t.className='entryTitle';t.textContent=title;const m=document.createElement('span');m.className='entryMeta';m.textContent=meta;head.append(t,m);entry.appendChild(head);if(note){const n=document.createElement('div');n.className='entryNote';n.textContent=note;entry.appendChild(n)}if(ops){const pre=document.createElement('pre');pre.textContent=JSON.stringify(ops,null,1);entry.appendChild(pre)}if(actions.length){const box=document.createElement('div');box.className='actions';for(const action of actions){const button=document.createElement('button');button.type='button';button.textContent=action.label;if(action.primary)button.className='primary';button.addEventListener('click',()=>action.run(entry,button));box.appendChild(button)}entry.appendChild(box)}logBox.prepend(entry);return entry}
+      function usageText(patch){const input=patch.usage?.input_tokens||0,output=patch.usage?.output_tokens||0;return`${patch.model}${patch.usage?` · ${input} in / ${output} out`:''}`}
+      function applyGeneratedPatch(patch,entry){const result=forge.applyPatch(patch.ops,patch.label);const rejected=(result.notes||[]).map(item=>item.t).join(' · ');addEntry({title:patch.label,meta:`${usageText(patch)} · ${result.touched} applied`,note:[patch.note,rejected].filter(Boolean).join(' · '),ops:patch.ops,actions:result.touched?[{label:'undo',run:(_entry,button)=>{const undone=forge.undo();button.disabled=true;button.textContent=undone?'undone':'nothing to undo'}}]:[]});if(entry)entry.remove()}
+      async function runPatch(){if(busy)return;const text=promptInput.value.trim();if(!text)return;saveSettings();busy=true;runButton.disabled=true;runButton.textContent='thinking…';const pending=addEntry({title:'OpenAI',meta:modelSelect.value,note:'Generating a typed patch…'});try{const patch=await requestPatch(text);const hasSpawn=patch.ops.some(op=>op&&op.op==='spawn');if(hasSpawn){pending.remove();addEntry({title:patch.label,meta:`${usageText(patch)} · review required`,note:`${patch.note}${patch.note?' ':''}This patch contains generated JavaScript. Read it before applying.`,ops:patch.ops,actions:[{label:'apply patch',primary:true,run:entry=>applyGeneratedPatch(patch,entry)},{label:'discard',run:entry=>entry.remove()}]})}else applyGeneratedPatch(patch,pending)}catch(error){pending.remove();addEntry({title:'Request failed',meta:modelSelect.value,note:String(error.message||error),error:true});setConnection('connection failed','err')}finally{busy=false;runButton.disabled=false;runButton.textContent='generate patch'}}
+      async function testConnection(){if(busy)return;saveSettings();if(!currentEndpoint()){setConnection('not configured','warn');endpointInput.focus();return}busy=true;testButton.disabled=true;setConnection('testing…','warn');try{const currentSpin=forge?.params?.['subject.spin']??.22;const patch=await requestPatch(`Connection test only. Return an apply_patch call that sets subject.spin to exactly ${currentSpin}. Do not change anything else.`);if(!patch.ops.length)throw new Error('The model returned an empty patch.');setConnection('connected','ok');addEntry({title:'Connection verified',meta:usageText(patch),note:'The proxy and OpenAI function call both responded. No scene change was applied.'})}catch(error){setConnection('connection failed','err');addEntry({title:'Connection failed',note:String(error.message||error),error:true})}finally{busy=false;testButton.disabled=false}}
+      frame.addEventListener('load',()=>{const begin=performance.now();const timer=setInterval(()=>{try{forge=frame.contentWindow.forge||null}catch{forge=null}if(forge){clearInterval(timer);$('loadingCover').classList.add('ready');runButton.disabled=false;testButton.disabled=false;addEntry({title:'Forge ready',meta:`${Object.keys(forge.schema).length} parameters`,note:'OpenAI patches will use the original page’s validator and undo history.'})}else if(performance.now()-begin>15000){clearInterval(timer);$('loadingCover').textContent='Forge loaded, but its control API was not found.'}},120)});
+      endpointInput.value=localStorage.getItem('forge.openai.endpoint')||'';modelSelect.value=localStorage.getItem('forge.openai.model')||'gpt-5-mini';setConnection(endpointInput.value?'saved · not tested':'not configured','warn');endpointInput.addEventListener('input',saveSettings);modelSelect.addEventListener('change',saveSettings);$('test').addEventListener('click',testConnection);$('run').addEventListener('click',runPatch);$('undo').addEventListener('click',()=>{const undone=forge?.undo();addEntry({title:undone?`Undid ${undone.label}`:'Nothing to undo',meta:'Forge history'})});$('forget').addEventListener('click',()=>{localStorage.removeItem('forge.openai.endpoint');localStorage.removeItem('forge.openai.model');endpointInput.value='';modelSelect.value='gpt-5-mini';setConnection('not configured','warn')});$('collapse').addEventListener('click',event=>{panel.classList.toggle('collapsed');event.currentTarget.textContent=panel.classList.contains('collapsed')?'show':'hide'});promptInput.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();runPatch()}});runButton.disabled=true;testButton.disabled=true;
+    })();
+  </script>
+</body>
+</html>
