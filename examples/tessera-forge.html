@@ -103,8 +103,9 @@
 
     #keyBox { margin-top: 10px; display: none; }
     #keyBox.show { display: block; }
-    #keyBox input { width: 100%; font: inherit; color: #eaf2fb; background: rgba(0,0,0,.35);
+    #keyBox > input { width: 100%; font: inherit; color: #eaf2fb; background: rgba(0,0,0,.35);
       border: 1px solid rgba(255,255,255,.13); border-radius: 8px; padding: 7px 9px; }
+    #keyBox > input.off { display: none; }
     #keyBox > select { width: 100%; font: inherit; font-size: 11px; color: #eaf2fb; margin-bottom: 6px;
       background: #12171f; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; padding: 6px; }
     #modelRow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
@@ -199,9 +200,11 @@
       <div id="keyBox">
         <select id="provider">
           <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI</option>
+          <option value="openai">OpenAI (key in this browser)</option>
+          <option value="proxy">OpenAI via your Worker (no key in browser)</option>
         </select>
         <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
+        <input id="endpoint" type="url" placeholder="https://your-worker.workers.dev" autocomplete="off" spellcheck="false" />
         <div id="modelRow">
           <select id="model"></select>
           <input id="modelText" type="text" placeholder="model id" autocomplete="off" spellcheck="false" />
@@ -1136,7 +1139,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         send: sendAnthropic
       },
       openai: {
-        label: 'OpenAI',
+        label: 'OpenAI (key in this browser)',
         keyHint: 'sk-… or sk-proj-… (stays in this browser)',
         keyRe: /^sk-/,
         /* Free text rather than a fixed list: OpenAI's model names move, and
@@ -1146,6 +1149,20 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         modelDefault: 'gpt-5-mini',
         console: 'https://platform.openai.com/api-keys',
         send: sendOpenAI
+      },
+      /* The way out of the bring-your-own-key compromise. A static page
+         can't hold a secret, but the deployment can gain a tiny backend:
+         workers/tessera-forge-openai.js keeps OPENAI_API_KEY server-side,
+         pins the allowed origin, caps request size and allowlists models.
+         The browser then holds a Worker URL, which is not a secret. */
+      proxy: {
+        label: 'OpenAI via your Worker (no key in browser)',
+        endpoint: true,
+        endpointHint: 'https://your-worker.workers.dev',
+        models: ['gpt-5-mini', 'gpt-5', 'gpt-5-nano'],   // matches the Worker's allowlist
+        modelLabels: { 'gpt-5-mini':'GPT-5 mini', 'gpt-5':'GPT-5', 'gpt-5-nano':'GPT-5 nano' },
+        console: 'https://github.com/barnickelus/Tesserae-Engine/blob/gh-pages/docs/tessera-forge-openai-integration.md',
+        send: sendProxy
       }
     };
 
@@ -1156,6 +1173,13 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
           || (PROVIDERS[p].models ? PROVIDERS[p].models[0] : PROVIDERS[p].modelDefault);
     }
     function currentKey() { return localStorage.getItem('forge.key.' + currentProvider()) || ''; }
+    function currentEndpoint() { return localStorage.getItem('forge.endpoint.' + currentProvider()) || ''; }
+    /* What this provider needs before it can be used at all — a key, or a
+       Worker URL, and never both. */
+    function credentialReady() {
+      const p = PROVIDERS[currentProvider()];
+      return p.endpoint ? !!currentEndpoint() : !!currentKey();
+    }
 
     async function readError(res) {
       let detail = '';
@@ -1192,6 +1216,34 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       };
     }
 
+    /* The /v1/responses reply shape. Shared, because the Worker proxies that
+       body back verbatim — so proxied and direct calls parse identically. */
+    function parseResponses(data, model) {
+      const call = (data.output || []).find(o => o.type === 'function_call' && o.name === PATCH_TOOL.name);
+      let input = null;
+      if (call) { try { input = JSON.parse(call.arguments || '{}'); } catch (e) { /* fall through */ } }
+      return {
+        model: data.model || model,
+        usage: { in: data.usage?.input_tokens || 0, out: data.usage?.output_tokens || 0 },
+        input,
+        text: data.output_text || ''
+      };
+    }
+
+    /* No key argument, and none is used: the secret lives in the Worker.
+       What the browser sends is the same system prompt and tool schema every
+       other provider gets — the proxy adds only the Authorization header. */
+    async function sendProxy(system, text, model, _key, endpoint) {
+      if (!endpoint) throw new Error('Set your Worker URL above first.');
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: text, instructions: system, model, tool: PATCH_TOOL })
+      });
+      if (!res.ok) throw await readError(res);
+      return parseResponses(await res.json(), model);
+    }
+
     /* OpenAI has two shapes in the wild — the newer /v1/responses and the
        older /v1/chat/completions — and which one a given account and model
        accept isn't something this page can know in advance. So: try the
@@ -1212,18 +1264,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         })
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        const call = (data.output || []).find(o => o.type === 'function_call' && o.name === PATCH_TOOL.name);
-        let input = null;
-        if (call) { try { input = JSON.parse(call.arguments || '{}'); } catch (e) { /* fall through */ } }
-        return {
-          model: data.model || model,
-          usage: { in: data.usage?.input_tokens || 0, out: data.usage?.output_tokens || 0 },
-          input,
-          text: data.output_text || ''
-        };
-      }
+      if (res.ok) return parseResponses(await res.json(), model);
       if (res.status !== 404) throw await readError(res);
 
       /* Older account or older model — the chat/completions shape.
@@ -1259,9 +1300,8 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
 
     async function llmPatch(text) {
       const prov = PROVIDERS[currentProvider()];
-      const key = currentKey();
-      if (!key) throw new Error('No API key set.');
-      const r = await prov.send(SYSTEM(), text, currentModel(), key);
+      if (!credentialReady()) throw new Error(prov.endpoint ? 'No Worker URL set.' : 'No API key set.');
+      const r = await prov.send(SYSTEM(), text, currentModel(), currentKey(), currentEndpoint());
       const cost = chargeFor(r.model, r.usage);
 
       if (r.input) return { ops: r.input.ops || [], label: r.input.label || 'patch',
@@ -1304,8 +1344,14 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
     function syncKeyBox() {
       const id = currentProvider(), prov = PROVIDERS[id];
       $('provider').value = id;
-      $('key').value = currentKey();
-      $('key').placeholder = prov.keyHint;
+
+      /* A provider takes a key or an endpoint, never both — showing the
+         unused field is how you end up with a key typed into a proxy
+         setup that never sends it. */
+      $('key').classList.toggle('off', !!prov.endpoint);
+      $('endpoint').classList.toggle('off', !prov.endpoint);
+      if (prov.endpoint) { $('endpoint').value = currentEndpoint(); $('endpoint').placeholder = prov.endpointHint; }
+      else { $('key').value = currentKey(); $('key').placeholder = prov.keyHint; }
 
       const sel = $('model'), txt = $('modelText');
       sel.classList.toggle('off', !prov.models);
@@ -1318,10 +1364,19 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         txt.value = currentModel();
       }
 
-      $('keyWarn').innerHTML = `This page is static — it has no server to keep a key in, so the key is yours: `
-        + `held in this browser's localStorage and sent only to ${id === 'openai' ? 'api.openai.com' : 'api.anthropic.com'}. `
-        + `Use a key you can revoke — <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">get one here</a>.`;
+      $('keyWarn').innerHTML = prov.endpoint
+        ? `No key touches this browser. Your Worker holds OPENAI_API_KEY server-side, pins the allowed origin and allowlists models; this page only stores the Worker URL, which isn't a secret. `
+          + `<a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">setup steps</a>.`
+        : `This page is static — it has no server to keep a key in, so the key is yours: `
+          + `held in this browser's localStorage and sent only to ${id === 'openai' ? 'api.openai.com' : 'api.anthropic.com'}. `
+          + `Use a key you can revoke — <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">get one here</a>.`;
     }
+
+    $('endpoint').addEventListener('change', e => {
+      const v = e.target.value.trim();
+      if (v) localStorage.setItem('forge.endpoint.' + currentProvider(), v);
+      else localStorage.removeItem('forge.endpoint.' + currentProvider());
+    });
 
     $('provider').onchange = e => { localStorage.setItem('forge.provider', e.target.value); syncKeyBox(); };
     $('model').onchange = e => localStorage.setItem('forge.model.' + currentProvider(), e.target.value);
@@ -1341,9 +1396,11 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       if (other) log(`That key looks like it belongs to ${other[1].label}, but the provider is set to ${PROVIDERS[id].label}. Switch the provider above, or it will come back 401.`, 'err');
     });
     $('forgetKey').onclick = () => {
-      localStorage.removeItem('forge.key.' + currentProvider());
-      $('key').value = '';
-      log(`${PROVIDERS[currentProvider()].label} key removed from this browser.`, 'ok');
+      const id = currentProvider(), p = PROVIDERS[id];
+      localStorage.removeItem('forge.key.' + id);
+      localStorage.removeItem('forge.endpoint.' + id);
+      $('key').value = ''; $('endpoint').value = '';
+      log(`${p.label} — ${p.endpoint ? 'Worker URL' : 'key'} removed from this browser.`, 'ok');
     };
 
     /* suggestion chips */
@@ -1431,7 +1488,12 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         return;
       }
 
-      if (!currentKey()) { log(`Enter a ${PROVIDERS[currentProvider()].label} key above first.`, 'err'); $('key').focus(); return; }
+      if (!credentialReady()) {
+        const p = PROVIDERS[currentProvider()];
+        log(p.endpoint ? 'Enter your Worker URL above first.' : `Enter a ${p.label} key above first.`, 'err');
+        (p.endpoint ? $('endpoint') : $('key')).focus();
+        return;
+      }
       busy = true; $('send').disabled = true; $('send').textContent = '…';
       const pending = log('thinking…');
       try {

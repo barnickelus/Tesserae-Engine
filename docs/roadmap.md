@@ -833,6 +833,27 @@
       stubs — headers, body shape, tool call parsing, usage accounting, the
       unknown-key warning, and per-provider persistence — plus a regression
       pass on spawn hardening and framing.
+      Follow-up, the way around bring-your-own-key: user pushed back on the
+      "a static page can't hold a key" line that had been repeated through
+      this whole thread, and they were right — the PAGE can't, but the
+      DEPLOYMENT can gain a backend, and `workers/tessera-forge-openai.js`
+      (from the parallel branch) already was one: a Cloudflare Worker that
+      keeps OPENAI_API_KEY as a server-side secret, pins ALLOWED_ORIGIN to
+      the Pages domain, caps request size and allowlists models. It had been
+      orphaned when a later commit replaced it with direct-browser mode, so
+      nothing called it. Wired it in as a third provider. The browser then
+      holds only a Worker URL, which is not a secret. Fits the PROVIDERS
+      table without touching anything else, because a provider is still just
+      "take a system prompt and a sentence, return { ops, label, note }" —
+      the Worker proxies the /v1/responses body back verbatim, so proxied
+      and direct replies parse through the same function. Key and endpoint
+      fields are mutually exclusive in the UI, since showing the unused one
+      is how a key ends up typed into a setup that never sends it. Verified:
+      correct field per provider, a clear error when the URL is missing, the
+      Worker receiving exactly { prompt, instructions, model, tool } with no
+      Authorization header from the browser, ops applying, and — the point
+      of the exercise — localStorage holding nothing matching /^sk-/ in
+      proxy mode.
 
 ## Backlog
 
