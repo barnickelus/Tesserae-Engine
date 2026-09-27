@@ -986,6 +986,50 @@
       those screenshots: Michelle has pale strips down her outer legs and
       arms in both old and new builds — probably the 4% of samples her
       colour bake misses ("96% covered"). A separate follow-up.
+- [x] **The tessera's optical language — measured, then built.** The ask:
+      perfect the tile as "the optical semantic language of space in 3
+      dimensions lit by light seen by the eye". So first an eye:
+      tools/optics-check.mjs renders the original model and its tesserae from
+      one camera under one light and compares them with S-CIELAB (opponent
+      colour, each channel blurred by the eye's contrast sensitivity at a
+      viewing distance in pixels per degree, CIELAB ΔE), a signed lightness /
+      saturation bias, and an SSIM of eye-filtered lightness ("form"); builds
+      are seeded so runs repeat exactly. Its first reading overturned the
+      starting guess (that grout darkens the image): tiles read 13–17 L*
+      too BRIGHT, identically in every paint mode — the Empress is gilded
+      and the tiles painted her as yellow plaster. Then, each kept only on
+      the numbers (docs/optical-language.md has them all):
+      · light — per-tile metalness/roughness baked beside colour; an
+        environment to reflect (LIGHT: room / studio) through AgX (measured
+        best of none / ACES / AgX; Khronos Neutral tried and refuted);
+      · pre-filter — linear-light patch means (sRGB means darkened every
+        mixed patch), Toksvig roughness from the patch's normal spread, the
+        face resting on the patch's high point with its body sunk;
+      · joint — a painted setting bed under the tiles (the gaps showed the
+        black behind the figure), faces covering exactly inset² of the
+        patch's projected area (coverage had swung with grid orientation),
+        face colour paying back the joint's share, mortar-coloured sides;
+      · truth — the colour bake now depth-tests its views, and reads skinned
+        rigs at the pose it photographed them in. That was Michelle's pale
+        strips (the follow-up above): not the 4% missed samples, but every
+        lookup landing on another part of her body — 0% of her samples
+        passed the depth test; now 93%, coverage 100%;
+      · andamento — a direction field along colour contours plus L∞
+        relaxation (Hausner 2001, on a surface; LAYING: courses / grid):
+        course drift 11–16° → 8–12°, ~1–1.5 ΔE better on the Portrait and
+        Michelle at 60–120 ppd, ~0.5 worse on the Empress's gold ornament;
+      · paint — divisionist accents equiluminant with the face; glyph masks
+        in a texture array (both principled, neither measurably moved ΔE).
+      Result, ΔE before → after (room light, flat, thin) at 240 / 1920 ppd:
+      Empress 16.1 → 2.9 / 11.3 → 0.9 (fuses below a just-noticeable
+      difference); Empress bust 29.6 → 6.6 / 17.7 → 3.1; Portrait
+      14.3 → 6.9 / 4.4 → 2.5; Michelle mid-samba 24.2 → 7.7 / 9.2 → 4.2.
+      Form at 240 ppd: 0.68–0.85 → 0.95–0.99. The rules also exist as tested
+      pure functions (src/core/optics.ts, tools/test/optics.test.mjs) and the
+      tile's data shape as `TesseraOptics` in src/core/Tessera.ts. Open:
+      metal still reads +2–4 L* bright at fusion (a compressive tone curve
+      brightens a pre-filtered highlight), andamento's cost on dense
+      ornament, and pure paint fusing ~0.3–0.5 ΔE worse than flat.
 
 ## Backlog
 
