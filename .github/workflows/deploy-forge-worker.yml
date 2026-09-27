@@ -40,14 +40,23 @@ jobs:
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # an account ID isn't a credential, so the Variables tab is fine for it
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           FORGE_ACCESS_CODE: ${{ secrets.FORGE_ACCESS_CODE }}
+          # true/false only — never a value: were credentials put on the
+          # Variables tab instead? Variables aren't masked in logs.
+          ON_VARIABLES_TAB: ${{ vars.CLOUDFLARE_API_TOKEN != '' || vars.OPENAI_API_KEY != '' || vars.FORGE_ACCESS_CODE != '' }}
         run: |
           missing=""
           for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID OPENAI_API_KEY; do [ -n "${!v}" ] || missing="$missing $v"; done
           if [ -n "$missing" ]; then
-            echo "::error::Add these repository secrets first (Settings → Secrets and variables → Actions):$missing"
+            echo "::error::This job can't see:$missing. It reads Repository secrets only: Settings → Secrets and variables → Actions → Secrets tab → Repository secrets."
+            if [ "$ON_VARIABLES_TAB" = "true" ]; then
+              echo "::error::A credential is on the Variables tab, which is stored and shown as plain text. Delete it there and add it under Repository secrets."
+            else
+              echo "::error::Not on the Variables tab either. Secrets added under Environment secrets (e.g. github-pages), Codespaces, Dependabot, or in the Cloudflare dashboard aren't visible to this job — add them again as Repository secrets."
+            fi
             exit 1
           fi
           # Secrets ride along with the version itself, so the Worker is never
