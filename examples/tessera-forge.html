@@ -49,19 +49,25 @@
       same op format. This is the whole page working offline, and it doubles
       as the reference implementation of what a good patch looks like.
 
-      LLM (bring your own key) — a static page cannot hold an API key; there
-      is no server here to keep one in. So the key is yours, typed at
-      runtime, kept in this browser's localStorage and sent to the provider
-      you picked and nowhere else. The model gets the schema plus the
-      current state and replies with a patch through a tool call. Same apply
-      path, same undo, same validation as the recipes.
+      LLM — the model gets the schema plus the current state and replies
+      with a patch through a tool call. Same apply path, same undo, same
+      validation as the recipes. Three ways to reach one:
+        · Anthropic or OpenAI with your own key, typed at runtime, kept in
+          this browser's localStorage and sent to that provider and nowhere
+          else — the page itself is static and has no server to hold a key;
+        · OpenAI through your own Cloudflare Worker (workers/), which keeps
+          the key server-side and enforces an origin allowlist, a
+          per-address rate limit and a daily dollar cap. The browser then
+          holds a URL, not a secret.
+      Each has a free "test" that checks the key (or Worker) and model
+      without generating anything.
 
-      Anthropic and OpenAI are both supported, because nothing downstream of
-      the request knows which one answered — a provider only has to take a
-      system prompt and a sentence and come back with { ops, label, note }.
-      That is the dividend of having prompts emit a patch instead of code:
-      swapping the model out is thirty lines, not a rewrite. Adding a third
-      provider means adding a `send` function to PROVIDERS.
+      Nothing downstream of the request knows which provider answered — a
+      provider only has to take a system prompt and a sentence and come back
+      with { ops, label, note }. That is the dividend of having prompts emit
+      a patch instead of code: swapping the model out is thirty lines, not a
+      rewrite. Adding a provider means adding a `send` and a `test` to
+      PROVIDERS; the Worker was the third.
 
     Drag to orbit, scroll/pinch to zoom.
   -->
@@ -115,6 +121,11 @@
     #modelRow .off { display: none; }
     #spend { flex: 0 0 auto; font-size: 10.5px; color: #6b7f94; white-space: nowrap; }
     #spend.hot { color: #d59b5a; }
+    #keyBox > input + input { margin-top: 6px; }
+    #testRow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    #testRow button { font-size: 11px; padding: 4px 10px; flex: 0 0 auto; }
+    #conn { font-size: 10.5px; color: #6b7f94; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #conn.ok { color: #7bc99a; } #conn.err { color: #e0736b; } #conn.busy { color: #9fb4c9; }
     .warn { color: #d59b5a; font-size: 10.5px; line-height: 1.5; margin: 6px 0 0; }
 
     #tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,.07); }
@@ -205,10 +216,15 @@
         </select>
         <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
         <input id="endpoint" type="url" placeholder="https://your-worker.workers.dev" autocomplete="off" spellcheck="false" />
+        <input id="access" type="password" placeholder="access code — only if your Worker sets one" autocomplete="off" spellcheck="false" />
         <div id="modelRow">
           <select id="model"></select>
           <input id="modelText" type="text" placeholder="model id" autocomplete="off" spellcheck="false" />
           <span id="spend">$0.0000 · 0 calls</span>
+        </div>
+        <div id="testRow">
+          <button id="testBtn" title="Checks the key/Worker and model without spending anything">test</button>
+          <span id="conn">not set</span>
         </div>
         <p class="warn" id="keyWarn"></p>
         <p class="warn"><button class="ghost" id="forgetKey" style="font-size:10.5px;padding:3px 7px">forget key</button></p>
@@ -1088,44 +1104,60 @@ ${JSON.stringify(Object.fromEntries(Object.keys(SCHEMA).filter(k => P[k] !== SCH
 
 Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', ') : '(none)'}`;
 
-    /* USD per million tokens, [input, output]. Standard list rates — if a
-       model is running an introductory discount the readout below reads high,
-       which is the safe direction to be wrong in when you're watching a
-       balance. Not a bill; the console is the authority. */
+    /* USD per million tokens, [input, output], standard list rates:
+       Anthropic's models table and developers.openai.com/api/docs/pricing,
+       both checked 2026-09-27. During an introductory discount the readout
+       reads high, which is the safe direction to be wrong in when you're
+       watching a balance. Not a bill; the console is the authority. */
     const PRICES = {
       'claude-opus-5':    [5, 25],
-      'claude-sonnet-5':  [3, 15],
+      'claude-sonnet-5':  [2, 10],
       'claude-haiku-4-5': [1,  5],
+      'gpt-5':      [1.25, 10],
+      'gpt-5-mini': [0.25, 2],
+      'gpt-5-nano': [0.05, 0.4],
+      'gpt-6-sol':  [2, 10],
+      'gpt-6-luna': [0.10, 0.5],
     };
+    /* Replies name a dated snapshot ("gpt-5-mini-2025-08-07"), so the rate
+       is the longest listed id the reply's model starts with. */
+    function rateFor(model) {
+      let best = null;
+      for (const k in PRICES) if ((model === k || model.startsWith(k + '-')) && (!best || k.length > best.length)) best = k;
+      return best ? PRICES[best] : null;
+    }
     let spendTotal = 0, spendCalls = 0, spendTok = 0, spendKnown = true;
 
     /* Returns the log line for one call. Prices are only applied to models
        this page actually knows the rate for — for anything else it reports
        tokens and says so, rather than inventing a number you might budget
-       against. Anthropic list rates; during an introductory discount this
-       reads high, which is the safe direction to be wrong in. */
-    function chargeFor(model, usage) {
+       against. Through the Worker, the Worker's own figure is used: it is
+       the one its daily cap is counting. */
+    function chargeFor(model, usage, worker) {
       const i = usage?.in || 0, o = usage?.out || 0;
-      const rate = PRICES[model];
+      const rate = rateFor(model || '');
+      const cost = typeof worker?.costUsd === 'number' ? worker.costUsd
+                 : rate ? (i * rate[0] + o * rate[1]) / 1e6 : null;
       spendCalls++; spendTok += i + o;
+      if (cost === null) spendKnown = false; else spendTotal += cost;
       const el = $('spend');
-      if (rate) {
-        spendTotal += (i * rate[0] + o * rate[1]) / 1e6;
-      } else {
-        spendKnown = false;
-      }
       el.textContent = spendKnown
         ? `$${spendTotal.toFixed(4)} · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`
         : `${spendTok.toLocaleString()} tok · ${spendCalls} call${spendCalls === 1 ? '' : 's'}`;
       el.classList.toggle('hot', spendTotal > 1);
-      const cost = rate ? `~$${((i * rate[0] + o * rate[1]) / 1e6).toFixed(4)}` : 'rate unknown';
-      return `${i} in / ${o} out · ${cost}`;
+      let line = `${i} in / ${o} out · ${cost === null ? 'rate unknown' : `~$${cost.toFixed(4)}`}`;
+      if (worker?.budgetUsd && typeof worker.spentTodayUsd === 'number') line += ` · Worker today $${worker.spentTodayUsd.toFixed(4)} of $${worker.budgetUsd.toFixed(2)}`;
+      if (worker?.substituted) line += ' · the Worker swapped in its default model';
+      return line;
     }
 
     /* Nothing above this point knows or cares which company's model wrote a
        patch — that's the payoff of making prompts emit ops instead of code.
        A provider only has to do two things: take a system prompt plus a
-       sentence, and come back with { ops, label, note }. */
+       sentence, and come back with { ops, label, note }. Each also has a
+       `test` that proves the credential and the model without spending
+       anything — a wrong key or a model id that has moved on shows up there,
+       not as a failed first prompt. */
     const PROVIDERS = {
       anthropic: {
         label: 'Anthropic (Claude)',
@@ -1136,7 +1168,7 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
                        'claude-sonnet-5':'Sonnet 5 — ~2.5× cheaper',
                        'claude-haiku-4-5':'Haiku 4.5 — ~5× cheaper' },
         console: 'https://console.anthropic.com/settings/keys',
-        send: sendAnthropic
+        send: sendAnthropic, test: testAnthropic
       },
       openai: {
         label: 'OpenAI (key in this browser)',
@@ -1144,36 +1176,49 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
         keyRe: /^sk-/,
         /* Free text rather than a fixed list: OpenAI's model names move, and
            a stale hardcoded id fails with a confusing 404 rather than an
-           obvious one. Type whatever your dashboard lists. */
+           obvious one. Type whatever your dashboard lists — "test" says
+           whether your key can use it. */
         models: null,
         modelDefault: 'gpt-5-mini',
         console: 'https://platform.openai.com/api-keys',
-        send: sendOpenAI
+        send: sendOpenAI, test: testOpenAI
       },
       /* The way out of the bring-your-own-key compromise. A static page
          can't hold a secret, but the deployment can gain a tiny backend:
-         workers/tessera-forge-openai.js keeps OPENAI_API_KEY server-side,
-         pins the allowed origin, caps request size and allowlists models.
-         The browser then holds a Worker URL, which is not a secret. */
+         workers/tessera-forge-openai.js keeps OPENAI_API_KEY server-side and
+         enforces an origin allowlist, a per-address rate limit and a daily
+         dollar cap. The browser then holds a Worker URL, which is not a
+         secret — and an access code, if the Worker was given one. */
       proxy: {
         label: 'OpenAI via your Worker (no key in browser)',
         endpoint: true,
-        endpointHint: 'https://your-worker.workers.dev',
-        models: ['gpt-5-mini', 'gpt-5', 'gpt-5-nano'],   // matches the Worker's allowlist
-        modelLabels: { 'gpt-5-mini':'GPT-5 mini', 'gpt-5':'GPT-5', 'gpt-5-nano':'GPT-5 nano' },
+        endpointHint: 'https://tessera-forge.<you>.workers.dev',
+        /* What the Worker ships allowing. Replaced by the Worker's own list
+           the first time "test" reaches it, so the two can't drift. */
+        models: ['gpt-5-mini', 'gpt-5', 'gpt-5-nano', 'gpt-6-luna', 'gpt-6-sol'],
+        modelLabels: { 'gpt-5-mini':'GPT-5 mini', 'gpt-5':'GPT-5', 'gpt-5-nano':'GPT-5 nano',
+                       'gpt-6-luna':'GPT-6 Luna — cheapest', 'gpt-6-sol':'GPT-6 Sol' },
         console: 'https://github.com/barnickelus/Tesserae-Engine/blob/gh-pages/docs/tessera-forge-openai-integration.md',
-        send: sendProxy
+        send: sendProxy, test: testProxy
       }
     };
 
     function currentProvider() { return localStorage.getItem('forge.provider') || 'anthropic'; }
+    function modelsOf(id) {
+      if (id === 'proxy') {
+        try { const m = JSON.parse(localStorage.getItem('forge.proxy.models') || 'null'); if (Array.isArray(m) && m.length) return m; }
+        catch (e) { /* fall back to the shipped list */ }
+      }
+      return PROVIDERS[id].models;
+    }
     function currentModel() {
-      const p = currentProvider();
-      return localStorage.getItem('forge.model.' + p)
-          || (PROVIDERS[p].models ? PROVIDERS[p].models[0] : PROVIDERS[p].modelDefault);
+      const p = currentProvider(), list = modelsOf(p), saved = localStorage.getItem('forge.model.' + p);
+      if (!list) return saved || PROVIDERS[p].modelDefault;
+      return list.includes(saved) ? saved : list[0];
     }
     function currentKey() { return localStorage.getItem('forge.key.' + currentProvider()) || ''; }
     function currentEndpoint() { return localStorage.getItem('forge.endpoint.' + currentProvider()) || ''; }
+    function currentAccess() { return localStorage.getItem('forge.access.' + currentProvider()) || ''; }
     /* What this provider needs before it can be used at all — a key, or a
        Worker URL, and never both. */
     function credentialReady() {
@@ -1181,32 +1226,43 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       return p.endpoint ? !!currentEndpoint() : !!currentKey();
     }
 
+    /* Read the body once, as text: calling res.text() after a failed
+       res.json() throws "body already used" and hides the real message. */
     async function readError(res) {
-      let detail = '';
-      try { const j = await res.json(); detail = j.error?.message || JSON.stringify(j); }
-      catch (e) { detail = await res.text(); }
-      return new Error(`${res.status} — ${detail}`);
+      const raw = await res.text().catch(() => '');
+      let detail = raw;
+      try {
+        const j = JSON.parse(raw);
+        detail = j.error?.message || (typeof j.error === 'string' ? j.error : raw);
+      } catch (e) { /* not JSON — keep the text */ }
+      return new Error(`${res.status} — ${String(detail).slice(0, 400) || res.statusText}`);
     }
 
+    /* Request shape per model. Haiku 4.5 predates adaptive thinking (it only
+       takes a fixed budget_tokens), so it is sent none — a patch doesn't need
+       it. Opus 5 opts into server-side refusal fallbacks: if its safety
+       classifiers decline a request, the API re-runs it on the model
+       Anthropic routes that category to, inside the same call. */
     async function sendAnthropic(system, text, model, key) {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': key,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model, max_tokens: 8000,
-          thinking: { type: 'adaptive' },
-          system,
-          tools: [PATCH_TOOL],
-          messages: [{ role: 'user', content: text }]
-        })
-      });
+      const headers = {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      };
+      const body = { model, max_tokens: 8000, system, tools: [PATCH_TOOL],
+                     messages: [{ role: 'user', content: text }] };
+      if (!model.startsWith('claude-haiku-4-5')) body.thinking = { type: 'adaptive' };
+      if (model === 'claude-opus-5') { headers['anthropic-beta'] = 'server-side-fallback-2026-07-01'; body.fallbacks = 'default'; }
+      const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) });
       if (!res.ok) throw await readError(res);
       const data = await res.json();
+      /* A decline is an HTTP 200 with stop_reason "refusal" — checked before
+         reading content, or it would surface as a confusing "no patch". */
+      if (data.stop_reason === 'refusal') {
+        const cat = data.stop_details?.category;
+        throw new Error(`Claude declined this request${cat ? ` (${cat})` : ''}. Rephrasing it usually helps.`);
+      }
       const tool = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'apply_patch');
       return {
         model: data.model || model,
@@ -1230,18 +1286,21 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       };
     }
 
-    /* No key argument, and none is used: the secret lives in the Worker.
+    /* No key is sent, and none is needed: the secret lives in the Worker.
        What the browser sends is the same system prompt and tool schema every
-       other provider gets — the proxy adds only the Authorization header. */
-    async function sendProxy(system, text, model, _key, endpoint) {
+       other provider gets; the Worker builds the actual OpenAI request
+       itself and adds the Authorization header. */
+    async function sendProxy(system, text, model, _key, endpoint, access) {
       if (!endpoint) throw new Error('Set your Worker URL above first.');
+      const headers = { 'content-type': 'application/json' };
+      if (access) headers['x-forge-access'] = access;
       const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        method: 'POST', headers,
         body: JSON.stringify({ prompt: text, instructions: system, model, tool: PATCH_TOOL })
       });
       if (!res.ok) throw await readError(res);
-      return parseResponses(await res.json(), model);
+      const data = await res.json();
+      return { ...parseResponses(data, model), worker: data.forge || null };
     }
 
     /* OpenAI has two shapes in the wild — the newer /v1/responses and the
@@ -1298,11 +1357,67 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
       };
     }
 
+    /* The free checks. The models endpoints accept a key and name a model
+       without generating anything, so a bad key or a model id that isn't
+       available to it shows up here instead of as a failed first prompt. */
+    async function testKeyed(url, headers, model, who) {
+      const res = await fetch(url, { headers });
+      if (res.ok) {
+        const m = await res.json().catch(() => ({}));
+        return { ok: true, text: `key works · ${m.display_name || model}` };
+      }
+      const e = await readError(res);
+      if (res.status === 401) return { ok: false, text: 'key rejected', detail: `${who} rejected that key: ${e.message}` };
+      if (res.status === 404) return { ok: false, text: `key can't use ${model}`, detail: `${who} has no "${model}" for this key — pick another model. (${e.message})` };
+      return { ok: false, text: `error ${res.status}`, detail: `${who}: ${e.message}` };
+    }
+    function testAnthropic(model, key) {
+      return testKeyed(`https://api.anthropic.com/v1/models/${encodeURIComponent(model)}`,
+        { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, model, 'Anthropic');
+    }
+    function testOpenAI(model, key) {
+      return testKeyed(`https://api.openai.com/v1/models/${encodeURIComponent(model)}`,
+        { authorization: 'Bearer ' + key }, model, 'OpenAI');
+    }
+    /* The Worker's /health describes the deployment without spending: its
+       allowed origin, access code, rate limit and today's spend against its
+       cap — and with deep=1, whether OpenAI accepts its key for this model. */
+    async function testProxy(model, _key, endpoint, access) {
+      let url;
+      try { url = new URL('health', endpoint.replace(/\/*$/, '/')); }
+      catch (e) { return { ok: false, text: 'not a URL', detail: `"${endpoint}" isn't a URL — it should look like https://tessera-forge.<you>.workers.dev` }; }
+      url.searchParams.set('deep', '1'); url.searchParams.set('model', model);
+      const res = await fetch(url, { headers: access ? { 'x-forge-access': access } : {} });
+      /* The first version of this Worker had no /health and answers GET with
+         405 — reachable, just out of date, which is not "unreachable". */
+      if (!res.ok) {
+        const e = await readError(res);
+        return { ok: false, text: 'old or unknown Worker', detail: `${endpoint} answered ${e.message}. If it's an earlier copy of the Forge Worker, redeploy workers/tessera-forge-openai.js — the current one answers /health.` };
+      }
+      const h = await res.json().catch(() => ({}));
+      if (h.service !== 'tessera-forge-proxy') return { ok: false, text: 'not a Forge Worker', detail: `${endpoint} answered, but not as the Forge Worker — is it the right URL, and is the current workers/tessera-forge-openai.js deployed there?` };
+      if (Array.isArray(h.models) && h.models.length) localStorage.setItem('forge.proxy.models', JSON.stringify(h.models));
+      const p = h.protections || {};
+      const facts = [
+        p.origins?.length ? `accepts ${p.origins.join(', ')}` : 'no ALLOWED_ORIGIN',
+        p.accessCode === 'required' ? 'access code on' : 'no access code',
+        typeof p.dailyBudgetUsd === 'number' ? (p.dailyBudgetUsd > 0 ? `$${(p.spentTodayUsd || 0).toFixed(4)} of $${p.dailyBudgetUsd.toFixed(2)} spent today` : 'no daily cap') : 'no ledger',
+        p.rateLimitPerMinute ? `${p.rateLimitPerMinute}/min per address` : 'no rate limit',
+      ].join(' · ');
+      if (!h.ok) return { ok: false, text: 'Worker not ready', detail: `${h.problem} (${facts})` };
+      if (p.originAllowed === false) return { ok: false, text: 'origin not allowed', detail: `This page is at ${location.origin}, which the Worker's ALLOWED_ORIGIN doesn't include (${facts}).` };
+      if (p.accessCode === 'required' && p.accessCodeAccepted !== true) return { ok: false, text: access ? 'access code wrong' : 'needs access code', detail: `This Worker requires an access code (${facts}).` };
+      const up = h.upstream || {};
+      if (!up.checked) return { ok: false, text: 'OpenAI not checked', detail: `${up.reason || 'The Worker skipped its OpenAI check.'} (${facts})` };
+      if (!up.ok) return { ok: false, text: up.status === 404 ? `no ${model} on its key` : 'Worker key rejected', detail: `${up.message} (${facts})` };
+      return { ok: true, text: `Worker ✓ · key ✓ · ${model} ✓`, detail: `ready — ${facts}.` };
+    }
+
     async function llmPatch(text) {
       const prov = PROVIDERS[currentProvider()];
       if (!credentialReady()) throw new Error(prov.endpoint ? 'No Worker URL set.' : 'No API key set.');
-      const r = await prov.send(SYSTEM(), text, currentModel(), currentKey(), currentEndpoint());
-      const cost = chargeFor(r.model, r.usage);
+      const r = await prov.send(SYSTEM(), text, currentModel(), currentKey(), currentEndpoint(), currentAccess());
+      const cost = chargeFor(r.model, r.usage, r.worker);
 
       if (r.input) return { ops: r.input.ops || [], label: r.input.label || 'patch',
                             note: r.input.note || '', cost };
@@ -1339,8 +1454,9 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
     }
 
     /* The key box reshapes itself per provider: a fixed model list where the
-       names are stable (Anthropic), a free-text field where they aren't
-       (OpenAI), and the right console link either way. */
+       names are stable (Anthropic, and whatever the Worker reports it
+       allows), a free-text field where they aren't (OpenAI), and the right
+       console link either way. */
     function syncKeyBox() {
       const id = currentProvider(), prov = PROVIDERS[id];
       $('provider').value = id;
@@ -1350,57 +1466,100 @@ Spawned objects currently present: ${spawned.size ? [...spawned.keys()].join(', 
          setup that never sends it. */
       $('key').classList.toggle('off', !!prov.endpoint);
       $('endpoint').classList.toggle('off', !prov.endpoint);
-      if (prov.endpoint) { $('endpoint').value = currentEndpoint(); $('endpoint').placeholder = prov.endpointHint; }
+      $('access').classList.toggle('off', !prov.endpoint);
+      if (prov.endpoint) { $('endpoint').value = currentEndpoint(); $('endpoint').placeholder = prov.endpointHint; $('access').value = currentAccess(); }
       else { $('key').value = currentKey(); $('key').placeholder = prov.keyHint; }
-
-      const sel = $('model'), txt = $('modelText');
-      sel.classList.toggle('off', !prov.models);
-      txt.classList.toggle('off', !!prov.models);
-      if (prov.models) {
-        sel.innerHTML = prov.models.map(m =>
-          `<option value="${m}">${prov.modelLabels?.[m] || m}</option>`).join('');
-        sel.value = currentModel();
-      } else {
-        txt.value = currentModel();
-      }
+      renderModels();
+      untested();
 
       $('keyWarn').innerHTML = prov.endpoint
-        ? `No key touches this browser. Your Worker holds OPENAI_API_KEY server-side, pins the allowed origin and allowlists models; this page only stores the Worker URL, which isn't a secret. `
-          + `<a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">setup steps</a>.`
-        : `This page is static — it has no server to keep a key in, so the key is yours: `
-          + `held in this browser's localStorage and sent only to ${id === 'openai' ? 'api.openai.com' : 'api.anthropic.com'}. `
-          + `Use a key you can revoke — <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">get one here</a>.`;
+        ? `No key touches this browser. Your Worker holds OPENAI_API_KEY and enforces its own origin allowlist, per-address rate limit and daily dollar cap; this page stores only the Worker URL (and an access code, if the Worker has one). `
+          + `<b>test</b> shows its limits and today's spend. <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">Setup steps</a>.`
+        : `This page is static, so the key is yours: held in this browser's localStorage and sent only to ${id === 'openai' ? 'api.openai.com' : 'api.anthropic.com'}. `
+          + `<b>test</b> checks it for free. Use a key you can revoke — <a href="${prov.console}" target="_blank" rel="noopener" style="color:#6f9bf0">get one here</a>.`;
     }
 
-    $('endpoint').addEventListener('change', e => {
-      const v = e.target.value.trim();
-      if (v) localStorage.setItem('forge.endpoint.' + currentProvider(), v);
-      else localStorage.removeItem('forge.endpoint.' + currentProvider());
-    });
+    /* Options are built as nodes, not HTML: through the Worker, the list is
+       whatever that deployment reports. */
+    function renderModels() {
+      const id = currentProvider(), prov = PROVIDERS[id], list = modelsOf(id);
+      const sel = $('model'), txt = $('modelText');
+      sel.classList.toggle('off', !list);
+      txt.classList.toggle('off', !!list);
+      if (!list) { txt.value = currentModel(); return; }
+      sel.replaceChildren(...list.map(m => { const o = document.createElement('option'); o.value = m; o.textContent = prov.modelLabels?.[m] || m; return o; }));
+      sel.value = currentModel();
+    }
+
+    /* The connection pill. State is only ever what the last test found —
+       anything edited since then is "not tested", never a stale green. */
+    function setConn(cls, text) { const c = $('conn'); c.className = cls; c.textContent = text; }
+    function untested() {
+      const p = PROVIDERS[currentProvider()];
+      setConn('', credentialReady() ? 'saved · not tested' : (p.endpoint ? 'no Worker URL yet' : 'no key yet'));
+    }
+
+    let testing = false;
+    async function testProvider() {
+      if (testing) return;
+      const id = currentProvider(), prov = PROVIDERS[id];
+      if (!credentialReady()) {
+        setConn('err', prov.endpoint ? 'enter the Worker URL first' : 'enter a key first');
+        (prov.endpoint ? $('endpoint') : $('key')).focus();
+        return;
+      }
+      testing = true; $('testBtn').disabled = true; setConn('busy', 'testing…');
+      try {
+        const r = await prov.test(currentModel(), currentKey(), currentEndpoint(), currentAccess());
+        if (currentProvider() !== id) return;       // switched provider while it ran
+        if (id === 'proxy') renderModels();         // the Worker may have reported its own list
+        setConn(r.ok ? 'ok' : 'err', r.text);
+        if (r.detail) log(`${prov.label}: ${r.detail}`, r.ok ? 'ok' : 'err');
+      } catch (e) {
+        if (currentProvider() !== id) return;
+        setConn('err', 'unreachable');
+        log(`${prov.label}: no answer (${e.message}). ${prov.endpoint ? 'Check the Worker URL, and that the Worker is deployed.' : 'Check your connection.'}`, 'err');
+      } finally { testing = false; $('testBtn').disabled = false; }
+    }
+    $('testBtn').onclick = testProvider;
+
+    /* Saved on every keystroke, not on "change": change fires on blur, and a
+       key pasted and used straight away — "go" or "test" tapped while the
+       field still has focus — must already be saved. */
+    function persist(prefix, value) {
+      const k = prefix + currentProvider();
+      if (value) localStorage.setItem(k, value); else localStorage.removeItem(k);
+      untested();
+    }
+    $('key').addEventListener('input', e => persist('forge.key.', e.target.value.trim()));
+    $('endpoint').addEventListener('input', e => persist('forge.endpoint.', e.target.value.trim()));
+    $('access').addEventListener('input', e => persist('forge.access.', e.target.value.trim()));
 
     $('provider').onchange = e => { localStorage.setItem('forge.provider', e.target.value); syncKeyBox(); };
-    $('model').onchange = e => localStorage.setItem('forge.model.' + currentProvider(), e.target.value);
-    $('modelText').addEventListener('change', e => {
+    $('model').onchange = e => { localStorage.setItem('forge.model.' + currentProvider(), e.target.value); untested(); };
+    $('modelText').addEventListener('input', e => {
       const v = e.target.value.trim();
       if (v) localStorage.setItem('forge.model.' + currentProvider(), v);
+      untested();
     });
     $('mRecipe').onclick = () => setMode('recipe');
     $('mClaude').onclick = () => setMode('claude');
     $('key').addEventListener('change', e => {
       const v = e.target.value.trim(), id = currentProvider();
-      if (!v) { localStorage.removeItem('forge.key.' + id); return; }
-      localStorage.setItem('forge.key.' + id, v);
+      if (!v) return;
       /* Pasting an OpenAI key into Anthropic mode is the one mistake this
-         box invites, and it otherwise surfaces as a bare 401. Say so now. */
-      const other = Object.entries(PROVIDERS).find(([k, p]) => k !== id && p.keyRe.test(v) && !PROVIDERS[id].keyRe.test(v));
+         box invites, and it otherwise surfaces as a bare 401. Say so now.
+         (The Worker provider takes no key, so it has no key pattern.) */
+      const other = Object.entries(PROVIDERS).find(([k, p]) => k !== id && p.keyRe?.test(v) && !PROVIDERS[id].keyRe?.test(v));
       if (other) log(`That key looks like it belongs to ${other[1].label}, but the provider is set to ${PROVIDERS[id].label}. Switch the provider above, or it will come back 401.`, 'err');
     });
     $('forgetKey').onclick = () => {
       const id = currentProvider(), p = PROVIDERS[id];
-      localStorage.removeItem('forge.key.' + id);
-      localStorage.removeItem('forge.endpoint.' + id);
-      $('key').value = ''; $('endpoint').value = '';
-      log(`${p.label} — ${p.endpoint ? 'Worker URL' : 'key'} removed from this browser.`, 'ok');
+      for (const k of ['forge.key.', 'forge.endpoint.', 'forge.access.']) localStorage.removeItem(k + id);
+      if (id === 'proxy') localStorage.removeItem('forge.proxy.models');
+      $('key').value = ''; $('endpoint').value = ''; $('access').value = '';
+      syncKeyBox();
+      log(`${p.label} — ${p.endpoint ? 'Worker URL and access code' : 'key'} removed from this browser.`, 'ok');
     };
 
     /* suggestion chips */

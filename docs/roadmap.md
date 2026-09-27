@@ -854,6 +854,129 @@
       Authorization header from the browser, ops applying, and — the point
       of the exercise — localStorage holding nothing matching /^sk-/ in
       proxy mode.
+      Follow-up, making the Worker safe to hand a URL to: wired in last
+      round, it had never actually run — and running the committed version
+      in workerd (Miniflare) showed it would have been an open wallet. With
+      ALLOWED_ORIGIN pinned, a request carrying no Origin header at all
+      (plain curl) still went straight upstream; with ALLOWED_ORIGIN unset it
+      defaulted to `*`; either way it relayed arbitrary instructions to
+      gpt-5 and returned the full reply — a free general-purpose endpoint on
+      the owner's card for anyone holding the URL, which the page
+      necessarily publishes. Rewritten:
+      · fails closed — no ALLOWED_ORIGIN, no key, or neither a spend cap nor
+        an access code, and it refuses to spend; a POST must carry a
+        matching Origin (documented as a filter, not authentication — a
+        script can send any Origin it likes);
+      · a daily dollar cap and a per-address rate limit (IPv6: per /64) in a
+        SQLite Durable Object — on the free plan and strongly consistent.
+        Each call reserves its worst case before going upstream and settles
+        to real `usage` after, so simultaneous calls can't jointly overshoot:
+        five at once against a cap that fits two sent exactly two upstream;
+      · an optional ACCESS_CODE, compared as SHA-256 digests with
+        timingSafeEqual;
+      · a narrow relay: the Worker builds the OpenAI request itself, sizes
+        are capped, the reply is trimmed to the function call and its cost,
+        and OpenAI's failures come back in plain words ("OpenAI rejected
+        this Worker's OPENAI_API_KEY", "used its whole 8000-token budget
+        before writing a patch");
+      · GET /health describes the deployment without spending; ?deep=1 also
+        checks the key and model via GET /v1/models/{id}, which OpenAI
+        doesn't bill.
+      It sends no `reasoning.effort` unless configured: accepted values
+      differ per model (gpt-6-luna has no `minimal`, gpt-6-astra rejects
+      `none`) and a wrong one is a 400 on every call — the same lesson as
+      max_tokens/temperature above. Prices were read off OpenAI's pricing
+      page's raw HTML, not a summary of it; the list has moved on (gpt-6
+      Luna/Sol, gpt-5.6), so gpt-6-luna and gpt-6-sol joined the allowlist.
+      The page gained a free **test** for every provider — GET
+      /v1/models/{id} for Anthropic and OpenAI, which proves the key and the
+      model without generating anything; /health?deep=1 for the Worker,
+      whose own model list then fills the dropdown so page and Worker can't
+      drift — and a status pill that only ever shows what the last test
+      found. Keys, URL and access code now save on `input`, not `change`,
+      which only fires on blur. A URL pointing at an older copy of the Worker
+      (no /health) is reported as outdated rather than unreachable, and
+      patches still route through it. Checking the Anthropic path against
+      Anthropic's current API reference turned up three latent bugs, each
+      then reproduced on the old page: Haiku 4.5 was sent adaptive thinking,
+      which it predates; Sonnet 5 was priced at $3/$15 instead of $2/$10;
+      and readError called res.text() after a failed res.json() had already
+      consumed the body, so a non-JSON error read "body stream already read".
+      A fourth: typing a key that isn't sk-… threw a TypeError, because the
+      wrong-provider check assumed every provider has a key pattern and the
+      Worker doesn't. Opus 5 now opts into server-side refusal fallbacks,
+      and a refusal is named as one rather than reported as "no patch".
+      Deploying is now a button: .github/workflows/deploy-forge-worker.yml
+      (manual trigger) runs the Worker's tests, deploys with the key
+      uploaded in the same version — never live without it — then calls the
+      live /health and writes the URL and a check table into the run
+      summary. docs/tessera-forge-openai-integration.md rewritten as the
+      deploy guide.
+      Verified: 20 Worker tests in workerd (`cd workers && npm test`);
+      `wrangler deploy --dry-run` accepts the config and bindings;
+      tools/forge-check.mjs drives the real page against the real Worker —
+      18/18, zero page errors; the workflow's steps run under GitHub's bash
+      flags with stubbed wrangler/curl. NOT verified: a real deploy to a real
+      Cloudflare account, or a real model reply — no credentials here. The
+      first real run is the user's; the workflow summary, /health?deep=1 and
+      the test button exist to make that run diagnose itself.
+- [x] **Skeletal skinning measured against the real rigs — three bugs, all
+      fixed.** Every earlier skinning entry ended the same way: the real
+      Soldier/Fox/CesiumMan/Michelle files live on CDNs this sandbox couldn't
+      reach, so fixes were checked on synthetic 2-bone rigs and handed over
+      to be eyeballed on-device. This session could reach them — so rather
+      than eyeball, built tools/skin-check.mjs. It poses a clip at an exact
+      time through a new read-only `window.mosaic` handle and scores every
+      tile against three.js's own skinning of the same mesh
+      (SkinnedMesh.applyBoneTransform, per mesh, with that mesh's own
+      skeleton), by correspondence: each tile against the posed copy of the
+      triangle it sat on at bind pose. (A first version scored against
+      whatever surface was nearest in the pose; it overstated Soldier's
+      error, because an arm lowered against the torso finds the torso.) It
+      found:
+      · **Soldier's visor was driven by his hips.** The rig is two
+        SkinnedMeshes with two skeletons — a 49-bone body and a 2-bone visor
+        (neck, head) — and the page kept only the first skeleton, so the
+        visor's bone indices 0/1 resolved to the body's hips and spine.
+        Mid-Idle the visor sat ~8% of the model's height off the face.
+      · **Tiles never rotated on Soldier or Michelle.** The orientation delta
+        came from Quaternion.setFromRotationMatrix, which assumes an unscaled
+        matrix. Mixamo rigs carry their Character node's 0.01 scale in every
+        bone matrix, and fed 0.01·R that function returns a near-identity
+        rotation for ANY pose — positions moved, facings stayed in T-pose:
+        19% of Soldier's tiles faced away from the surface mid-Run (4% at
+        rest). This would have kept Soldier looking rough even after the
+        coordinate-space fix above, which repaired positions only.
+      · **Every CesiumMan tile stood edge-on, even at rest.** Its armature
+        node carries the Z-up→Y-up rotation, and the delta — rot(boneMatrix)
+        — includes that rotation, so it was applied twice: median 90° off the
+        surface, half the tiles facing inward. Michelle sat ~73° off at rest
+        for the same reason.
+      One formulation fixes all three. Per bone slot, W = (matrixWorld ·
+      bindMatrixInverse) · boneMatrix · (bindMatrix · matrixWorld₀⁻¹) —
+      three's own chain with the conversion out of the leaves' world bind
+      space folded in per skin — over every skin's bones in one slot table
+      (sample indices rebased into their skin's range). A tile's position is
+      Σwᵢ·Wᵢ·p, its rotation the weighted blend of the Wᵢ rotations, taken
+      with decompose() so scale can't corrupt it; the per-tile loop got
+      cheaper, too (no per-tile correction matrix). While there: skin weights
+      are read through the attribute accessors — glTF allows normalized
+      u8/u16 weights, which `.array` hands over raw — and renormalised; and a
+      tile takes its binding from the sample nearest the cell mean, where it
+      actually sits, instead of an arbitrary one (Fox mid-Run, tiles >3% off
+      their surface: 1.5% → 0.5%).
+      Result — tiles facing away · median orientation drift since bind:
+        Soldier, Run      19% · 11.4°  →  5.0% · 0.9°   (4.3% at rest)
+        Soldier visor     ~8% of height off the face  →  0
+        CesiumMan, walk   49.6% · 84°  →  0.3% · 0.7°
+        Michelle, samba   21% · 58°    →  4.2% · 0°     (4.1% at rest)
+        Fox               unchanged — it was right (no scale, no rotated armature)
+      A correct skin holds a posed clip at its bind-pose numbers; all four
+      now do. Screenshots (plain mesh / before / after) show it most on
+      CesiumMan, whose head reads as a sphere again. Not fixed, noticed in
+      those screenshots: Michelle has pale strips down her outer legs and
+      arms in both old and new builds — probably the 4% of samples her
+      colour bake misses ("96% covered"). A separate follow-up.
 
 ## Backlog
 
