@@ -107,7 +107,8 @@ rotated armature node counted twice (CesiumMan).
 node optics-check.mjs Portrait "room,flat,thin|room,pure,thin" --zoom 2.2 --lift 0.3 --ppd 60,240,960,1920 --shots ../shots
 node optics-check.mjs Michelle "room,flat,thin|room,flat,thin,grid" --pose SambaDance@1.3
 PAGE=path/to/older.html node optics-check.mjs Empress "flat,thin"        # measure any version of the page
-node --test test/*.test.mjs                                               # its S-CIELAB, and the tile's optical rules
+PAGE=examples/tessera-vibemesh.html node optics-check.mjs VibeMesh "Flat|Pure|Flat,Flush"   # the puppeted head
+node --test test/*.test.mjs                                               # its S-CIELAB, the tile's optical rules, the kit
 ```
 
 Renders `tessera-mosaic.html`'s original model and its tessera version from one
@@ -121,9 +122,17 @@ page's button labels (or `js:<code>` with `M` = `window.mosaic`, for
 experiments); builds and `Math.random` are seeded, so runs repeat exactly.
 `--shots` writes original | tessera | ΔE heat map composites.
 
+Any page with the same `window.mosaic` handle can be measured: one without
+`#model` (like `tessera-vibemesh.html`) says when it's ready (`mosaic.ready`,
+`mosaic.settled()`), places the camera itself (`setView`), and marks what the
+tiles don't replace — eyes, teeth — `userData.tesseraShared`, so it stays in
+both renders. Variant labels there are the page's pills (case ignored).
+
 Every rule in [docs/optical-language.md](../docs/optical-language.md) was kept
 or dropped on these numbers. `lib/scielab.mjs` is the eye model;
-`test/optics.test.mjs` tests the tile's rules in `src/core/optics.ts`.
+`test/optics.test.mjs` tests the tile's rules in `src/core/optics.ts`, and
+`test/tessera-kit.test.mjs` the same rules as `examples/lib/tessera-kit.js`
+carries them (sampling, laying, the skin + blendshape driver, divisionist paint).
 
 ## Forge check — the page, end to end, against the real Worker
 

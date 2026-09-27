@@ -14,6 +14,13 @@
 //   A variant is a comma list of the page's button labels to click first, e.g.
 //     node optics-check.mjs Portrait "pure,thin|flat,thin" --yaw 180
 //
+//   PAGE=<path> measures another page with the same window.mosaic handle, e.g.
+//   the generated, puppeted head (its <Model> argument is only a label):
+//     PAGE=examples/tessera-vibemesh.html node optics-check.mjs VibeMesh "Flat|Pure"
+//   Such a page says when it is ready (mosaic.ready / settled()), places the
+//   camera itself (setView), and marks what the tiles don't replace — eyes,
+//   teeth — userData.tesseraShared, so it stays in both renders.
+//
 // For each variant it renders, from the same camera, frozen pose and lights:
 //   · the ORIGINAL mesh, with its own materials — what the object looks like;
 //   · the TESSERA version — what the mosaic says it looks like.
@@ -103,12 +110,25 @@ let pageErrors = 0;
 page.on('pageerror', e => { pageErrors++; console.log('  [pageerror]', String(e).slice(0, 300)); });
 
 await page.goto(`http://localhost:${server.address().port}/${PAGE}`, { waitUntil: 'load', timeout: 60000 });
+// the mosaic page loads models by name (#model reports progress); others just say they're ready
+const MODELS = await page.evaluate(() => !!document.querySelector('#model'));
+const settled = () => page.evaluate(() => window.mosaic?.settled?.());
 const waitModel = (m) => page.waitForFunction((m) => { const t = document.querySelector('#model')?.textContent || ''; return t.startsWith(m + ' ·') || t.includes('failed'); }, m, { timeout: 240000 });
-await page.waitForFunction(() => /covered|failed/.test(document.querySelector('#model')?.textContent || ''), null, { timeout: 180000 });
-const click = (t) => page.evaluate((t) => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === t); if (b) { b.click(); return true; } return false; }, t);
-if (!(await page.evaluate(() => document.querySelector('#model').textContent)).startsWith(model + ' ·')) { await click(model); await waitModel(model); }
-await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'auto-spin'); if (b?.classList.contains('active')) b.click(); });
-await page.evaluate(() => { for (const el of document.body.children) if (el.id !== 'app' && el.tagName !== 'SCRIPT') el.style.visibility = 'hidden'; });
+// buttons first, exact label; then the page's pills (.pl), ignoring case
+const click = (t) => page.evaluate((t) => {
+  const b = [...document.querySelectorAll('button')].find(x => x.textContent === t) ||
+    [...document.querySelectorAll('button,.pl')].find(x => x.textContent.trim().toLowerCase() === t.toLowerCase());
+  if (b) { b.click(); return true; } return false;
+}, t);
+if (MODELS) {
+  await page.waitForFunction(() => /covered|failed/.test(document.querySelector('#model')?.textContent || ''), null, { timeout: 180000 });
+  if (!(await page.evaluate(() => document.querySelector('#model').textContent)).startsWith(model + ' ·')) { await click(model); await waitModel(model); }
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'auto-spin'); if (b?.classList.contains('active')) b.click(); });
+} else {
+  await page.waitForFunction(() => window.mosaic?.ready, null, { timeout: 180000 });
+  await settled();
+}
+await page.evaluate(() => { for (const el of document.body.children) if (el.id !== 'app' && el.tagName !== 'SCRIPT' && el.tagName !== 'CANVAS' && !el.querySelector('canvas')) el.style.visibility = 'hidden'; });
 
 async function settle(label) {
   // pose: skinned rigs at a fixed clip time, static busts at rest
@@ -124,6 +144,7 @@ async function settle(label) {
   await page.waitForTimeout(400);
 }
 await page.evaluate(({ yaw, zoom, lift }) => {
+  if (window.mosaic.setView) { window.mosaic.freeze(true); window.mosaic.setView({ yaw, zoom, lift }); return; }
   const { camera, controls, THREE } = window.mosaic;
   const off = camera.position.clone().sub(controls.target).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw * Math.PI / 180);
   const halfH = off.length() * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
@@ -135,7 +156,8 @@ async function capture() {
   const r = await page.evaluate(() => {
     const M = window.mosaic, R = M.renderer, gl = R.getContext(), tiles = [], orig = [];
     M.scene.traverse(o => { if (o.isInstancedMesh || o.userData.tesseraBed) tiles.push(o); });
-    M.root.traverse(o => { if (o.isMesh && !o.userData.tesseraBed) orig.push(o); });   // a skinned rig's bed lives inside the rig
+    // a skinned rig's bed lives inside the rig; what the tiles don't replace is in both
+    M.root.traverse(o => { if (o.isMesh && !o.userData.tesseraBed && !o.userData.tesseraShared) orig.push(o); });
     const read = () => { R.render(M.scene, M.camera); const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, px = new Uint8Array(w*h*4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); return { w, h, px }; };
     const vis = tiles.map(t => t.visible);
     tiles.forEach(t => t.visible = false); orig.forEach(o => o.visible = true);
@@ -195,6 +217,7 @@ for (const v of variants) {
     if (!(await click(label))) console.log(`  (no button "${label}")`);
   }
   await page.waitForTimeout(600);
+  await settled();
   await settle();
   const cap = await capture();
   const res = analyse(cap);
