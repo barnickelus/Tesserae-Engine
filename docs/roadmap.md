@@ -915,11 +915,20 @@
       Verified: 20 Worker tests in workerd (`cd workers && npm test`);
       `wrangler deploy --dry-run` accepts the config and bindings;
       tools/forge-check.mjs drives the real page against the real Worker —
-      18/18, zero page errors; the workflow's steps run under GitHub's bash
-      flags with stubbed wrangler/curl. NOT verified: a real deploy to a real
-      Cloudflare account, or a real model reply — no credentials here. The
-      first real run is the user's; the workflow summary, /health?deep=1 and
-      the test button exist to make that run diagnose itself.
+      18/18, zero page errors; the workflow's steps were simulated with
+      stubbed wrangler/curl. Then, deployed: GitHub Pages serves the new
+      pages, and the workflow's first real run passed all 20 Worker tests on
+      GitHub's runner and stopped at its missing-secrets gate, as designed
+      (no Cloudflare credentials exist yet). That run's log also caught a
+      mistake the simulation had baked in: GitHub runs a step with no stated
+      shell as `bash -e`, WITHOUT pipefail — so a failed `wrangler deploy |
+      tee` would have exited 0 and a failed deploy would have shown green.
+      Fixed by stating `shell: bash`, which gets `-eo pipefail`; the failure
+      path was then simulated under both shells (exit 0 before, 1 after).
+      NOT verified: a real deploy to a Cloudflare account, or a real model
+      reply — no credentials here. The first real run is the user's; the
+      workflow summary, /health?deep=1 and the test button exist to make that
+      run diagnose itself.
 - [x] **Skeletal skinning measured against the real rigs — three bugs, all
       fixed.** Every earlier skinning entry ended the same way: the real
       Soldier/Fox/CesiumMan/Michelle files live on CDNs this sandbox couldn't
