@@ -80,7 +80,9 @@ export function hslToRgb(h, s, l) {
  *
  * A part: { positions (xyz per vertex, in the skeleton's BIND space),
  *   normals, index?, colors? (linear rgb per vertex) | color ([r,g,b] linear),
- *   roughness, metalness, skinIndex?/skinWeight? (4 per vertex) | rigidBone,
+ *   roughness, metalness, specular? (0–1, a dielectric's reflectance scale —
+ *   three's specularIntensity; default 1), skinIndex?/skinWeight? (4 per
+ *   vertex) | rigidBone,
  *   morphs? (array of per-vertex xyz DELTAS, one per blendshape),
  *   importance? (0–1 per vertex: features that deserve small tiles),
  *   mask? (0–1 per vertex: < 0.5 = hidden, e.g. scalp under hair) }
@@ -91,7 +93,7 @@ export function hslToRgb(h, s, l) {
  *
  * Returns struct-of-arrays: x y z nx ny nz, r g b (linear) and sr sg sb (the
  * same colour sRGB-encoded — what the eye's differences are measured in),
- * ro me imp part wa, skinIdx/skinWt (4 each), morph (M·3 each), and the
+ * ro me sp imp part wa, skinIdx/skinWt (4 each), morph (M·3 each), and the
  * total area.
  */
 export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, boost = 0 } = {}) {
@@ -119,7 +121,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     nx: new Float32Array(n), ny: new Float32Array(n), nz: new Float32Array(n),
     r: new Float32Array(n), g: new Float32Array(n), b: new Float32Array(n),
     sr: new Float32Array(n), sg: new Float32Array(n), sb: new Float32Array(n),
-    ro: new Float32Array(n), me: new Float32Array(n), imp: new Float32Array(n), part: new Uint16Array(n),
+    ro: new Float32Array(n), me: new Float32Array(n), sp: new Float32Array(n), imp: new Float32Array(n), part: new Uint16Array(n),
     skinIdx: new Uint16Array(n * 4), skinWt: new Float32Array(n * 4),
     morph: M ? new Float32Array(n * M * 3) : null,
   };
@@ -138,7 +140,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     const r = C ? L(C, 0) : p.color[0], gg = C ? L(C, 1) : p.color[1], bb = C ? L(C, 2) : p.color[2];
     S.r[i] = r; S.g[i] = gg; S.b[i] = bb;
     S.sr[i] = linearToSrgb(r); S.sg[i] = linearToSrgb(gg); S.sb[i] = linearToSrgb(bb);
-    S.ro[i] = p.roughness ?? 0.6; S.me[i] = p.metalness ?? 0;
+    S.ro[i] = p.roughness ?? 0.6; S.me[i] = p.metalness ?? 0; S.sp[i] = p.specular ?? 1;
     S.imp[i] = p.importance ? L(p.importance, 0, 1) : 0;
     S.part[i] = triPart[lo];
     S.wa[i] = run / n / triW[lo];                       // the area this sample stands for
@@ -224,12 +226,12 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
   // every mean is AREA-weighted: samples may be denser where tiles are small
   function stats(ids) {
     const m = ids.length;
-    let W = 0, px = 0, py = 0, pz = 0, nx = 0, ny = 0, nz = 0, r = 0, g = 0, b = 0, sr = 0, sg = 0, sb = 0, ro = 0, me = 0, sem = 0;
+    let W = 0, px = 0, py = 0, pz = 0, nx = 0, ny = 0, nz = 0, r = 0, g = 0, b = 0, sr = 0, sg = 0, sb = 0, ro = 0, me = 0, sp = 0, sem = 0;
     for (let k = 0; k < m; k++) { const i = ids[k], w = WA[i]; W += w;
       px += w * S.x[i]; py += w * S.y[i]; pz += w * S.z[i]; nx += w * S.nx[i]; ny += w * S.ny[i]; nz += w * S.nz[i];
       r += w * S.r[i]; g += w * S.g[i]; b += w * S.b[i]; sr += w * S.sr[i]; sg += w * S.sg[i]; sb += w * S.sb[i];
-      ro += w * S.ro[i]; me += w * S.me[i]; sem += w * S.imp[i]; }
-    px /= W; py /= W; pz /= W; sr /= W; sg /= W; sb /= W; ro /= W; me /= W; sem /= W;
+      ro += w * S.ro[i]; me += w * S.me[i]; sp += w * (S.sp ? S.sp[i] : 1); sem += w * S.imp[i]; }
+    px /= W; py /= W; pz /= W; sr /= W; sg /= W; sb /= W; ro /= W; me /= W; sp /= W; sem /= W;
     let cvar = 0, mvar = 0;
     for (let k = 0; k < m; k++) { const i = ids[k], w = WA[i];
       const dr = S.sr[i] - sr, dg = S.sg[i] - sg, db = S.sb[i] - sb; cvar += w * (dr * dr + dg * dg + db * db);
@@ -237,7 +239,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
     cvar /= W; mvar /= W;
     const nl = Math.hypot(nx, ny, nz) || 1, curv = 1 - nl / W;
     const importance = Math.min(1, cvar * 7 + mvar * 1.5 + curv * 0.85);
-    return { m, W, px, py, pz, ux: nx / nl, uy: ny / nl, uz: nz / nl, r: r / W, g: g / W, b: b / W, sr, sg, sb, ro, me, curv, imp: importance, sem };
+    return { m, W, px, py, pz, ux: nx / nl, uy: ny / nl, uz: nz / nl, r: r / W, g: g / W, b: b / W, sr, sg, sb, ro, me, sp, curv, imp: importance, sem };
   }
 
   // 1. WHERE and HOW BIG — the importance octree
@@ -298,7 +300,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
       x: px + ux * lift, y: py + uy * lift, z: pz + uz * lift, nx: ux, ny: uy, nz: uz,
       tx: tx / tl, ty: ty / tl, tz: tz / tl, contour: pa.contour, edge: pa.conf,
       s: s0, area: st.W * nbar, r: st.r, g: st.g, b: st.b, sr: st.sr, sg: st.sg, sb: st.sb,
-      ro: toksvig(st.ro, nbar), me: st.me, imp: st.imp, curv,
+      ro: toksvig(st.ro, nbar), me: st.me, sp: st.sp, imp: st.imp, curv,
       part: +Object.keys(parts).reduce((a, b) => parts[a] >= parts[b] ? a : b),
       skinIdx, skinWt, morph,
     });
@@ -678,7 +680,7 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
     const n = ids.length, geo = shapes[shape]();
     const mesh = new THREE.InstancedMesh(geo, material, n);
     mesh.frustumCulled = false; mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const col = new Float32Array(n * 3), surf = new Float32Array(n * 2), bed = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3), surf = new Float32Array(n * 3), bed = new Float32Array(n * 3);
     const aA = pure ? new Float32Array(n * 3) : null, aB = pure ? new Float32Array(n * 3) : null, aP = pure ? new Float32Array(n) : null;
     const q = new Float32Array(n * 4), sc = new Float32Array(n * 3), base = new Float32Array(n * 3);
     const depth = shape === 1 ? 0.42 : 0.5;          // unit-shape thickness
@@ -701,12 +703,12 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
         const [h, s, l] = rgbToHsl(...target.map(linearToSrgb));
         col.set(hslToRgb(h, s, l + (hash01(ti, 0x1a77e5) - 0.5) * 0.07).map(srgbToLinear), j * 3);
       }
-      surf[j * 2] = t.ro; surf[j * 2 + 1] = t.me;
+      surf[j * 3] = t.ro; surf[j * 3 + 1] = t.me; surf[j * 3 + 2] = t.sp ?? 1;
       bed[j * 3] = t.r * bedTint; bed[j * 3 + 1] = t.g * bedTint; bed[j * 3 + 2] = t.b * bedTint;
       q.set(tileQuat(t, shape, j), j * 4);
     });
     mesh.instanceColor = new THREE.InstancedBufferAttribute(col, 3);
-    geo.setAttribute('aSurf', new THREE.InstancedBufferAttribute(surf, 2));
+    geo.setAttribute('aSurf', new THREE.InstancedBufferAttribute(surf, 3));
     geo.setAttribute('aBed', new THREE.InstancedBufferAttribute(bed, 3));
     if (pure) { geo.setAttribute('aA', new THREE.InstancedBufferAttribute(aA, 3));
       geo.setAttribute('aB', new THREE.InstancedBufferAttribute(aB, 3));
@@ -751,7 +753,9 @@ const quatMul = (a, b) => [
 
 /**
  * The tile shader: MeshStandardMaterial plus composed patches —
- *   surface  each tile answers light with its own roughness and metalness
+ *   surface  each tile answers light with its own roughness, metalness and
+ *            specular (a dielectric's reflectance scale, as a
+ *            MeshPhysicalMaterial's specularIntensity: F0 0.04·s, F90 s)
  *   paint    'pure': base + two accents through the glyph masks
  *   sides    side walls take the bed's colour, matte: a set tessera's sides
  *            are packed with mortar, and bare ones are lit surface the
@@ -760,8 +764,8 @@ const quatMul = (a, b) => [
 export function tileMaterial(THREE, { pure = false, glyphs = null } = {}) {
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
   m.onBeforeCompile = (sh) => {
-    let v = 'attribute vec2 aSurf; attribute vec3 aBed;\nvarying vec2 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
-    let f = 'varying vec2 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
+    let v = 'attribute vec3 aSurf; attribute vec3 aBed;\nvarying vec3 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
+    let f = 'varying vec3 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
     let begin = ' vSurf = aSurf; vBedCol = aBed; vTileNz = normal.z;';
     let paintGl = '';
     if (pure) {
@@ -780,7 +784,11 @@ export function tileMaterial(THREE, { pure = false, glyphs = null } = {}) {
         'float tileSide = 1.0 - smoothstep(0.3, 0.6, vTileNz);\n' +
         ' diffuseColor.rgb = mix(diffuseColor.rgb, vBedCol, tileSide);\n' +
         ' roughnessFactor = mix(roughnessFactor, 1.0, tileSide); metalnessFactor = mix(metalnessFactor, 0.0, tileSide);\n' +
-        '#include <normal_fragment_begin>');
+        '#include <normal_fragment_begin>')
+      .replace('#include <lights_physical_fragment>',
+        '#include <lights_physical_fragment>\n' +
+        ' material.specularColor = mix(vec3(0.04 * vSurf.z), diffuseColor.rgb, metalnessFactor);\n' +
+        ' material.specularF90 = mix(vSurf.z, 1.0, metalnessFactor);');
   };
   const key = 'tessera-kit:' + (pure ? 'pure' : 'flat');
   m.customProgramCacheKey = () => key;

@@ -61,6 +61,21 @@ test('laying partitions the surface: every area counted once, colour averaged as
   for (const t of tiles) close(t.ro, 0.4, 1e-3, 'toksvig on a flat patch');
 });
 
+test('specular rides from part to tile as an area mean (default 1)', () => {
+  // two abutting sheets, one at specular 0.3 and one unset: tiles on either
+  // side carry their sheet's value, and a tile straddling the seam the mix
+  const a = grid(), b = grid(); b.positions = b.positions.map((v, i) => i % 3 === 0 ? v + 1 : v);
+  const S = sampleSurfaces([{ ...a, specular: 0.3 }, b], 60000, { seed: 7 });
+  const { tiles } = layTesserae(S, { maxDepth: 5 });
+  let left = 0, right = 0;
+  for (const t of tiles) {
+    assert.ok(t.sp >= 0.3 - 1e-9 && t.sp <= 1 + 1e-9, `sp ${t.sp} within its parts' range`);
+    if (t.x < 0.8) { close(t.sp, 0.3, 1e-6, 'a tile on the 0.3 sheet'); left++; }
+    if (t.x > 1.2) { close(t.sp, 1, 1e-6, 'a tile on the default sheet'); right++; }
+  }
+  assert.ok(left > 10 && right > 10, `${left} / ${right} tiles on each side`);
+});
+
 test('andamento across tile sizes: small and large tiles still partition the surface, each tile local', () => {
   // importance on the right half only: the octree cuts small tiles there and
   // large ones on the left, so the relaxation's neighbour lists span sizes

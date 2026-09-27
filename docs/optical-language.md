@@ -13,7 +13,9 @@ and the tile's data shape is `TesseraOptics` in [`src/core/Tessera.ts`](../src/c
 The same rules as a module any page can use are [`examples/lib/tessera-kit.js`](../examples/lib/tessera-kit.js)
 (tested in Node by `tools/test/tessera-kit.test.mjs`);
 [`examples/tessera-vibemesh.html`](../examples/tessera-vibemesh.html) lays a
-live, puppeted head with it.
+live, puppeted head with it — under the room rig through Khronos PBR Neutral
+rather than AgX, since a likeness is judged against a camera (its tiles carry a
+per-part specular so they shine as the skin does).
 Nothing here was kept on argument alone: every rule was measured by the eye
 model below, and the ones that didn't help are listed with the ones that did.
 
