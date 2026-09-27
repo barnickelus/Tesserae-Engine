@@ -2,3 +2,4 @@ node_modules/
 tools/node_modules/
 scratchpad-shots/
 *.log
+tools/.glb-cache/

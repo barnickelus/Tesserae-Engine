@@ -76,17 +76,18 @@
          machine) and tracks the cursor instead when "look at cursor" is on.
          Blinking flattens the eye-band leaves' in-plane scale briefly,
          composed on top of whatever the head is doing.
-      8. Skinned + animated models (Fox/Human/Soldier) get REAL skeletal
-         motion instead: each tessera keeps its bind-pose position (sampled
-         in WORLD space, same as static models — see buildSampler) and a
-         4-bone weighted skin binding (ported from tessera-avatar.html's
-         approach); every frame the position is re-derived from the
-         skeleton's live bone matrices via a precomputed correction back
-         into bindMatrix space, and — beyond tessera-avatar's "attachment
-         only" scope — the tile's orientation is ALSO rotated by a weighted
-         blend of all four bone influences' rotation delta since bind pose,
-         so tiles on a bending limb actually tilt with it instead of keeping
-         their bind orientation forever. CLIP buttons switch animation clips.
+      8. Skinned + animated models (Fox/Human/Soldier/Michelle) get REAL
+         skeletal motion instead: each tessera keeps its bind-pose position
+         (sampled in WORLD space, same as static models — see buildSampler)
+         and a 4-bone weighted skin binding (ported from tessera-avatar.html's
+         approach). Every frame each bone slot gets one matrix taking a world
+         bind-pose point to its world posed position, across every
+         SkinnedMesh in the rig and each one's own skeleton; the tile's
+         position is the weighted blend of those, and — beyond tessera-
+         avatar's "attachment only" scope — its orientation is rotated by
+         the weighted blend of their rotations, so tiles on a bending limb
+         actually tilt with it instead of keeping their bind orientation
+         forever. CLIP buttons switch animation clips.
       9. MAGNET (off / soft / firm) — rigid tiles leave gaps when the surface
          deforms because they can't stretch the way skin does. Each tile is
          bonded to its nearest neighbours, and the bonds act like fascia in
@@ -253,12 +254,16 @@
     let vmeshes = [];
     let currentLeaves = null;   // cached octree leaves — repaint() restyles them without rebuilding the tree
 
-    // ---- skeletal animation state (Fox / Human / Soldier — models with a
-    // real skeleton). Non-skinned models (Empress/Portrait/Helmet) never
-    // touch any of this and keep the idle-motion/blink path instead.
-    let isSkinned = false, skinnedMesh = null, skeleton = null;
+    // ---- skeletal animation state (Fox / Human / Soldier / Michelle — models
+    // with a real skeleton). Non-skinned models (Empress/Portrait/Helmet)
+    // never touch any of this and keep the idle-motion/blink path instead.
+    // A rig can hold several SkinnedMeshes, each bound to its OWN skeleton
+    // (Soldier: a 49-bone body plus a separate 2-bone visor). Every skin's
+    // bones get a contiguous range of global bone SLOTS and buildSampler
+    // rebases sample skin indices into that range — so a visor sample's
+    // index 0 means the visor skeleton's neck bone, never the body's hips.
+    let isSkinned = false, skins = [], slotBones = [];
     let mixer = null, clips = [], currentAction = null;
-    const skinCorrection = new THREE.Matrix4();   // see loadModel() / updateSkin()
 
     // ---- magnetic-stretch state (see applyMagnet) ----
     // Each tile is a "magnet" bonded to its nearest neighbours. When the
@@ -494,10 +499,27 @@
         if (!g.attributes.normal) g.computeVertexNormals();
         const mat = Array.isArray(o.material) ? o.material[0] : o.material;
         const base = new THREE.Color(0xb9c2cf); if (mat && mat.color) base.copy(mat.color);
+        let skinIndex = null, skinWeight = null;
+        if (skin) {
+          // Read through the accessors, not .array: glTF allows u8/u16
+          // normalized-integer weights (and interleaved storage), which .array
+          // hands over raw. This mesh's indices address ITS skeleton, so they
+          // are rebased into the global slot range loadModel() gave it.
+          const SI = g.attributes.skinIndex, SW = g.attributes.skinWeight, nv = SI.count;
+          const off = skins.find(s => s.mesh === o).base;
+          skinIndex = new Float32Array(nv * 4); skinWeight = new Float32Array(nv * 4);
+          for (let i = 0; i < nv; i++) {
+            const a = SW.getX(i), b = SW.getY(i), c = SW.getZ(i), d = SW.getW(i), sum = a + b + c + d;
+            if (sum <= 0) continue;   // unweighted vertex → zero weights → a rigid leaf
+            skinIndex[i*4] = SI.getX(i) + off; skinIndex[i*4+1] = SI.getY(i) + off;
+            skinIndex[i*4+2] = SI.getZ(i) + off; skinIndex[i*4+3] = SI.getW(i) + off;
+            // renormalised, so updateSkin's per-bone blend is an exact affine combination
+            skinWeight[i*4] = a/sum; skinWeight[i*4+1] = b/sum; skinWeight[i*4+2] = c/sum; skinWeight[i*4+3] = d/sum;
+          }
+        }
         parts.push({ pos: g.attributes.position.array, nrm: g.attributes.normal.array,
           base: [base.r, base.g, base.b], triN: g.attributes.position.count / 3,
-          skinIndex: skin ? g.attributes.skinIndex.array : null,
-          skinWeight: skin ? g.attributes.skinWeight.array : null });
+          skinIndex, skinWeight });
       });
       let triTotal = 0; for (const p of parts) triTotal += p.triN;
       const cum = new Float64Array(triTotal), partOf = new Int32Array(triTotal), startOf = [];
@@ -626,10 +648,10 @@
     // RIG, not the current pose, so this stays a clean head+shoulders cut
     // through every frame of the animation.
     const BUST_BONE_RE = /head|neck|shoulder|spine2/i;
-    function cropSamplesToBust(s, skel) {
+    function cropSamplesToBust(s, bones) {   // bones: one per global slot
       const n = s.x.length;
-      const keepBone = new Uint8Array(skel.bones.length);
-      for (let i = 0; i < skel.bones.length; i++) if (BUST_BONE_RE.test(skel.bones[i].name)) keepBone[i] = 1;
+      const keepBone = new Uint8Array(bones.length);
+      for (let i = 0; i < bones.length; i++) if (BUST_BONE_RE.test(bones[i].name)) keepBone[i] = 1;
       const keep = [];
       for (let i = 0; i < n; i++) {
         let bi = s.skinIdx[i*4], bw = s.skinWt[i*4];
@@ -733,10 +755,16 @@
           const isHead = !isSkinned && yFrac > 0.45;
           // skin binding (skeletal models only): one representative sample's
           // bone indices/weights per leaf — a tile is small enough that bone
-          // binding is essentially uniform across it, away from joints
+          // binding is essentially uniform across it, away from joints. The
+          // representative is the sample NEAREST the cell mean, since that
+          // is where the tile sits; an arbitrary sample could come from the
+          // far side of a joint the cell straddles (an armpit cell taking an
+          // arm bone while it sits against the chest).
           let skinIdx = null, skinWt = null, rigid = false;
           if (isSkinned) {
-            const base = ids[0] * 4;
+            let best = ids[0], bd = Infinity;
+            for (let k=0;k<m;k++){ const i=ids[k], dx=sm.x[i]-px, dy=sm.y[i]-py, dz=sm.z[i]-pz, d=dx*dx+dy*dy+dz*dz; if (d<bd){ bd=d; best=i; } }
+            const base = best * 4;
             skinIdx = [sm.skinIdx[base], sm.skinIdx[base+1], sm.skinIdx[base+2], sm.skinIdx[base+3]];
             skinWt = [sm.skinWt[base], sm.skinWt[base+1], sm.skinWt[base+2], sm.skinWt[base+3]];
             rigid = (skinWt[0]+skinWt[1]+skinWt[2]+skinWt[3]) < 0.001;   // unskinned part on an otherwise-skinned model
@@ -1026,17 +1054,22 @@
         const sph = box.getBoundingSphere(new THREE.Sphere());
         center.copy(sph.center); radius = sph.radius || 1;
 
-        skinnedMesh = null; skeleton = null; isSkinned = false;
-        gltf.scene.traverse((o) => { if (o.isSkinnedMesh && !skinnedMesh) { skinnedMesh = o; skeleton = o.skeleton; isSkinned = true; } });
+        // every SkinnedMesh, each with its own skeleton and its own slot range.
+        // `corr` carries a WORLD-space bind-pose position (what every leaf's
+        // x/y/z holds, for consistency with center/radius/bake cameras) into
+        // that mesh's bindMatrix space, where three's skinning chain starts —
+        // see computeBoneWorld().
+        skins = []; slotBones = [];
+        gltf.scene.traverse((o) => {
+          if (!o.isSkinnedMesh) return;
+          skins.push({ mesh: o, skeleton: o.skeleton, base: slotBones.length,
+                       corr: new THREE.Matrix4().multiplyMatrices(o.bindMatrix, new THREE.Matrix4().copy(o.matrixWorld).invert()) });
+          slotBones.push(...o.skeleton.bones);
+        });
+        isSkinned = skins.length > 0;
         mixer = isSkinned ? new THREE.AnimationMixer(gltf.scene) : null;
         clips = gltf.animations || []; currentAction = null;
         buildClipButtons();
-        // K converts a WORLD-SPACE bind-pose position (what every leaf's x/y/z
-        // now holds, for consistency with center/radius/bake cameras) into the
-        // "sp" space the per-frame skinning formula needs (bindMatrix space —
-        // identity for glTF assets, but this must hold for any convention).
-        // See updateSkin() for the derivation.
-        if (isSkinned) skinCorrection.multiplyMatrices(skinnedMesh.bindMatrix, new THREE.Matrix4().copy(skinnedMesh.matrixWorld).invert());
 
         sampler = buildSampler(gltf.scene);
         const views = bakeSurfaceColors(gltf.scene, center, radius);   // reparents+un-parents root, must finish first
@@ -1045,7 +1078,7 @@
         currentRoot.traverse((o) => { if (o.isMesh) o.visible = false; });   // tesserae are the visible surface
         scene.add(currentRoot);   // kept in-graph so skeleton.update() sees fresh bone matrices each frame
         samples = drawSamples(sampler, KSAMP, views, center);
-        if (bustCrop && isSkinned) samples = cropSamplesToBust(samples, skeleton);
+        if (bustCrop && isSkinned) samples = cropSamplesToBust(samples, slotBones);
         buildMosaic();
         if (isSkinned) {
           if (clips.length) playClip(0);
@@ -1236,37 +1269,64 @@
       else for (const mesh of vmeshes) mesh.instanceMatrix.needsUpdate = true;
     }
 
-    // ---- real skeletal skinning (Fox / Human / Soldier) ----
+    // ---- real skeletal skinning (Fox / Human / Soldier / Michelle) ----
     // Ported from tessera-avatar.html's approach: each tessera keeps its
     // BIND-POSE position + a 4-bone weighted skin binding (see buildSampler /
     // drawSamples / buildMosaic above); every frame the position is re-derived
-    // by blending the skeleton's live bone matrices — same maths as GPU
-    // skinning, just run on the CPU into instance matrices. Beyond tessera-
-    // avatar's own "attachment only" scope, orientation is ALSO corrected: a
-    // tile's bind-pose orientation is rotated by a WEIGHTED BLEND of all its
-    // bones' rotation deltas since bind pose (precomputed once per bone per
-    // frame, then a cheap weighted lookup per tessera) — otherwise tiles on a
-    // bending limb would keep pointing their bind-pose direction forever.
-    // Blending all weighted bones (not just the single dominant one) matters
-    // for anything with more than a couple of joints: near a joint boundary,
-    // neighbouring tiles can have their dominant-weight bone flip (51%/49%
-    // vs 49%/51%), which with a single-bone lookup snaps their orientation
-    // sharply apart — reading as a jumbled, blobby surface rather than a
-    // smooth bend, on any rig complex enough for that boundary to matter.
-    const _skinM = new THREE.Matrix4(), _boneMat4 = new THREE.Matrix4(), _deltaMat4 = new THREE.Matrix4();
+    // by blending live bone matrices — same maths as GPU skinning, just run
+    // on the CPU into instance matrices. Beyond tessera-avatar's own
+    // "attachment only" scope, orientation is ALSO corrected: a tile's
+    // bind-pose orientation is rotated by a WEIGHTED BLEND of all its bones'
+    // rotations since bind pose — otherwise tiles on a bending limb would
+    // keep pointing their bind-pose direction forever. Blending all weighted
+    // bones (not just the dominant one) matters near joints, where
+    // neighbouring tiles' dominant bone can flip (51/49 vs 49/51) and a
+    // single-bone lookup snaps their orientations apart.
+    //
+    // Both come from one per-bone-SLOT matrix that carries a WORLD-space
+    // bind-pose point straight to its WORLD-space posed position:
+    //
+    //   W = (matrixWorld · bindMatrixInverse) · boneMatrix · (bindMatrix · matrixWorld₀⁻¹)
+    //
+    // — three's own skinning chain, with the conversion out of the leaves'
+    // world bind space folded in per skin (`corr`, captured in loadModel), so
+    // any number of SkinnedMeshes, each with its own skeleton and bind
+    // convention, skin through one table. Checked against three.js's own
+    // SkinnedMesh.applyBoneTransform on the real Soldier/Fox/CesiumMan/
+    // Michelle assets by tools/skin-check.mjs; that check is what found the
+    // three bugs this replaced:
+    //   · one skeleton was used for every mesh, so Soldier's visor (its own
+    //     2-bone skeleton) was driven by the body's hips and spine — ~8% of
+    //     the model's height off its face mid-Idle;
+    //   · the orientation delta came from Quaternion.setFromRotationMatrix,
+    //     which assumes an UNSCALED matrix. Mixamo rigs carry a 0.01 scale on
+    //     their Character node, so every bone matrix does too, and fed 0.01·R
+    //     that function returns a near-identity rotation for ANY pose: tiles
+    //     kept their T-pose facing while their positions moved (1 in 5 facing
+    //     away from the surface mid-Run). decompose() separates the scale out;
+    //   · that delta was the bone matrix's rotation alone, which on a rig
+    //     whose armature node is rotated (CesiumMan's Z-up→Y-up) applies that
+    //     rotation twice — every tile stood edge-on to the body, even at
+    //     rest. W's `corr` factor cancels it.
+    const _pre = new THREE.Matrix4(), _boneMat4 = new THREE.Matrix4(), _W = new THREE.Matrix4();
+    const _wP = new THREE.Vector3(), _wS = new THREE.Vector3();
     const _deltaQ = new THREE.Quaternion(), _skQ = new THREE.Quaternion(), _skP = new THREE.Vector3(), _skM2 = new THREE.Matrix4();
-    let boneDeltaQuat = null;
-    function computeBoneDeltas() {
+    let boneW = null, boneQ = null;   // per slot: W (16 floats) and its rotation (4)
+    function computeBoneWorld() {
       scene.updateMatrixWorld(true);   // force-refresh bone matrices this frame, not last frame's
-      skeleton.update();
-      _skinM.multiplyMatrices(skinnedMesh.matrixWorld, skinnedMesh.bindMatrixInverse);
-      const bm = skeleton.boneMatrices, nb = skeleton.bones.length;
-      if (!boneDeltaQuat || boneDeltaQuat.length !== nb*4) boneDeltaQuat = new Float32Array(nb*4);
-      for (let bi = 0; bi < nb; bi++) {
-        _boneMat4.fromArray(bm, bi*16);
-        _deltaMat4.multiplyMatrices(_skinM, _boneMat4);
-        _deltaQ.setFromRotationMatrix(_deltaMat4);
-        boneDeltaQuat[bi*4]=_deltaQ.x; boneDeltaQuat[bi*4+1]=_deltaQ.y; boneDeltaQuat[bi*4+2]=_deltaQ.z; boneDeltaQuat[bi*4+3]=_deltaQ.w;
+      const nb = slotBones.length;
+      if (!boneW || boneW.length !== nb*16) { boneW = new Float32Array(nb*16); boneQ = new Float32Array(nb*4); }
+      for (const s of skins) {
+        s.skeleton.update();
+        _pre.multiplyMatrices(s.mesh.matrixWorld, s.mesh.bindMatrixInverse);
+        const bm = s.skeleton.boneMatrices, n = s.skeleton.bones.length;
+        for (let bi = 0; bi < n; bi++) {
+          const slot = s.base + bi;
+          _W.multiplyMatrices(_pre, _boneMat4.fromArray(bm, bi*16)).multiply(s.corr);
+          _W.toArray(boneW, slot*16);
+          _W.decompose(_wP, _deltaQ, _wS);
+          boneQ[slot*4]=_deltaQ.x; boneQ[slot*4+1]=_deltaQ.y; boneQ[slot*4+2]=_deltaQ.z; boneQ[slot*4+3]=_deltaQ.w;
+        }
       }
     }
     // weighted quaternion average (not a true SLERP blend, but the standard
@@ -1279,7 +1339,7 @@
       for (let k = 0; k < 4; k++) {
         const wk = sw[k]; if (wk === 0) continue;
         const o = si[k] * 4;
-        let qx=boneDeltaQuat[o], qy=boneDeltaQuat[o+1], qz=boneDeltaQuat[o+2], qw=boneDeltaQuat[o+3];
+        let qx=boneQ[o], qy=boneQ[o+1], qz=boneQ[o+2], qw=boneQ[o+3];
         if (!haveRef) { rx=qx; ry=qy; rz=qz; rw=qw; haveRef = true; }
         else if (qx*rx+qy*ry+qz*rz+qw*rw < 0) { qx=-qx; qy=-qy; qz=-qz; qw=-qw; }
         x += wk*qx; y += wk*qy; z += wk*qz; w += wk*qw;
@@ -1287,29 +1347,25 @@
       const len = Math.hypot(x, y, z, w) || 1;
       out.set(x/len, y/len, z/len, w/len);
     }
-    const _spVec = new THREE.Vector3();
     function updateSkin(dt) {
       if (!isSkinned || !currentLeaves) return;
-      computeBoneDeltas();
+      computeBoneWorld();
       const magnetOn = magnet !== 'off';
-      const bm = skeleton.boneMatrices, e = _skinM.elements;
+      const W = boneW;
       for (const l of currentLeaves) {
         if (l.rigid) continue;   // an unskinned part on an otherwise-skinned model — leave its build-time matrix
-        const si = l.skinIdx, sw = l.skinWt;
-        // l.x/y/z are the WORLD-space bind-pose position (consistent with
-        // center/radius/octree); recover the bindMatrix-space "sp" the skin
-        // formula needs via the precomputed correction (see loadModel()).
-        _spVec.set(l.x, l.y, l.z).applyMatrix4(skinCorrection);
-        const spx = _spVec.x, spy = _spVec.y, spz = _spVec.z;
+        // l.x/y/z is the WORLD-space bind-pose position (consistent with
+        // center/radius/octree), which is exactly what each slot's W takes
+        const si = l.skinIdx, sw = l.skinWt, px = l.x, py = l.y, pz = l.z;
         let ax = 0, ay = 0, az = 0;
         for (let k = 0; k < 4; k++) {
           const wk = sw[k]; if (wk === 0) continue;
           const o = si[k] * 16;
-          ax += wk*(bm[o]  *spx + bm[o+4]*spy + bm[o+8] *spz + bm[o+12]);
-          ay += wk*(bm[o+1]*spx + bm[o+5]*spy + bm[o+9] *spz + bm[o+13]);
-          az += wk*(bm[o+2]*spx + bm[o+6]*spy + bm[o+10]*spz + bm[o+14]);
+          ax += wk*(W[o]  *px + W[o+4]*py + W[o+8] *pz + W[o+12]);
+          ay += wk*(W[o+1]*px + W[o+5]*py + W[o+9] *pz + W[o+13]);
+          az += wk*(W[o+2]*px + W[o+6]*py + W[o+10]*pz + W[o+14]);
         }
-        _skP.set(e[0]*ax+e[4]*ay+e[8]*az+e[12], e[1]*ax+e[5]*ay+e[9]*az+e[13], e[2]*ax+e[6]*ay+e[10]*az+e[14]);
+        _skP.set(ax, ay, az);
         blendedDeltaQuat(si, sw, _deltaQ);
         _skQ.multiplyQuaternions(_deltaQ, l._bindQ);
         // skinned pose written unconditionally — the fallback for any leaf
@@ -1616,6 +1672,15 @@
       camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight); controls.update();
     });
+    // A handle for measuring the page from outside — the headless skinning
+    // check (tools/skin-check.mjs) poses a clip at a fixed time through it and
+    // compares every tile against three.js's own skinning of the same mesh.
+    // Read-only by convention.
+    window.mosaic = {
+      THREE, scene, camera, controls, playClip, updateSkin,
+      get root() { return currentRoot; }, get leaves() { return currentLeaves; },
+      get mixer() { return mixer; }, get clips() { return clips; },
+    };
     loadModel('Empress');
     requestAnimationFrame(tick);
   </script>
