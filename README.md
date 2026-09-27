@@ -30,7 +30,12 @@ Tesserae-Engine/
 │   ├── tessera-materials.html # Primitive shape + faceplate as a material language
 │   ├── tessera-volume.html   # Solid volume fill + transparency by accumulation
 │   ├── tessera-preview.html  # Combined preview: source colour + importance + faceplates
-│   └── tessera-mosaic.html   # Ground-up rethink: importance-driven octree mosaic
+│   ├── tessera-mosaic.html   # Ground-up rethink: importance-driven octree mosaic (+ skinned rigs)
+│   ├── tessera-world.html    # Navigable procedural world + two avatars
+│   ├── tessera-forge.html    # A scene you modify by describing it — typed patches, not regenerated code
+│   └── perspective-fx.html   # Head-tracked off-axis perspective
+├── workers/                  # Cloudflare Worker: the Forge's OpenAI proxy (key server-side, capped)
+├── tools/                    # Headless render harness + skinning and Forge end-to-end checks
 └── assets/                   # Models, textures, and other resources
 ```
 
@@ -45,6 +50,7 @@ Tesserae-Engine/
 - [Tessera Object Model](docs/tessera-object-model.md)
 - [Continuous Abstraction](docs/continuous-abstraction.md)
 - [Perception Engine](docs/perception-engine.md) — the paradigm direction
+- [Forge OpenAI Worker](docs/tessera-forge-openai-integration.md) — deploying the key-free LLM provider
 
 ## Getting Started
 

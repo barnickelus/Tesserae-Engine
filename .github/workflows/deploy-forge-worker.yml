@@ -1,0 +1,90 @@
+# Deploys workers/ — the Forge's OpenAI proxy — to Cloudflare, from the
+# Actions tab. It never runs on its own. Setup (once), in Settings → Secrets
+# and variables → Actions → New repository secret:
+#
+#   CLOUDFLARE_API_TOKEN   a token from the "Edit Cloudflare Workers" template
+#   CLOUDFLARE_ACCOUNT_ID  shown on the Cloudflare dashboard's Workers & Pages page
+#   OPENAI_API_KEY         the key the Worker spends on the page's behalf
+#   FORGE_ACCESS_CODE      optional — callers must then send this code
+#
+# Full walkthrough: docs/tessera-forge-openai-integration.md
+name: Deploy Forge Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the Worker before it goes anywhere
+        run: npm ci && npm test
+
+      - name: Deploy, with the key uploaded in the same version
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FORGE_ACCESS_CODE: ${{ secrets.FORGE_ACCESS_CODE }}
+        run: |
+          missing=""
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID OPENAI_API_KEY; do [ -n "${!v}" ] || missing="$missing $v"; done
+          if [ -n "$missing" ]; then
+            echo "::error::Add these repository secrets first (Settings → Secrets and variables → Actions):$missing"
+            exit 1
+          fi
+          # Secrets ride along with the version itself, so the Worker is never
+          # live without its key. The file is private to this job's runner.
+          umask 077
+          secrets="$RUNNER_TEMP/forge-secrets.json"
+          trap 'rm -f "$secrets"' EXIT
+          node -e '
+            const s = { OPENAI_API_KEY: process.env.OPENAI_API_KEY };
+            if (process.env.FORGE_ACCESS_CODE) s.ACCESS_CODE = process.env.FORGE_ACCESS_CODE;
+            require("fs").writeFileSync(process.argv[1], JSON.stringify(s));' "$secrets"
+          npx wrangler deploy --secrets-file "$secrets" | tee "$RUNNER_TEMP/deploy.log"
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check it end to end (free — nothing is generated)
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          FORGE_ACCESS_CODE: ${{ secrets.FORGE_ACCESS_CODE }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning::Deployed, but the workers.dev URL wasn't in wrangler's output — find it under Workers & Pages → tessera-forge."
+            exit 0
+          fi
+          origin=$(node -p 'require("fs").readFileSync("wrangler.toml","utf8").match(/ALLOWED_ORIGIN\s*=\s*"([^",]+)/)[1]')
+          curl -sS --retry 5 --retry-all-errors --retry-delay 3 "$URL/health?deep=1" \
+            -H "Origin: $origin" ${FORGE_ACCESS_CODE:+-H "x-forge-access: $FORGE_ACCESS_CODE"} > "$RUNNER_TEMP/health.json"
+          node - "$RUNNER_TEMP/health.json" "$URL" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          const [file, url] = process.argv.slice(2);
+          const h = JSON.parse(require('fs').readFileSync(file, 'utf8'));
+          const p = h.protections || {}, up = h.upstream || {};
+          const good = h.ok && up.ok;
+          console.log(`### Forge Worker ${good ? 'deployed and working' : 'deployed — but not ready'}\n`);
+          console.log('Paste this into the Forge page — provider **OpenAI via your Worker** — then press **test**:\n');
+          console.log('```\n' + url + '\n```\n');
+          console.log(`| check | result |\n|---|---|`);
+          console.log(`| configuration | ${h.ok ? 'ok' : h.problem} |`);
+          console.log(`| OpenAI accepts the key | ${up.checked ? (up.ok ? `yes — ${up.model} available` : up.message) : up.reason || 'not checked'} |`);
+          console.log(`| allowed origin | ${(p.origins || []).join(', ') || 'none'} |`);
+          console.log(`| access code | ${p.accessCode} |`);
+          console.log(`| daily cap | ${p.dailyBudgetUsd ? '$' + p.dailyBudgetUsd.toFixed(2) + ' (spent today: $' + (p.spentTodayUsd || 0).toFixed(4) + ')' : 'none'} |`);
+          console.log(`| rate limit | ${p.rateLimitPerMinute ? p.rateLimitPerMinute + ' per minute per address' : 'none'} |`);
+          if (!good) process.exitCode = 1;
+          EOF

@@ -74,3 +74,44 @@ unrecognizable jumble. Load-bearing lesson: an origin-centered test rig
 can hide exactly the class of bug that only shows up once a model has a
 real placement, so prefer this one (or add the offset to `test-rig.glb`)
 for future skinning-related debugging.
+
+## Skinning check — measured against three.js, on the real rigs
+
+```
+node skin-check.mjs Soldier "TPose@0,Idle@0.6,Run@0.35" [shot-dir]
+node skin-check.mjs Human "animation_0@0,animation_0@0.9"
+```
+
+Poses a clip at an exact time in `tessera-mosaic.html` (through its read-only
+`window.mosaic` handle) and scores every tile against **three.js's own
+skinning** of the same mesh (`SkinnedMesh.applyBoneTransform`, per mesh, with
+that mesh's own skeleton). Each tile is compared with the posed copy of the
+triangle it sat on at bind pose, so the numbers mean "does the tile follow its
+own piece of skin": distance off that surface, angle to its normal, how many
+tiles face away, and how far each tile's orientation drifted since bind. A
+correct skin holds a posed clip at its bind-pose numbers.
+
+Unlike `render.mjs`, this uses the **real** CDN rigs (Soldier, Fox, CesiumMan,
+Michelle). They're fetched with `curl` into `tools/.glb-cache/` and served to
+the page from there, because Chromium may not trust a TLS-intercepting proxy's
+CA where curl does. So it needs network, once per model.
+
+It's what found the three skinning bugs fixed in the roadmap's M8 log: a
+second skeleton (Soldier's visor) resolved against the first mesh's bones,
+tile rotations taken from scaled bone matrices (every Mixamo rig), and a
+rotated armature node counted twice (CesiumMan).
+
+## Forge check — the page, end to end, against the real Worker
+
+```
+(cd ../workers && npm install) && node forge-check.mjs
+```
+
+Drives `tessera-forge.html` in Chromium through every provider. The Worker
+provider talks to the actual `workers/tessera-forge-openai.js`, running in
+workerd (Miniflare) on a local port with OpenAI scripted. Anthropic and
+OpenAI direct calls are intercepted. It checks what the page sends (headers,
+body per model), what it shows (connection state, costs, refusals, errors),
+and what it stores (never a key in Worker mode).
+
+The Worker's own unit tests are separate: `cd workers && npm test`.
