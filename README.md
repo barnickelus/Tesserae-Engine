@@ -31,6 +31,8 @@ Tesserae-Engine/
 │   ├── tessera-volume.html   # Solid volume fill + transparency by accumulation
 │   ├── tessera-preview.html  # Combined preview: source colour + importance + faceplates
 │   ├── tessera-mosaic.html   # Ground-up rethink: importance-driven octree mosaic (+ skinned rigs)
+│   ├── tessera-vibemesh.html # VibeMesh: a generated head, puppeted live (camera / text / a peer tab), laid as tesserae
+│   ├── lib/tessera-kit.js    # The tessera's optical language as a module (sample → lay → drive), laid in a worker
 │   ├── tessera-world.html    # Navigable procedural world + two avatars
 │   ├── tessera-forge.html    # A scene you modify by describing it — typed patches, not regenerated code
 │   └── perspective-fx.html   # Head-tracked off-axis perspective

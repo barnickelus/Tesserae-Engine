@@ -1030,6 +1030,57 @@
       metal still reads +2–4 L* bright at fusion (a compressive tone curve
       brightens a pre-filtered highlight), andamento's cost on dense
       ornament, and pure paint fusing ~0.3–0.5 ΔE worse than flat.
+- [x] **VibeMesh — a live, generated avatar laid as tesserae.**
+      `examples/tessera-vibemesh.html` is VibeMesh, the semantic-compression
+      presence prototype: a parametric head generated and rigged in the page
+      (six bones, eight blendshapes), puppeted by AvatarState packets from a
+      webcam (MediaPipe), typed text (visemes), gestures or a paired tab. It
+      is ported from three r134 to r160 (colour management off, as r134 had
+      none; light units ×π; point lights matched at the head's distance), and
+      its AVATAR3D tier is re-cut as tesserae, with Mesh / Tesserae, three
+      densities, flat / pure paint and grout / flush in the dock. The tile
+      rules moved out of the mosaic page into a module,
+      `examples/lib/tessera-kit.js` (sample → lay → build → drive; three.js
+      passed in, so `tools/test/tessera-kit.test.mjs` tests it in Node). What
+      a live avatar needed beyond the mosaic page:
+      · tiles that move as the surface moves — each carries its patch's skin
+        binding and the area-weighted mean of its blendshape deltas, and a
+        TileDriver poses every tile each frame from the same bone matrices
+        and morph weights that pose the mesh (identical to three's own CPU
+        skinning; smile, jaw, blink, brows, head turns, Nod / Shake / Laugh
+        and text visemes checked headless);
+      · small tiles where a face is read — the generator's own lip, brow and
+        socket masks become sampling importance (samples spent where tiles
+        are small, weights kept area-true) and a target tile size; the lips
+        had been a comb of slivers;
+      · only surface that can be seen — the bust's neck runs up inside the
+        head, and tiles laid on it poked out through the chin: the tiled jaw
+        ended 1.7 cm short of the mesh's. `visibleVertices` renders every
+        part's depth from 26 directions (eyes and teeth count as occluders)
+        and tiles only surface a view facing it finds frontmost. The jaw's
+        outline now matches; the eye model's mean barely moved (4.00 → 4.03
+        ΔE at 240 ppd) — the jaw is a small share of the error;
+      · rebuilds off the main thread — a laying takes the better part of a
+        second, so the kit lays in a module worker (`tessera-worker.js`,
+        with a same-thread fallback) and the avatar keeps moving until the
+        new mosaic swaps in. Andamento's hash grid was keyed to the median
+        tile, so a fine laying (a few thousand large tiles among twelve
+        thousand small) made each large tile span hundreds of cells:
+        11.8 s → 2.1 s with one hash per octree depth and per-seed candidate
+        lists. The laying itself is unchanged: against the old code, 99.9–100%
+        of tiles land in the same place with the same colour.
+      One VibeMesh bug fixed on the way: adaptQuality's `quality>0.55` stayed
+      true at 0.62, so a slow device rebuilt the avatar every ~1.5 s.
+      Eye model, default framing, ΔE at 60 / 240 / 960 ppd (form 0.98–0.99
+      at 240, 0.999 at 960): medium, flat 7.9 / 4.0 / 2.6; pure 7.8 / 4.0 /
+      2.5 (on par with flat here, unlike the mosaic page); flush grout
+      7.0 / 4.2 / 3.2; fine 7.5 / 4.1 / 3.1; coarse 10.0 / 4.4 / 2.1. Open:
+      the finer the cut, the darker the fused head (−1.2 / −1.9 / −2.8 L*
+      coarse / medium / fine), so something in the joint scales with tile
+      count that the payback doesn't; and up close the downward-facing
+      planes (under the nose and chin), which the mesh shades with the
+      hemisphere's dark ground light, read lighter as tiles though the tiles
+      face the same way — likely their upper sides catching the sky.
 
 ## Backlog
 

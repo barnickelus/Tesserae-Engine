@@ -10,6 +10,10 @@
 The live implementation is [`examples/tessera-mosaic.html`](../examples/tessera-mosaic.html);
 the rules as tested pure functions are [`src/core/optics.ts`](../src/core/optics.ts),
 and the tile's data shape is `TesseraOptics` in [`src/core/Tessera.ts`](../src/core/Tessera.ts).
+The same rules as a module any page can use are [`examples/lib/tessera-kit.js`](../examples/lib/tessera-kit.js)
+(tested in Node by `tools/test/tessera-kit.test.mjs`);
+[`examples/tessera-vibemesh.html`](../examples/tessera-vibemesh.html) lays a
+live, puppeted head with it.
 Nothing here was kept on argument alone: every rule was measured by the eye
 model below, and the ones that didn't help are listed with the ones that did.
 
@@ -60,6 +64,20 @@ Two things were wrong with "most head-on":
   some other part of her body, which is where her pale strips came from.
   Samples now carry a posed position for the lookup alone: 0% → 93% seen,
   coverage 96% → 100%, the strips gone.
+- **A tile stands only for surface that can be seen.** A surface inside
+  another is hidden in the original's render pixel by pixel, by its depth
+  buffer; laid as tesserae it isn't. VibeMesh's bust runs its neck tube up
+  inside the head, and tiles laid on that buried neck — millimetres across,
+  sitting proud of it — stood out through the chin: the tiled jaw ended
+  1.7 cm short of the mesh's, the eye model's hottest spot. The kit's
+  `visibleVertices` renders the depth of every part (and of the eyes and
+  teeth, which aren't tiled but still hide what's behind them) from 26
+  directions — cube faces, edges and corners, so every normal is within ~25°
+  of one — and lays tiles only where a view facing the surface within 45°
+  finds it frontmost. The mosaic page asks the same question of a scanned
+  model when it bakes colour, and keeps what no view sees, with a guessed
+  colour; for a model built from overlapping parts, not laying it is the
+  answer.
 
 ### 2. Surface — how it answers light
 
