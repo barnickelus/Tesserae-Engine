@@ -1035,8 +1035,9 @@
       presence prototype: a parametric head generated and rigged in the page
       (six bones, eight blendshapes), puppeted by AvatarState packets from a
       webcam (MediaPipe), typed text (visemes), gestures or a paired tab. It
-      is ported from three r134 to r160 (colour management off, as r134 had
-      none; light units ×π; point lights matched at the head's distance), and
+      is ported from three r134 to r160 (light units ×π; point lights matched
+      at the head's distance; colour management, off at first as r134 had
+      none, since turned on — see the next entry), and
       its AVATAR3D tier is re-cut as tesserae, with Mesh / Tesserae, three
       densities, flat / pure paint and grout / flush in the dock. The tile
       rules moved out of the mosaic page into a module,
@@ -1081,6 +1082,73 @@
       planes (under the nose and chin), which the mesh shades with the
       hemisphere's dark ground light, read lighter as tiles though the tiles
       face the same way — likely their upper sides catching the sky.
+
+- [x] **VibeMesh — the camera, and the user's own face.**
+      On an iPad the page neither tracked, mirrored nor calibrated to the
+      user; now it does all three, and the avatar is built from the user:
+      · tracking — MediaPipe Tasks FaceLandmarker (478 landmarks, 52
+        blendshapes, the head's transform) replaces the legacy face_mesh and
+        camera_utils scripts: GPU delegate with a CPU fallback (some iPads
+        refuse the GPU; `?cpu` forces it), one camera stream, a
+        requestVideoFrameCallback loop, the tracker loading while the camera
+        permission is asked. Pose comes from the transform, expression from
+        blendshapes (each with a gain, less the resting scores taken at the
+        front view), mirrored as the page's own landmark path is;
+      · calibration — the front view is the reference every other pose is
+        judged against, and it had been taken mid-turn: it now waits for a
+        still face (head speed measured per second, so a slow tracker's long
+        frame gaps no longer hide a turn; pitch held loosely, ±28°, released
+        after 10 s, as a frontal face reads 4–14° by camera placement). A pose
+        completes on 12 frames or on five over a second (a 3–7 fps tracker
+        couldn't hold 12 through a turn). Chin up/down were swapped, and the
+        model's scale came from the eyes' outer corners, so every face came in
+        ~30% small;
+      · shape — a dense conform: each inner landmark goes where the tracker
+        itself finds it on the model (a table measured by rendering the head
+        and tracking the render), warped to the user's by an RBF; the face
+        outline, whose depth the tracker only guesses, instead fits head width
+        and jaw width and taper to the front photo's silhouette (portrait
+        7.8 → 3.5 mm rms; a very square jaw still reaches the fit's range);
+      · colour — the front photo is projected onto the face as a texture (its
+        pixels ~4× finer than the vertices: lips, brows, lashes, freckles),
+        over per-vertex colour baked from all five views. Loose hair in front
+        of the face (large dark blobs off the eyes, brows, lips and nostrils)
+        is filled from the skin around it; moles stay. Lids that land in the
+        photo's eye opening take the lash line; the whites and irises come
+        from the photo; a bald head is found against the backdrop and left
+        bare (a Bald style);
+      · light — the photo is divided by the avatar's OWN shading (the bare head
+        rendered white under the rig, through the photo's camera) instead of a
+        fitted a + b·n: fitted on the avatar's normals, which aren't the real
+        face's, that over-corrected so much that even the photo's own light
+        couldn't undo it. Relit, the avatar gives the photo back at the pose it
+        was taken in, and the rig's light moves across it as the head turns.
+        A closed loop then matches the avatar, rendered through the front
+        photo's camera, to the photo over the face: one exposure, as a camera
+        has, and a per-channel balance (dimming the albedo instead left the
+        room's specular sheen on a darkened face). That loop had been
+        calibrating a different image — three writes plain render targets
+        linear and un-tone-mapped — so read-backs now take the screen's own
+        pipeline. The room rig's curve is Khronos PBR Neutral, not AgX (colours
+        stay where the camera put them; AgX greyed skin), and skin specular is
+        0.3 (the photo already holds the person's highlights; a full sheen of
+        the room greyed makeup, brows and dark skin). The kit carries a
+        per-part specular so the tiles shine as the mesh does.
+      Measured by `tools/likeness-check.mjs` — the eye model on the avatar
+      against the front photo, through that photo's camera, over the face — on
+      two synthetic sitters filmed by a headless fake camera (a Chromium
+      Y4M webcam, a scripted head following the prompts): ΔE at 30 / 240 ppd,
+      portrait 25.1 / 13.8 (form 0.56 / 0.88), Lee Perry-Smith 17.3 / 9.6
+      (0.70 / 0.91), the face's mean colour within 1–2 sRGB levels. The
+      projected texture moves it most (without it 27.0 / 15.6 and
+      20.0 / 11.0); the shading probe 0.1–0.5; the outline fit is within
+      noise here (the face mask barely reaches the jaw's edge). What remains
+      is mostly the portrait's loose hair, which the avatar doesn't have.
+      Tiles against their mesh (optics check, medium, flat, grout) went
+      10.7 / 4.0 → 11.9 / 4.9: Neutral shows what AgX compressed. Open: the
+      iPad path is verified only headless (CPU tracker, fake camera); bangs are
+      filled as skin, not grown as hair; the photo's own shading beyond the
+      rig's stays in the albedo; a photo with closed eyes paints closed lids.
 
 ## Backlog
 

@@ -128,6 +128,28 @@ Any page with the same `window.mosaic` handle can be measured: one without
 tiles don't replace — eyes, teeth — `userData.tesseraShared`, so it stays in
 both renders. Variant labels there are the page's pills (case ignored).
 
+## Likeness check — the avatar against the person it was built from
+
+```
+node likeness-check.mjs data.json 30,60,120,240 heat.png
+```
+
+`tessera-vibemesh.html` builds its avatar from a camera calibration; after one,
+`window.mosaic.likenessData('center')` returns the front calibration photo, the
+avatar rendered through that photo's own fitted camera (through the screen's
+tone curve and exposure) over it, and the face mask — inside the tracked face
+outline, less the eye and mouth openings. The check is the same eye model:
+S-CIELAB ΔE at a ladder of viewing distances, the signed lightness bias ΔL*,
+the chroma difference and the form SSIM, over the face; with a PNG path it
+writes photo | avatar | ΔE and prints both sides' mean colour. `mosaic.like()`
+switches the likeness stages (`{texture, probe, outline, conform, photo,
+spec}`) for ablations, `mosaic.preloadTracker()` loads the tracker before the
+camera opens (so a scripted fake camera starts in step with the prompts), and
+`mosaic.av` reports the fit, the exposure and the colour loop's log. Headless,
+Chromium's `--use-file-for-fake-video-capture=<file.y4m>` plays a clip as the
+webcam; the numbers in [docs/roadmap.md](../docs/roadmap.md) come from rendered
+heads turning left, right, up and down as the calibration asks.
+
 Every rule in [docs/optical-language.md](../docs/optical-language.md) was kept
 or dropped on these numbers. `lib/scielab.mjs` is the eye model;
 `test/optics.test.mjs` tests the tile's rules in `src/core/optics.ts`, and
