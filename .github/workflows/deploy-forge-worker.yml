@@ -22,6 +22,10 @@ jobs:
     defaults:
       run:
         working-directory: workers
+        # Stated explicitly: only then does GitHub run bash with -o pipefail.
+        # Without it, a failed `wrangler deploy | tee` exits 0 and a failed
+        # deploy reads as a green run.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
