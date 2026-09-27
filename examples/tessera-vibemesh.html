@@ -126,6 +126,7 @@ canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
 
 <div class="dock">
   <div class="row" id="traits">
+    <div class="pl" data-hair="fit">Yours</div>
     <div class="pl" data-hair="bald">Bald</div>
     <div class="pl" data-hair="buzz">Buzz</div>
     <div class="pl on" data-hair="short">Short</div>
@@ -669,11 +670,14 @@ function buildHead(S, opts){
     // reverse it so normals and FrontSide culling point outward.
     idx.push(a,c,b, a,d,c);
   }
-  // snap the rim ring onto the analytic aperture boundary
+  // snap the rim ring onto the analytic aperture boundary (and keep each
+  // rim's vertices: §8b sets them on the user's own contours)
+  const rims={eyeP:[],eyeN:[],mouth:[]};
   for(let i=0;i<nv;i++){
     if(!(inKept[i]&&inCut[i])) continue;
     const x=canon[i*3], y=canon[i*3+1];
     const dL=Math.hypot(x-EY,y-EYC), dR=Math.hypot(x+EY,y-EYC), dM=Math.hypot(x,y-MY);
+    (dM<Math.min(dL,dR)?rims.mouth:dL<dR?rims.eyeP:rims.eyeN).push(i);
     let nx=x, ny=y;
     if(dM<Math.min(dL,dR)){
       const dx=x/MAR[0], dy=(y-MY)/MAR[1], r=Math.hypot(dx,dy);
@@ -690,7 +694,7 @@ function buildHead(S, opts){
     pos[i*3]=nx; pos[i*3+1]=ny; canon[i*3]=nx; canon[i*3+1]=ny;
   }
 
-  return {NA,NP,nv,pos,canon,front,region,anat,idx,thphi,
+  return {NA,NP,nv,pos,canon,front,region,anat,idx,thphi,rims,
     P:{A,B,C,CZ,EY,MY,NBY,NTY,BY,CHY,LW,FL,S}};
 }
 
@@ -1206,7 +1210,7 @@ const TRAITS={hair:'short',beard:'none'};
 // spec: the skin's specular strength — the photo already holds the person's
 // own highlights, and a full sheen of the room on top greyed dark skin, brows
 // and makeup
-const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true};   // §8b, each switchable for comparison
+const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true};   // §8b, each switchable for comparison
 
 /* Eye: white sclera sphere + a domed iris cap coloured radially in
    vertex colours (pupil → iris → limbal ring). Avoids projecting a
@@ -1263,7 +1267,8 @@ function buildAvatar(){
   // the face — eyes, teeth, mouth — is carried by the same field
   const field=dense?conformField(S,ID.lm,ID.conf):null;
   conformHead(H,field);
-  AV.conform=field?{anchors:field.anchors,rms:field.rms}:null;
+  AV.snap=dense&&LIKE.features?snapFeatures(H,ID.lm):null;
+  AV.conform=field?{anchors:field.anchors,rms:field.rms,fitMm:field.fitMm}:null;
   const wp=(p)=>{ if(!field) return p.slice(); const d=field(p[0],p[1],p[2]); return [p[0]+d[0],p[1]+d[1],p[2]+d[2]]; };
 
   const nrm=computeNormals(H.pos,H.idx,H.nv);
@@ -1273,7 +1278,7 @@ function buildAvatar(){
   const colors=buildColors(H,H.pos,COL,TRAITS);
   if(photo) for(let v=0;v<H.nv;v++){ const m=photo.mask[v]; if(m<=0) continue;
     for(let k=0;k<3;k++) colors[v*3+k]+=(photo.col[v*3+k]-colors[v*3+k])*m; }
-  AV.photo=photo?{views:photo.views,front:photo.front,probe:photo.probe}:null; AV.nrm=nrm;
+  AV.photo=photo?{views:photo.views,front:photo.front,probe:photo.probe,viewGain:photo.viewGain}:null; AV.nrm=nrm;
   const G=ID.gain;                              // the camera → render calibration (§8b)
   if(G) for(let v=0;v<H.nv;v++) for(let k=0;k<3;k++) colors[v*3+k]=Math.min(1,colors[v*3+k]*G[k]);
   const morphs=buildMorphs(H,H.pos);
@@ -1306,6 +1311,8 @@ function buildAvatar(){
   // condyle, eyes at the eyeball centres.
   const W={root:[0,-0.300,0], neck:[0,-0.160,-0.020], head:[0,-0.045,-0.022],
            jaw:wp([0,-0.008,-0.030]), eL:wp([H.P.EY,0,0.048]), eR:wp([-H.P.EY,0,0.048])};
+  // an eyeball sits behind its opening: centred on the user's own lid contour
+  if(AV.snap) for(const [k,c] of [['eL',AV.snap.eyeP],['eR',AV.snap.eyeN]]) if(c){ W[k][0]=c[0]; W[k][1]=c[1]; }
   const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
   const root=new THREE.Bone(); root.position.fromArray(W.root);
   const neck=new THREE.Bone(); neck.position.fromArray(sub(W.neck,W.root)); root.add(neck);
@@ -1341,9 +1348,11 @@ function buildAvatar(){
   const scl=new THREE.Color(0xf2ece6);
   if(ID.scleraLin&&ID.skinPhotoLin&&photo&&photo.skinLin){ const g=G||[1,1,1];
     scl.setRGB(...[0,1,2].map(k=>clamp(ID.scleraLin[k]*photo.skinLin[k]/Math.max(ID.skinPhotoLin[k],1e-3)*g[k],0.2,0.9))); }
-  const scleraMat=new THREE.MeshStandardMaterial({color:scl,roughness:0.18,metalness:0});
+  // a wet eye reflects the room as a catchlight, not a film: glossy at full
+  // specular, the room's light washed irises to milky grey
+  const scleraMat=new THREE.MeshPhysicalMaterial({color:scl,roughness:0.34,metalness:0,specularIntensity:0.5});
   const irisGeo=buildIrisCap();
-  const irisMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.12,metalness:0});
+  const irisMat=new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.3,metalness:0,specularIntensity:0.5});
   const mkEye=()=>{ const g=new THREE.Group();
     g.add(new THREE.Mesh(scleraGeo,scleraMat));
     g.add(new THREE.Mesh(irisGeo,irisMat));
@@ -1367,17 +1376,25 @@ function buildAvatar(){
 
   // ── mouth cavity + teeth (positions are bone-local, hence the offsets) ──
   const toHead=w=>sub(w,W.head), toJaw=w=>sub(w,W.jaw);
+  // they move with the mouth itself — the lip line's own displacement, after
+  // the warp and the contour — not the warp sampled where they sit, deep
+  // inside the head (there it could differ, and the lower teeth came through
+  // the chin as a pale patch)
+  let mS=null;
+  if(field&&H.rims&&H.rims.mouth.length){ mS=[0,0,0]; for(const i of H.rims.mouth) for(let k=0;k<3;k++) mS[k]+=H.pos[i*3+k]-H.canon[i*3+k];
+    mS=mS.map(v=>v/H.rims.mouth.length); }
+  const wm=p=>mS?[p[0]+mS[0],p[1]+mS[1],p[2]+mS[2]]:wp(p);
   const cav=new THREE.Mesh(new THREE.SphereGeometry(0.024,20,14),
     new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}));
   cav.scale.set(1.10,0.68,0.42);
-  cav.position.fromArray(toHead(wp([0,H.P.MY-0.006,0.020]))); head.add(cav);
+  cav.position.fromArray(toHead(wm([0,H.P.MY-0.006,0.020]))); head.add(cav);
   cav.userData.tesseraShared=true;
   const teethMat=new THREE.MeshStandardMaterial({color:0xf2ece2,roughness:0.35});
   const upT=new THREE.Mesh(new THREE.BoxGeometry(0.028,0.0055,0.007),teethMat);
-  upT.position.fromArray(toHead(wp([0,H.P.MY+0.0024,0.0358]))); head.add(upT);
+  upT.position.fromArray(toHead(wm([0,H.P.MY+0.0024,0.0358]))); head.add(upT);
   const loT=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.0050,0.007),teethMat);
-  loT.position.fromArray(toJaw(wp([0,H.P.MY-0.0068,0.0352]))); jaw.add(loT);
-  upT.userData.tesseraShared=loT.userData.tesseraShared=true;
+  loT.position.fromArray(toJaw(wm([0,H.P.MY-0.0068,0.0352]))); jaw.add(loT);
+  upT.userData.tesseraShared=loT.userData.tesseraShared=true; AV.mouthParts=[cav,upT,loT];
 
   // ── ears (rigid on the head bone) ──
   const earMat=new THREE.MeshPhysicalMaterial({
@@ -1397,7 +1414,7 @@ function buildAvatar(){
   const neckMesh=buildBust(H,COL,skel);
   grp.add(neckMesh); neckMesh.bind(skel);
 
-  const hairMesh=buildHair(H,nrm,COL,{...TRAITS,hairY:ID.hairY},skel);
+  const hairMesh=buildHair(H,nrm,COL,{...TRAITS,hairY:ID.hairY,fit:ID.hairFit,skinCol:colors},skel);
   if(hairMesh){ grp.add(hairMesh); hairMesh.bind(skel); }
 
   scene.add(grp);
@@ -1472,6 +1489,8 @@ function buildHair(H,nrm,COL,TR,skel){
   const NA=H.NA,NP=H.NP;
   // bald: no shell at all — the scalp is skin, and the tesserae lay it
   if(style==='bald'){ H.hairCover=new Float32Array((NA+1)*(NP+1)); return null; }
+  // the user's own hair, measured in the photos (fitHair)
+  if(style==='fit'&&TR.fit&&!TR.fit.bald) return buildHairFit(H,nrm,COL,TR.fit,TR.skinCol);
   const thick={buzz:0.0032,short:0.0105,mid:0.0135,long:0.0150}[style]||0.010;
   const hairC=new THREE.Color().setHSL(COL.hair.h,COL.hair.s,COL.hair.l);
   const skinC=new THREE.Color().setHSL(COL.skin.h,COL.skin.s,COL.skin.l);
@@ -1575,6 +1594,140 @@ function buildHair(H,nrm,COL,TR,skel){
   m.frustumCulled=false;
   return m;
 }
+
+// ── the user's hair, built from its measurements (fitHair) ──
+// A shell over the scalp wherever the photo shows hair — above the measured
+// hairline at the front, over the sides and back — as thick as the photo's
+// silhouette stands off the head at each height (each side), the top from how
+// high the hair rises; its edge sinks just under the skin, so the hairline is
+// the smooth line where it emerges, not the grid's steps. Hair that hangs
+// beside the face becomes a curtain to each side's measured length, and every
+// vertex a photo saw as hair takes that photo's colour.
+function buildHairFit(H,nrm,COL,F,skinCol){
+  const NA=H.NA, NP=H.NP, nv=(NA+1)*(NP+1), P=H.pos;
+  // the head's own silhouette (each side) and top, from the conformed mesh
+  const BIN=0.002, Y0=-0.22, NB=Math.ceil(0.44/BIN), bin=y=>clamp(Math.floor((y-Y0)/BIN),0,NB-1);
+  const headPos=new Float32Array(NB).fill(-1), headNeg=new Float32Array(NB).fill(1); let headTop=-1;
+  for(let i=0;i<nv;i++){ const b=bin(P[i*3+1]); headPos[b]=Math.max(headPos[b],P[i*3]); headNeg[b]=Math.min(headNeg[b],P[i*3]); headTop=Math.max(headTop,P[i*3+1]); }
+  // the hair's silhouette per side, binned the same way; thickness = how far it
+  // stands off the head there (gaps filled from the nearest measured height)
+  const hPos=new Float32Array(NB).fill(NaN), hNeg=new Float32Array(NB).fill(NaN);
+  for(const [y,xn,xp] of F.rows){ const b=bin(y); if(xp!=null) hPos[b]=isNaN(hPos[b])?xp:Math.max(hPos[b],xp); if(xn!=null) hNeg[b]=isNaN(hNeg[b])?xn:Math.min(hNeg[b],xn); }
+  const thick=(h,head,sgn)=>{ const t=new Float32Array(NB).fill(NaN);
+    for(let b=0;b<NB;b++) if(!isNaN(h[b])&&Math.abs(head[b])<0.5) t[b]=clamp(sgn*(h[b]-head[b]),0.002,0.07);
+    let last=NaN; for(let b=NB-1;b>=0;b--){ if(!isNaN(t[b])) last=t[b]; else if(!isNaN(last)) t[b]=last; }   // up to the crown
+    const sm=new Float32Array(NB); for(let b=0;b<NB;b++){ let a=0,n=0; for(let k=-3;k<=3;k++){ const v=t[clamp(b+k,0,NB-1)]; if(!isNaN(v)){ a+=v; n++; } } sm[b]=n?a/n:NaN; }
+    return sm; };
+  const tPos=thick(hPos,headPos,1), tNeg=thick(hNeg,headNeg,-1);
+  const tTop=clamp((F.top!=null?F.top:headTop+0.008)-headTop,0.002,0.08), tFront=Math.min(0.007,tTop);
+  // the front hairline, by model x (extended level past its ends, then down the temples)
+  const HL=F.hairline.slice().sort((a,b)=>a[0]-b[0]);
+  const hairlineAt=x=>{ if(!HL.length) return 0.052; if(x<=HL[0][0]) return HL[0][1]-0.6*(HL[0][0]-x);
+    if(x>=HL[HL.length-1][0]) return HL[HL.length-1][1]-0.6*(x-HL[HL.length-1][0]);
+    let k=1; while(HL[k][0]<x) k++; const a=HL[k-1], b=HL[k], t=(x-a[0])/((b[0]-a[0])||1e-6); return a[1]+(b[1]-a[1])*t; };
+  const at=(iu,iv)=>iv*(NA+1)+iu;
+  const cov=new Float32Array(nv), t=new Float32Array(nv);
+  for(let i=0;i<nv;i++){
+    const x=P[i*3],y=P[i*3+1],z=P[i*3+2], ax=Math.abs(x);
+    const wF=smoothstep(0.015,0.055,z)*(1-smoothstep(0.045,0.075,ax)), back=cl01(-z/0.06);
+    const line=mix(mix(0.0,-0.05,back),hairlineAt(x),wF);
+    // a taper several grid rows deep (over one row the shell's edge hugged the
+    // rows and came out in steps), measured across the hairline — where it
+    // falls steeply toward a temple, height alone put the whole taper in one
+    // column
+    const sl=wF>0.01?(hairlineAt(x+0.002)-hairlineAt(x-0.002))/0.004*wF:0;
+    cov[i]=smoothstep(-0.004,0.016,(y-line)/Math.sqrt(1+sl*sl));
+    const nx=nrm[i*3],ny=nrm[i*3+1],nz=nrm[i*3+2], b=bin(y);
+    let side=x>0?tPos[b]:tNeg[b]; if(isNaN(side)) side=0.004;
+    const tb=Math.max(isNaN(tPos[b])?0:tPos[b],isNaN(tNeg[b])?0:tNeg[b],0.004);
+    t[i]=nx*nx*side+(ny>0?ny*ny*tTop:ny*ny*side)+(nz>0?nz*nz*tFront:nz*nz*tb);
+  }
+  // even the thickness over the scalp's own grid
+  for(let pass=0;pass<3;pass++){ const o=Float32Array.from(t);
+    for(let iv=1;iv<NP;iv++) for(let iu=0;iu<=NA;iu++){ const i=at(iu,iv), l=at(iu>0?iu-1:NA-1,iv), r=at(iu<NA?iu+1:1,iv);
+      t[i]=0.4*o[i]+0.15*(o[l]+o[r]+o[at(iu,iv-1)]+o[at(iu,iv+1)]); } }
+  const noise=(x,y,z)=>{const s=Math.sin(x*211.3+y*157.7+z*93.1)*43758.545;return s-Math.floor(s);};
+  const base=F.colorLin||[0,1,2].map(k=>srgb2lin(new THREE.Color().setHSL(COL.hair.h,COL.hair.s,COL.hair.l).toArray()[k]));
+  // the photos that saw hair: each view's camera and mask
+  const VIEWS=['center','left','right'].map(id=>{ const sh=ID.shots&&ID.shots[id]; if(!sh) return null; const m=hairMask(sh); if(!m) return null;
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H); return cam?{sh,m,...cam}:null; }).filter(Boolean);
+  const photoCol=(x,y,z,nx,ny,nz)=>{ let a=[0,0,0], w=0;
+    for(const V of VIEWS){ const f=nx*V.dir[0]+ny*V.dir[1]+nz*V.dir[2]; if(f<0.25) continue;
+      const u=V.pu[0]*x+V.pu[1]*y+V.pu[2]*z+V.pu[3], v=V.pv[0]*x+V.pv[1]*y+V.pv[2]*z+V.pv[3];
+      const X=Math.round(u), Yy=Math.round(v); if(X<1||Yy<1||X>=V.sh.W-1||Yy>=V.sh.H-1||V.m[Yy*V.sh.W+X]<128) continue;
+      const s=sampleShot(V.sh.px,V.sh.W,V.sh.H,u,v); if(!s) continue; const k=f*f; a[0]+=s[0]*k; a[1]+=s[1]*k; a[2]+=s[2]*k; w+=k; }
+    return w?[a[0]/w,a[1]/w,a[2]/w,w]:null; };
+  const G=ID.gain||[1,1,1];
+  const colorAt=(x,y,z,nx,ny,nz,seed)=>{ const sh=0.78+0.4*noise(x*13,y*47+seed,z*13);   // strands run down the head
+    let c=base.map(v=>v*sh); const ph=photoCol(x,y,z,nx,ny,nz);
+    if(ph){ const k=Math.min(1,ph[3]*1.6); c=c.map((v,j)=>v+(ph[j]*(0.9+0.2*sh)-v)*k); }
+    return c.map((v,j)=>Math.min(1,v)*G[j]); };
+  const pos=new Float32Array(nv*3), col=new Float32Array(nv*3), si=new Uint16Array(nv*4), sw=new Float32Array(nv*4);
+  const cover=H.hairCover=new Float32Array(nv);
+  for(let i=0;i<nv;i++){
+    const c=cov[i], th=t[i]*c-0.0008*(1-c);                 // the edge sinks just under the skin
+    const x=P[i*3]+nrm[i*3]*th, y=P[i*3+1]+nrm[i*3+1]*th, z=P[i*3+2]+nrm[i*3+2]*th;
+    pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z; cover[i]=smoothstep(0.1,0.6,c);
+    const cc=colorAt(x,y,z,nrm[i*3],nrm[i*3+1],nrm[i*3+2],0);
+    // where the shell thins to nothing it takes the skin's colour beneath, so
+    // the hairline reads as a soft change of colour, not the mesh's edge
+    if(skinCol){ const k=smoothstep(0.12,0.55,c); for(let j=0;j<3;j++) cc[j]=skinCol[i*3+j]+(cc[j]-skinCol[i*3+j])*k; }
+    col.set(cc,i*3);
+    si[i*4]=2; si[i*4+1]=1; sw[i*4]=1; sw[i*4+1]=0;
+  }
+  const idx=[];
+  for(let iv=0;iv<NP;iv++) for(let iu=0;iu<NA;iu++){
+    const a=at(iu,iv),b=at(iu+1,iv),c=at(iu+1,iv+1),d=at(iu,iv+1);
+    if(Math.max(cov[a],cov[b],cov[c],cov[d])>0.02) idx.push(a,c,b,a,d,c);
+  }
+  const Pp=[...pos], C=[...col], SI=[...si], SW=[...sw];
+  // hair that hangs: from the covered scalp's lower edge down each side to its
+  // own measured length (the back to the longer side), as wide as the
+  // silhouette stands at each height
+  const hang=s=>{ const L=s>0?F.lenPos:F.lenNeg; return L!=null&&L<-0.02?L:null; };
+  const lenBack=[hang(1),hang(-1)].filter(v=>v!=null).reduce((a,b)=>Math.min(a,b),Infinity);
+  if(isFinite(lenBack)){
+    const ROWS=16, baseIdx=Pp.length/3, colMap=[]; let cols=0;
+    const ext=(s,y)=>{ const v=s>0?hPos[bin(y)]:hNeg[bin(y)]; return isNaN(v)?null:Math.abs(v); };
+    for(let iu=0;iu<=NA;iu++){
+      let root=-1; for(let iv=NP;iv>=0;iv--){ const i=at(iu,iv); if(cov[i]>0.5){ root=i; break; } }
+      if(root<0){ colMap.push(-1); continue; }
+      const x0=pos[root*3], y0=pos[root*3+1], z0=pos[root*3+2], s=x0>=0?1:-1;
+      if(H.front[root]>0.62&&z0>0.03){ colMap.push(-1); continue; }          // keep the face clear
+      const side=Math.abs(x0)>0.035&&z0>-0.03, yEnd=side?hang(s):lenBack;
+      if(yEnd==null||yEnd>=y0-0.01){ colMap.push(-1); continue; }
+      colMap.push(cols++);
+      const e0=ext(s,y0)||Math.abs(x0);
+      for(let r=0;r<=ROWS;r++){
+        const tt=r/ROWS, y=mix(y0,yEnd,Math.pow(tt,0.9)), e=ext(s,y);
+        const k=side&&e?clamp(e/Math.max(e0,0.02),0.92,1.5):1+0.10*Math.sin(tt*Math.PI);
+        const sway=(noise(x0*30,r*7,z0*30)-0.5)*0.006*tt;
+        const x=x0*k+sway, z=(z0+0.012)*k-0.012+sway*0.5;
+        Pp.push(x,y,z);
+        const rl=Math.hypot(x,z+0.012)||1; C.push(...colorAt(x,y,z,x/rl,0,(z+0.012)/rl,r*3));
+        const wh=1-cl01((tt-0.25)/0.75)*0.75, wn=(1-wh)*0.6;
+        SI.push(2,1,0,0); SW.push(wh,wn,1-wh-wn,0);
+      }
+    }
+    for(let iu=0;iu<NA;iu++){ const c0=colMap[iu],c1=colMap[iu+1]; if(c0<0||c1<0) continue;
+      for(let r=0;r<ROWS;r++){ const a=baseIdx+c0*(ROWS+1)+r, b=baseIdx+c1*(ROWS+1)+r; idx.push(a,b+1,b, a,a+1,b+1); } }
+  }
+  if(!idx.length) return null;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(Pp),3));
+  g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(C),3));
+  g.setAttribute('skinIndex',new THREE.BufferAttribute(new Uint16Array(SI),4));
+  g.setAttribute('skinWeight',new THREE.BufferAttribute(new Float32Array(SW),4));
+  g.setIndex(idx.length>65535?new THREE.BufferAttribute(new Uint32Array(idx),1):new THREE.BufferAttribute(new Uint16Array(idx),1));
+  g.computeVertexNormals();
+  // the photo's hair already holds its own highlights: a full sheen of the room
+  // on top turned dark hair silver
+  const m=new THREE.SkinnedMesh(g,new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.55,metalness:0,
+    specularIntensity:HAIR_SPEC,side:THREE.DoubleSide}));
+  m.frustumCulled=false;
+  return m;
+}
+const HAIR_SPEC=0.3;
 
 /* ═══ §6 PUPPETEERING — drive the rig from remote AvatarState ═════════ */
 const REM={yaw:0,pitch:0,roll:0,bs:{},gx:0,gy:0,val:0,aro:0.3,dom:0.5,
@@ -1853,10 +2006,25 @@ function calibTick(lm,preNeutral){
   } else if(CAL.step>0&&now-CAL.t0>9000) stepDone(true);
   else if(CAL.step===0&&performance.now()-CAL.t0>4000) hint('Look straight at the camera and hold still');
 }
+// the step's frames, each aligned to the reference frame by a 2D similarity
+// on the rigid points, and each landmark's median: one frame's tracker jitter
+// is a millimetre or two, and the warp read it as shape
+function medianFrame(frames,ref){
+  const R=RIGID.filter(i=>ref[i]), cR=[0,0]; for(const i of R){ cR[0]+=ref[i].x; cR[1]+=ref[i].y; } cR[0]/=R.length; cR[1]/=R.length;
+  const aligned=frames.map(F=>{ const c=[0,0]; for(const i of R){ c[0]+=F[i].x; c[1]+=F[i].y; } c[0]/=R.length; c[1]/=R.length;
+    let a=0,b=0,n=0; for(const i of R){ const px=F[i].x-c[0], py=F[i].y-c[1], qx=ref[i].x-cR[0], qy=ref[i].y-cR[1];
+      a+=px*qx+py*qy; b+=px*qy-py*qx; n+=px*px+py*py; }
+    a/=n||1; b/=n||1;                                  // scale·rotation, as a + ib
+    return F.map(p=>({x:cR[0]+a*(p.x-c[0])-b*(p.y-c[1]),y:cR[1]+b*(p.x-c[0])+a*(p.y-c[1]),z:p.z*Math.hypot(a,b)})); });
+  const med=v=>{ v.sort((x,y)=>x-y); return v[v.length>>1]; };
+  return ref.map((_,i)=>({x:med(aligned.map(F=>F[i].x)),y:med(aligned.map(F=>F[i].y)),z:med(aligned.map(F=>F[i].z))}));
+}
 function stepDone(skipped){
   const step=CAL.STEPS[CAL.step];
   if(!skipped&&CAL.frames.length>=5){
-    const mid=CAL.frames[CAL.shotBuf?CAL.shotBuf.k:CAL.frames.length>>1];
+    const ref=CAL.frames[CAL.shotBuf?CAL.shotBuf.k:CAL.frames.length>>1];
+    const mid=medianFrame(CAL.frames,ref);
+    if(CAL.shotBuf&&CAL.shotBuf.lm===ref) CAL.shotBuf.lm=mid;           // the photo keeps the steadier landmarks
     CAL.views[step.id]=mid;
     if(CAL.shotBuf&&CAL.shotBuf.lm===mid) CAL.shots[step.id]=CAL.shotBuf;
     if(step.id==='center'){
@@ -1946,6 +2114,7 @@ function commitIdentity(cloud,nviews,views){
     const t0=performance.now();
     ID.outline=sh?fitOutline(undoPerspective(toModel(sh.lm),ID.lensK),S0):null;
     if(ID.outline) ID.outline.ms=Math.round(performance.now()-t0); }
+  refreshHair();                   // the hair, from the segmenter's mask (§8b fitHair)
   autoTraits(corr);
 
   // 4. per-parameter more/less search against the measurements
@@ -2119,7 +2288,9 @@ function sampleColors(lm,shot){
   const grey=hair&&hair.s<0.11;
   COL.hair=!hair||!lit?{h:0.070,s:0.36,l:0.14}:grey?{h:0.09,s:0.05,l:clamp(hair.l,0.04,0.85)}
                :fit(hair,-0.05,0.16,0.05,0.85,0.03,0.80,{h:0.070,s:0.36,l:0.14});
-  COL.iris=fit(irisC,0,0.99,0.05,0.85,0.06,0.70,{h:0.32,s:0.35,l:0.30});
+  // (an iris's own colour sits under its reflections: the photo's reads a
+  // little greyer than the eye is)
+  COL.iris=fit(irisC&&{...irisC,s:Math.min(0.85,irisC.s*1.25)},0,0.99,0.05,0.85,0.06,0.70,{h:0.32,s:0.35,l:0.30});
   ID.lit=lit;
   ID.sampleDbg={hairT,skin:[50,280,101,330,108,337,151].map(P),hs:hs.length,
     hairBand:hairT==null?null:[at(hairT,-0.14),at(hairT,0.14),at(hairT+0.14,0.14),at(hairT+0.14,-0.14)],
@@ -2127,6 +2298,16 @@ function sampleColors(lm,shot){
   // beard: jaw noticeably darker than cheek → facial hair
   if(lit&&jawC){ ID.beardHint=(skin.l-jawC.l)>0.075?((skin.l-jawC.l)>0.16?'full':'stubble'):'none'; }
   if(!lit) hint('Frame dark · add light, then Refine');
+}
+// read the hair from the front photo's segmentation, and let it choose the
+// style (the user's own, or bald) unless the user picked one
+function refreshHair(){
+  ID.hairFit=fitHair(); const f=ID.hairFit; if(!f) return false;
+  ID.bald=f.bald; if(f.colorLin&&!f.bald) COL.hair=linToHSL(f.colorLin);
+  ID.hairGuess=f.bald?'bald':'fit';
+  if(!TRAITS.userHair){ TRAITS.hair=ID.hairGuess;
+    document.querySelectorAll('#traits .pl[data-hair]').forEach(p=>p.classList.toggle('on',p.dataset.hair===TRAITS.hair)); }
+  return true;
 }
 function autoTraits(cloud){
   if(ID.hairGuess&&!TRAITS.userHair&&TRAITS.hair!==ID.hairGuess){
@@ -2145,13 +2326,15 @@ function autoTraits(cloud){
 
 /* ═══ §8b LIKENESS — the user's own face, on the fitted head ═════════════
    The fitter (§4b) moves parameters, so every face it makes is a plausible
-   face — but only the faces its sliders can reach. Two steps take it the
-   rest of the way, both from what calibration already captured:
-   · CONFORM — the residual at each of the 46 semantic anchors (eye corners
-     and lids, nose, lips, chin, jaw, brows, temples) after the fit, carried
-     over the face by a smooth radial-basis field that fades to nothing over
-     the skull. Eyeballs, teeth and mouth ride the same field, so nothing
-     bone-mounted drifts out of the face.
+   face — but only the faces its sliders can reach. What calibration captured
+   takes it the rest of the way:
+   · CONFORM — every inner landmark, where the tracker itself finds it on the
+     model, warped to the user's by a smoothing spline; the outline (head
+     width, jaw, taper, face length) fitted to the front photo's silhouette;
+     the eyes' and mouth's rims set on the user's own contours; eyeballs,
+     teeth and mouth moved with them, so nothing drifts out of the face.
+   · HAIR — segmented in each photo, measured (hairline, silhouette, length
+     each side, colour) and grown as a shell and curtain to match.
    · PHOTO — every face vertex is projected into each calibration photograph
      (a least-squares camera fitted on the 468 tracked points, plus their
      local residuals, so lens and pose are the data's own), weighted by how
@@ -2165,44 +2348,62 @@ function autoTraits(cloud){
 // would carry features away from their landmarks, so under the warp they
 // stay at default; soft tissue (fat, bone, folds) moves the surface under
 // the landmarks consistently and keeps its fitted values.
-const CONFORM={sigma:0.010,ridge:0.02,z:0.5,max:0.018,step:1};
+// The warp is a SMOOTHING biharmonic spline (φ(r) = −r in 3D — conditionally
+// positive definite, so the smoothing adds to it — plus a constant):
+// among all fields near the landmarks it is the one that bends least, so noisy
+// or mutually inconsistent targets are smoothed through instead of rung around.
+// (A Gaussian RBF interpolating every target exactly crumpled the face: dents
+// and ridges wherever neighbouring landmarks disagreed by a millimetre.) The
+// features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
+// held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
+const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1};
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
+let CONFORM_FEAT=null, CONFORM_CACHE=null;
 function conformField(S,cloud,conf){
   if(!cloud) return null;
-  const P=derived(S), o=new Float32Array(8), A=[], R=[];
+  const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM);
+  if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
+  if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
+  const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
   for(let lm=0;lm<468;lm+=CONFORM.step){
     if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
     if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
     const tp=lmTP(lm); if(!tp) continue;
     const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
     sculptPoint(tp[0],tp[1],S,P,o);
-    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*CONFORM.z];      // tracked depth is the least sure
+    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*CONFORM.z];
     const L=Math.hypot(d[0],d[1],d[2]); if(L>CONFORM.max) d=d.map(v=>v*CONFORM.max/L);
-    A.push([o[0],o[1],o[2]]); R.push(d);
+    A.push([o[0],o[1],o[2]]); R.push(d); Wt.push(CONFORM_FEAT.has(lm)?CONFORM.featW:1);
   }
   const n=A.length; if(n<20) return null;
-  const s2=2*CONFORM.sigma*CONFORM.sigma, K=new Float64Array(n*n);
-  for(let i=0;i<n;i++) for(let j=0;j<=i;j++){
-    const v=Math.exp(-((A[i][0]-A[j][0])**2+(A[i][1]-A[j][1])**2+(A[i][2]-A[j][2])**2)/s2)+(i===j?CONFORM.ridge:0);
-    K[i*n+j]=v; K[j*n+i]=v; }
-  // Cholesky: K is symmetric positive definite (Gaussian kernel + ridge)
-  const Lc=new Float64Array(n*n);
-  for(let i=0;i<n;i++) for(let j=0;j<=i;j++){
-    let v=K[i*n+j]; for(let k=0;k<j;k++) v-=Lc[i*n+k]*Lc[j*n+k];
-    Lc[i*n+j]=i===j?Math.sqrt(Math.max(v,1e-12)):v/Lc[j*n+j];
-  }
-  const solve=b=>{ const y=new Float64Array(n), x=new Float64Array(n);
-    for(let i=0;i<n;i++){ let v=b[i]; for(let k=0;k<i;k++) v-=Lc[i*n+k]*y[k]; y[i]=v/Lc[i*n+i]; }
-    for(let i=n-1;i>=0;i--){ let v=y[i]; for(let k=i+1;k<n;k++) v-=Lc[k*n+i]*x[k]; x[i]=v/Lc[i*n+i]; }
-    return x; };
-  const W=[0,1,2].map(c=>solve(R.map(r=>r[c])));
-  let rms=0; for(const r of R) rms+=r[0]*r[0]+r[1]*r[1]+r[2]*r[2];
-  const field=(x,y,z,out=[0,0,0])=>{ let a=0,b=0,c=0;
-    for(let j=0;j<n;j++){ const w=Math.exp(-((x-A[j][0])**2+(y-A[j][1])**2+(z-A[j][2])**2)/s2);
-      a+=W[0][j]*w; b+=W[1][j]*w; c+=W[2][j]*w; }
+  const N=n+1, D=new Float64Array(n*n);
+  for(let i=0;i<n;i++) for(let j=0;j<i;j++){ const r=Math.hypot(A[i][0]-A[j][0],A[i][1]-A[j][1],A[i][2]-A[j][2]); D[i*n+j]=r; D[j*n+i]=r; }
+  // [−D + λ/W, 1; 1ᵀ, 0]·[w; c] = [r; 0], by LU with partial pivoting
+  const solve=(lam,cols)=>{
+    const M=new Float64Array(N*N), piv=new Int32Array(N);
+    for(let i=0;i<n;i++){ for(let j=0;j<n;j++) M[i*N+j]=-D[i*n+j]; M[i*N+i]+=lam/Wt[i]; M[i*N+n]=1; M[n*N+i]=1; }
+    for(let c=0;c<N;c++){ let p=c, best=Math.abs(M[c*N+c]);
+      for(let r=c+1;r<N;r++){ const v=Math.abs(M[r*N+c]); if(v>best){ best=v; p=r; } }
+      piv[c]=p; if(p!==c) for(let k=0;k<N;k++){ const t=M[c*N+k]; M[c*N+k]=M[p*N+k]; M[p*N+k]=t; }
+      const d=M[c*N+c]||1e-18;
+      for(let r=c+1;r<N;r++){ const f=(M[r*N+c]/=d); if(f) for(let k=c+1;k<N;k++) M[r*N+k]-=f*M[c*N+k]; } }
+    return cols.map(col=>{ const x=new Float64Array(N); for(let i=0;i<n;i++) x[i]=R[i][col];
+      for(let c=0;c<N;c++){ const p=piv[c]; if(p!==c){ const t=x[c]; x[c]=x[p]; x[p]=t; } }
+      for(let r=1;r<N;r++){ let v=x[r]; for(let k=0;k<r;k++) v-=M[r*N+k]*x[k]; x[r]=v; }
+      for(let r=N-1;r>=0;r--){ let v=x[r]; for(let k=r+1;k<N;k++) v-=M[r*N+k]*x[k]; x[r]=v/(M[r*N+r]||1e-18); }
+      return x; });
+  };
+  const [wx,wy]=solve(CONFORM.lam,[0,1]), [wz]=solve(CONFORM.lamZ,[2]);
+  const field=(x,y,z,out=[0,0,0])=>{ let a=wx[n],b=wy[n],c=wz[n];
+    for(let j=0;j<n;j++){ const r=Math.hypot(x-A[j][0],y-A[j][1],z-A[j][2]); a-=wx[j]*r; b-=wy[j]*r; c-=wz[j]*r; }
     out[0]=a; out[1]=b; out[2]=c; return out; };
-  field.anchors=n; field.rms=Math.sqrt(rms/n);
+  // how closely it holds the landmarks (the smoothing lets noise go)
+  let rms=0, exy=0, ez=0; const q=[0,0,0];
+  for(let i=0;i<n;i++){ field(A[i][0],A[i][1],A[i][2],q); rms+=R[i][0]**2+R[i][1]**2+R[i][2]**2;
+    exy+=(q[0]-R[i][0])**2+(q[1]-R[i][1])**2; ez+=(q[2]-R[i][2])**2; }
+  field.anchors=n; field.rms=Math.sqrt(rms/n); field.fitMm={xy:+(Math.sqrt(exy/n)*1000).toFixed(2),z:+(Math.sqrt(ez/n)*1000).toFixed(2)};
+  CONFORM_CACHE={cloud,conf,key,field};
   return field;
 }
 // ── the outline, from the front view ──
@@ -2218,19 +2419,26 @@ function fitOutline(front,S0){
     if([xa,ya,xb,yb].every(isFinite)) tgt.push([(ya+yb)/2,Math.abs(xa-xb)/2]); }
   if(tgt.length<6) return null;
   const o=new Float32Array(8), NT=30, NPh=60;
+  // and the chin: its lowest point on the midline (the menton, 152)
+  const chinT=isFinite(front[152*3+1])?front[152*3+1]:null;
   // the model's half-width at each target height: every meridian of one side
-  // (θ 0…π is x ≥ 0), interpolated where it crosses the height
-  const width=S=>{ const P=derived(S), best=new Float64Array(tgt.length);
+  // (θ 0…π is x ≥ 0), interpolated where it crosses the height; the front
+  // meridian's lowest point is the chin
+  let chinM=0;
+  const width=S=>{ const P=derived(S), best=new Float64Array(tgt.length); chinM=1;
     for(let i=0;i<=NT;i++){ const th=Math.PI*i/NT; let px=0,py=0;
       for(let j=0;j<=NPh;j++){ sculptPoint(th,Math.PI*j/NPh,S,P,o); const x=o[0], y=o[1];
+        if(i===0&&o[2]>0.02) chinM=Math.min(chinM,y);
         if(j) for(let k=0;k<tgt.length;k++){ const t=tgt[k][0];
           if((py-t)*(y-t)<=0&&py!==y){ const xx=px+(x-px)*(t-py)/(y-py); if(xx>best[k]) best[k]=xx; } }
         px=x; py=y; } }
     return best; };
-  const cost=S=>{ const w=width(S); let c=0; for(let k=0;k<tgt.length;k++) c+=(w[k]-tgt[k][1])**2; return c/tgt.length; };
+  const cost=S=>{ const w=width(S); let c=0; for(let k=0;k<tgt.length;k++) c+=(w[k]-tgt[k][1])**2;
+    if(chinT!=null) c+=3*(chinM-chinT)**2;                // the chin's height counts thrice
+    return c/(tgt.length+(chinT!=null?3:0)); };
   // (a little past the sliders' ranges: a square jaw needs less taper than
   // they allow, and the outline is a reliable witness)
-  const S={...S0}, R={headW:[0.80,1.24],jawW:[0.80,1.32],jawTaper:[0.55,1.25]}, c0=cost(S);
+  const S={...S0}, R={headW:[0.80,1.24],jawW:[0.80,1.32],jawTaper:[0.55,1.25],faceLen:[0.84,1.22]}, c0=cost(S);
   for(let round=0;round<2;round++) for(const k of Object.keys(R)){      // golden section, one at a time
     let [a,b]=R[k]; const gr=0.618;
     let x1=b-gr*(b-a), x2=a+gr*(b-a); S[k]=x1; let f1=cost(S); S[k]=x2; let f2=cost(S);
@@ -2238,8 +2446,62 @@ function fitOutline(front,S0){
       else { a=x1; x1=x2; f1=f2; x2=a+gr*(b-a); S[k]=x2; f2=cost(S); } }
     S[k]=(a+b)/2; }
   const c1=cost(S);
-  return {S:{headW:+S.headW.toFixed(3),jawW:+S.jawW.toFixed(3),jawTaper:+S.jawTaper.toFixed(3)},
+  return {S:{headW:+S.headW.toFixed(3),jawW:+S.jawW.toFixed(3),jawTaper:+S.jawTaper.toFixed(3),faceLen:+S.faceLen.toFixed(3)},
+    chinMm:chinT==null?null:+((chinM-chinT)*1000).toFixed(1),
     rmsMm:[+(Math.sqrt(c0)*1000).toFixed(1),+(Math.sqrt(c1)*1000).toFixed(1)],pairs:tgt.length};
+}
+// ── the features' own outlines ──
+// The generator cuts every eye as the same ellipse and every mouth as the
+// same slit, and the warp only bends them toward the user's. Here each rim is
+// set ON the user's contour — the lid margins, the line where the lips meet,
+// as tracked — by angle about its centre, and the skin within a few mm
+// follows with a falloff, so the eye's shape, the mouth's line and the photo
+// on them agree. Returns each eye's contour centre (the eyeball goes there).
+const LIPS_UP_IN=[78,191,80,81,82,13,312,311,310,415,308], LIPS_LO_IN=[308,324,318,402,317,14,87,178,88,95,78];
+function snapFeatures(H,cloud){
+  if(!H.rims||!cloud) return null;
+  const pt=i=>[cloud[i*3],cloud[i*3+1]], P=H.pos, out={};
+  // where the ray from c at angle a leaves the closed polygon C
+  const rayHit=(C,c,a)=>{ const dx=Math.cos(a), dy=Math.sin(a); let best=null;
+    for(let i=0,j=C.length-1;i<C.length;j=i++){ const ax=C[j][0]-c[0], ay=C[j][1]-c[1], bx=C[i][0]-c[0], by=C[i][1]-c[1];
+      const ex=bx-ax, ey=by-ay, den=dx*ey-dy*ex; if(Math.abs(den)<1e-12) continue;
+      const t=(ax*ey-ay*ex)/den, u=(ax*dy-ay*dx)/den; if(t>0&&u>=0&&u<=1&&(best==null||t<best)) best=t; }
+    return best==null?null:[c[0]+dx*best,c[1]+dy*best]; };
+  // correspondence by angle in each outline's own NORMALISED frame (x over
+  // its half-width, y over its half-height): by plain angle a 50 × 1 mm mouth
+  // would meet its own line a few mm from the centre and shrink
+  const box=Q=>{ let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9; for(const p of Q){ x0=Math.min(x0,p[0]); x1=Math.max(x1,p[0]); y0=Math.min(y0,p[1]); y1=Math.max(y1,p[1]); }
+    return {c:[(x0+x1)/2,(y0+y1)/2],h:[Math.max(1e-3,(x1-x0)/2),Math.max(1e-4,(y1-y0)/2)]}; };
+  const move=(rim,C,minHalf)=>{
+    if(rim.length<6||C.some(p=>!p.every(isFinite))) return null;
+    const U=box(C), Rb=box(rim.map(i=>[P[i*3],P[i*3+1]])); U.h[1]=Math.max(U.h[1],minHalf||0);
+    const Cn=C.map(p=>[(p[0]-U.c[0])/U.h[0],(p[1]-U.c[1])/U.h[1]]);
+    const ang=(x,y)=>Math.atan2((y-Rb.c[1])/Rb.h[1],(x-Rb.c[0])/Rb.h[0]);
+    const R=[];
+    for(const i of rim){ const a=ang(P[i*3],P[i*3+1]), q=rayHit(Cn,[0,0],a); if(!q) continue;
+      let tx=U.c[0]+q[0]*U.h[0], ty=U.c[1]+q[1]*U.h[1];
+      if(minHalf&&Math.abs(ty-U.c[1])<minHalf) ty=U.c[1]+Math.sign(P[i*3+1]-Rb.c[1]||1)*minHalf;   // a closed mouth still parts a little
+      R.push([a,tx-P[i*3],ty-P[i*3+1],i]); }
+    if(R.length<6) return null;
+    R.sort((p,q)=>p[0]-q[0]);
+    const dAt=a=>{ let k=0; while(k<R.length&&R[k][0]<a) k++; const p=R[(k-1+R.length)%R.length], q=R[k%R.length];
+      let span=q[0]-p[0]; if(span<=0) span+=2*Math.PI; let t=a-p[0]; if(t<0) t+=2*Math.PI; t=clamp(t/span,0,1);
+      return [p[1]+(q[1]-p[1])*t,p[2]+(q[2]-p[2])*t]; };
+    // the rim's own outline (before the move), for the falloff's distance
+    const poly=R.map(r=>[P[r[3]*3],P[r[3]*3+1]]), rimSet=new Set(rim), FALL=0.006;
+    const moves=[];
+    for(let v=0;v<H.nv;v++){ if(P[v*3+2]<0.02) continue;
+      const x=P[v*3], y=P[v*3+1]; if(Math.abs(x-Rb.c[0])>Rb.h[0]+FALL||Math.abs(y-Rb.c[1])>Rb.h[1]+FALL) continue;
+      const d=rimSet.has(v)?0:Math.abs(polyDist(x,y,poly)); if(d>FALL) continue;
+      const w=rimSet.has(v)?1:(1-d/FALL)**2, m=dAt(ang(x,y)); moves.push([v,m[0]*w,m[1]*w]); }
+    for(const [v,dx,dy] of moves){ P[v*3]+=dx; P[v*3+1]+=dy; }
+    return U.c; };
+  // which eye is which: by the side of model x its contour sits on
+  const eyes=EYE_IDS.map(ids=>ids.map(pt)), cx=e=>e.reduce((a,p)=>a+p[0],0)/e.length;
+  const eP=eyes.find(e=>cx(e)>0), eN=eyes.find(e=>cx(e)<0);
+  out.eyeP=eP?move(H.rims.eyeP,eP,0):null; out.eyeN=eN?move(H.rims.eyeN,eN,0):null;
+  out.mouth=move(H.rims.mouth,[...LIPS_UP_IN,...LIPS_LO_IN.slice(1,-1)].map(pt),0.0006);
+  return out;
 }
 function conformHead(H,field){
   if(!field) return;
@@ -2270,6 +2532,7 @@ const CLEAN=new WeakMap();
 const OVAL_IDS=[10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 const BROW_IDS=[[70,63,105,66,107,55,65,52,53,46],[300,293,334,296,336,285,295,282,283,276]];
 const LIPS_IDS=[61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
+const LIPS_IN_IDS=[78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
 const NOSE_IDS=[1,4,45,275,64,294,98,327,2,97,326,240,460,75,305,79,309,166,392,48,278];
 function hull(P){                                    // convex hull, monotone chain
   const p=P.slice().sort((a,b)=>a[0]-b[0]||a[1]-b[1]), cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
@@ -2279,7 +2542,7 @@ function hull(P){                                    // convex hull, monotone ch
   return lo.slice(0,-1).concat(up.slice(0,-1));
 }
 function cleanShot(sh){
-  let c=CLEAN.get(sh); if(c) return c;
+  let c=CLEAN.get(sh); const hm=hairMask(sh); if(c&&c.hair===!!hm) return c;
   const {W,H,px,lm}=sh, N=W*H, P=i=>[lm[i].x*W,lm[i].y*H];
   const faceW=Math.hypot(P(234)[0]-P(454)[0],P(234)[1]-P(454)[1])||W*0.3;
   // the face, minus what is meant to be dark (each grown a few pixels)
@@ -2309,7 +2572,11 @@ function cleanShot(sh){
   let ref=boxMean(Y,cand,r1);
   const keep=new Uint8Array(N); for(let i=0;i<N;i++) keep[i]=cand[i]&&!(Y[i]<0.55*ref[i])?1:0;
   ref=boxMean(Y,keep,r1);
-  const dark=new Uint8Array(N); for(let i=0;i<N;i++) dark[i]=cand[i]&&ref[i]>0&&Y[i]<0.6*ref[i]?1:0;
+  // only above the upper lip: below it, the dark is the lip's own shadow, the
+  // chin's crease, stubble — the face, not something in front of it (filling it
+  // left a pale band under the lip)
+  const lipTop=P(0)[1];
+  const dark=new Uint8Array(N); for(let i=0;i<N;i++) dark[i]=cand[i]&&ref[i]>0&&Y[i]<0.6*ref[i]&&((i/W)|0)<lipTop?1:0;
   // only sizeable blobs: a strand is long, a mole is a dot
   const occ=new Uint8Array(N), lab=new Int32Array(N), minA=Math.max(16,Math.round(faceW*faceW*0.0006)), stack=[];
   let blobs=0, filled=0;
@@ -2318,7 +2585,12 @@ function cleanShot(sh){
     while(stack.length){ const j=stack.pop(); comp.push(j); const x=j%W, y=(j/W)|0;
       for(const k of [x>0?j-1:-1,x<W-1?j+1:-1,y>0?j-W:-1,y<H-1?j+W:-1]) if(k>=0&&dark[k]&&!lab[k]){ lab[k]=1; stack.push(k); } }
     if(comp.length>=minA){ blobs++; for(const j of comp) occ[j]=1; } }
-  if(!blobs){ CLEAN.set(sh,c={px,blobs:0,filled:0}); return c; }
+  // what the segmenter calls hair on the UPPER face (a fringe, a loose strand
+  // — fair hair too, which isn't dark) goes with the dark blobs; below the
+  // eyes its "hair" is a beard or stubble, which is the face's own likeness
+  const eyeLine=(P(33)[1]+P(263)[1])/2;
+  if(hm) for(let i=0;i<N;i++) if(cand[i]&&hm[i]>=128&&!occ[i]&&((i/W)|0)<eyeLine){ occ[i]=1; blobs++; }
+  if(!blobs){ CLEAN.set(sh,c={px,blobs:0,filled:0,hair:!!hm}); return c; }
   // grow the blobs a pixel (their soft edges), then fill from the skin around
   const occ2=new Uint8Array(N);
   for(let i=0;i<N;i++) if(occ[i]){ const x=i%W, y=(i/W)|0;
@@ -2332,7 +2604,7 @@ function cleanShot(sh){
     for(const i of todo){ if(m[0][i]<0){ left.push(i); continue; }
       for(let k=0;k<3;k++) out[i*4+k]=Math.round(lin2srgb(m[k][i])*255); filled++; }
     todo=left; }
-  CLEAN.set(sh,c={px:out,blobs,filled});
+  CLEAN.set(sh,c={px:out,blobs,filled,hair:!!hm});
   return c;
 }
 // least squares for a 2×4 affine u = P·[x,y,z,1] over the tracked points
@@ -2424,7 +2696,7 @@ function shadeProbe(H,nrm,V,W,Hh){
   // a few passes of neighbour averaging: pixel-sampled across a sharp ridge
   // (the nose) the read flickers vertex to vertex, and streaked the texture
   const nb=new Float32Array(H.nv), cnt=new Float32Array(H.nv), idx=H.idx;
-  for(let it=0;it<3;it++){
+  for(let it=0;it<8;it++){
     nb.fill(0); cnt.fill(0);
     for(let t=0;t<idx.length;t+=3) for(let e=0;e<3;e++){ const a=idx[t+e], b=idx[t+(e+1)%3];
       if(E[b]>0){ nb[a]+=E[b]; cnt[a]++; } if(E[a]>0){ nb[b]+=E[a]; cnt[b]++; } }
@@ -2525,14 +2797,38 @@ function bakePhoto(H,nrm){
     for(let v=0;v<nv;v++){
       if(!ok[v]) continue;
       let g=1;
-      if(eMean&&E[v]>0) g=clamp(eMean/E[v],0.5,2.0);
+      // (held within ±30%: where the model's hollows differ from the real
+      // face's — under the lip, beside the nose — a wide range bleached the
+      // photo where the model is in shadow and the person wasn't)
+      if(eMean&&E[v]>0) g=clamp(eMean/E[v],0.78,1.3);
       else if(sh4){ const S=sh4[0]+sh4[1]*nrm[v*3]+sh4[2]*nrm[v*3+1]+sh4[3]*nrm[v*3+2]; g=clamp(mean/Math.max(S,1e-3),0.65,1.6); }
       gv[v]=g;
-      const w=Math.pow(fac[v],4)*(V.id==='center'?1.5:1);
-      acc[v*3]+=w*col[v*3]*g; acc[v*3+1]+=w*col[v*3+1]*g; acc[v*3+2]+=w*col[v*3+2]*g; wsum[v]+=w;
     }
-    Object.assign(V,{ok,fac,U,Wp,g:gv});
+    Object.assign(V,{ok,fac,U,Wp,g:gv,col});
   }
+  // each photo saw its own exposure, white balance and light: bring every
+  // other view to the front view's colour where both see the skin well (the
+  // median ratio per channel), or where they blend — the chin's underside,
+  // the jaw, the cheeks' sides — the seams read as smudges
+  const Vc0=views.find(V=>V.id==='center');
+  for(const V of views){
+    V.gain=[1,1,1];
+    if(!Vc0||V===Vc0) continue;
+    const rs=[[],[],[]];
+    for(let v=0;v<nv;v++){ if(!V.ok[v]||!Vc0.ok[v]||V.fac[v]<0.45||Vc0.fac[v]<0.45||reach[v]<0.9) continue;
+      if(H.region[v*4]>0.15||H.region[v*4+1]>0.15||H.region[v*4+2]>0.35) continue;
+      for(let k=0;k<3;k++){ const a=V.col[v*3+k]*V.g[v], b=Vc0.col[v*3+k]*Vc0.g[v]; if(a>0.005&&b>0.005) rs[k].push(b/a); } }
+    if(rs[0].length<40) continue;
+    V.gain=rs.map(r=>{ r.sort((x,y)=>x-y); return clamp(r[r.length>>1],0.5,2); });
+  }
+  // (the chin-up and chin-down photos are for depth: under the chin they see
+  // mostly the room's floor light, which de-lit reads pale and greenish)
+  const VW={center:1.5,left:1,right:1,up:0.2,down:0.2};
+  for(const V of views){ const {ok,fac,col,g,gain}=V;
+    for(let v=0;v<nv;v++){ if(!ok[v]) continue;
+      const w=Math.pow(fac[v],4)*(VW[V.id]??1);
+      for(let k=0;k<3;k++) acc[v*3+k]+=w*col[v*3+k]*g[v]*gain[k];
+      wsum[v]+=w; } }
   const out=new Float32Array(nv*3), mask=new Float32Array(nv), skin=[];
   for(let v=0;v<nv;v++){
     if(wsum[v]<1e-4) continue;
@@ -2562,15 +2858,100 @@ function bakePhoto(H,nrm){
     }
     front={sh:Vc.sh,uv,pm};
   }
-  return {col:out,mask,skinLin,views:views.map(V=>V.id),front,probe:(Vc&&Vc.probe)||null};
+  return {col:out,mask,skinLin,views:views.map(V=>V.id),front,probe:(Vc&&Vc.probe)||null,
+    viewGain:Object.fromEntries(views.map(V=>[V.id,V.gain.map(x=>+x.toFixed(3))]))};
+}
+// ── the hair, measured in the front photo ──
+// The segmenter's mask, thresholded to its main body (the largest pieces,
+// stray specks dropped), read in the MODEL's own coordinates through the
+// photo's fitted camera: how high the hair rises, how wide it stands at every
+// height, where it meets the forehead (hairline, or a fringe's edge), how far
+// it hangs beside the face, and its colour. Null without a segmenter.
+function fitHair(){
+  const sh=ID.shots&&ID.shots.center; if(!sh||!ID.lm) return null;
+  const M=hairMask(sh); if(!M) return null;
+  const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H); if(!cam) return null;
+  const W=sh.W, H=sh.H, N=W*H, P=i=>[sh.lm[i].x*W,sh.lm[i].y*H];
+  const {pu,pv}=cam, det=pu[0]*pv[1]-pu[1]*pv[0];
+  // image → model (x, y) on the plane z (the affine, inverted with depth fixed)
+  const back=(u,v,z)=>{ const a=u-pu[2]*z-pu[3], b=v-pv[2]*z-pv[3]; return [(a*pv[1]-pu[1]*b)/det,(pu[0]*b-pv[0]*a)/det]; };
+  const faceW=Math.hypot(P(234)[0]-P(454)[0],P(234)[1]-P(454)[1]), faceH=Math.hypot(P(10)[0]-P(152)[0],P(10)[1]-P(152)[1]);
+  const cx=(P(234)[0]+P(454)[0])/2, x0=Math.max(0,Math.floor(cx-1.7*faceW)), x1=Math.min(W-1,Math.ceil(cx+1.7*faceW));
+  const y1=Math.min(H-1,Math.ceil(P(152)[1]+1.3*faceH));
+  // two levels: confident pixels seed the hair, and weaker ones count where
+  // they join a seed (very dark hair reads at middling confidence, and a single
+  // cut-off kept half a head one frame and all of it the next)
+  const bin=new Uint8Array(N);
+  for(let y=0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(M[y*W+x]>=64) bin[y*W+x]=1;
+  // the hair's body: its largest pieces (a strand that crosses the face is kept
+  // with the body it grows from; specks of background are not)
+  const lab=new Int32Array(N), sizes=[0], strong=[0], stack=[];
+  for(let i=0;i<N;i++){ if(!bin[i]||lab[i]) continue; const id=sizes.length; let a=0, st=0; lab[i]=id; stack.push(i);
+    while(stack.length){ const j=stack.pop(); a++; if(M[j]>=128) st++; const x=j%W, y=(j/W)|0;
+      for(const k of [x>0?j-1:-1,x<W-1?j+1:-1,y>0?j-W:-1,y<H-1?j+W:-1]) if(k>=0&&bin[k]&&!lab[k]){ lab[k]=id; stack.push(k); } }
+    sizes.push(st>=Math.max(20,a*0.15)?a:0); strong.push(st); }
+  const big=Math.max(0,...sizes), keepId=new Uint8Array(sizes.length);
+  for(let k=1;k<sizes.length;k++) keepId[k]=sizes[k]>=Math.max(0.08*big,faceW*faceW*0.01)?1:0;
+  const hair=new Uint8Array(N); let area=0;
+  for(let i=0;i<N;i++) if(lab[i]&&keepId[lab[i]]){ hair[i]=1; area++; }
+  // bald: next to no hair above the brows
+  const browV=Math.min(P(105)[1],P(334)[1]);
+  let above=0; for(let y=0;y<browV;y++) for(let x=x0;x<=x1;x++) above+=hair[y*W+x];
+  const bald=above<faceW*faceW*0.06;
+  const zS=AN.CZ, zF=0.06;                         // the silhouette's depth; the forehead's
+  // silhouette rows, each side of the face's midline apart (a strand hanging on
+  // one side is no reason to draw hair across the face): [model y, the most
+  // negative model x, the most positive], null where that side has none
+  const mid=(P(168)[0]+P(152)[0])/2, rows=[]; let top=null;
+  for(let y=0;y<=y1;y+=2){ let lo=-1, hi=-1;
+    for(let x=x0;x<=x1;x++) if(hair[y*W+x]){ if(lo<0) lo=x; hi=x; }
+    if(lo<0) continue; if(top==null) top=y;
+    const a=lo<mid?back(lo,y,zS):null, b=hi>mid?back(hi+1,y,zS):null, yy=back(mid,y,zS)[1];
+    // image left is the model's +x (the model is the mirror)
+    const xs=[a&&a[0],b&&b[0]].filter(v=>v!=null);
+    rows.push([+yy.toFixed(4),xs.some(v=>v<0)?+Math.min(...xs.filter(v=>v<0)).toFixed(4):null,xs.some(v=>v>0)?+Math.max(...xs.filter(v=>v>0)).toFixed(4):null]); }
+  // the hairline: up each forehead column from the brows to the first hair,
+  // over the mask CLOSED first (a parting or the gaps between strands would
+  // otherwise read as bare forehead), then evened by a running median
+  const r=Math.max(2,Math.round(faceW*0.06)), clo=new Uint8Array(N), tmp=new Uint8Array(N);
+  const pass=(src,dst,horiz,op)=>{ for(let y=0;y<H;y++) for(let x=0;x<W;x++){ let v=op; 
+      for(let k=-r;k<=r;k++){ const X=horiz?x+k:x, Y=horiz?y:y+k; if(X<0||Y<0||X>=W||Y>=H) continue; const b=src[Y*W+X];
+        if(op===0?b:!b){ v=1-op; break; } }
+      dst[y*W+x]=v; } };
+  pass(hair,tmp,true,0); pass(tmp,clo,false,0);          // dilate
+  pass(clo,tmp,true,1); pass(tmp,clo,false,1);           // erode
+  const hl=[], cL=Math.min(P(33)[0],P(263)[0])-0.15*faceW, cR=Math.max(P(33)[0],P(263)[0])+0.15*faceW;
+  for(let x=Math.floor(cL);x<=cR;x+=2){ let y=Math.floor(browV-0.04*faceH);
+    while(y>0&&!(clo[y*W+x]&&clo[(y-1)*W+x]&&clo[Math.max(0,y-2)*W+x])) y--;
+    if(y<=0) continue; hl.push([x,y]); }
+  // (the window, ~0.35 face widths, is over twice a parting's width)
+  const medY=hl.map((p,i)=>{ const w=hl.slice(Math.max(0,i-12),i+13).map(q=>q[1]).sort((a,b)=>a-b); return w[w.length>>1]; });
+  // …and a median leaves plateaus (the shell's edge came out in steps): a
+  // gaussian over the neighbours rounds them
+  const hairline=hl.map((p,i)=>{ let a=0,n=0; for(let k=-8;k<=8;k++){ const j=i+k; if(j<0||j>=hl.length) continue; const w=Math.exp(-k*k/18); a+=medY[j]*w; n+=w; }
+    const m=back(p[0],a/n,zF); return [+m[0].toFixed(4),+m[1].toFixed(4)]; });
+  // how far it hangs beside the face: the lowest row with a real run of hair
+  // outside the face's outline, each side
+  const edgeL=Math.min(P(234)[0],P(454)[0]), edgeR=Math.max(P(234)[0],P(454)[0]), run=Math.max(3,Math.round(faceW*0.03));
+  const lowest=(xa,xb)=>{ let low=null; for(let y=0;y<=y1;y++){ let r=0,best=0; for(let x=xa;x<=xb;x++){ r=hair[y*W+x]?r+1:0; if(r>best) best=r; } if(best>=run) low=y; } return low; };
+  const lowImgL=lowest(x0,Math.floor(edgeL)), lowImgR=lowest(Math.ceil(edgeR),x1);
+  const lenAt=(y,x)=>y==null?null:+back(x,y,zS)[1].toFixed(4);
+  // colour: the confident hair, less its darkest tenth and brightest twentieth
+  const cs=[]; for(let i=0;i<N;i+=3) if(hair[i]&&M[i]>200) cs.push([srgb2lin(sh.px[i*4]/255),srgb2lin(sh.px[i*4+1]/255),srgb2lin(sh.px[i*4+2]/255)]);
+  cs.sort((a,b)=>lumY(...a)-lumY(...b));
+  const core=cs.slice(Math.floor(cs.length*0.1),Math.ceil(cs.length*0.95)), med=k=>{ const v=core.map(c=>c[k]).sort((a,b)=>a-b); return v[v.length>>1]; };
+  const colorLin=core.length>30?[med(0),med(1),med(2)]:null;
+  // image left is the model's +x
+  return {bald,area,top:top==null?null:+back(cx,top,zS)[1].toFixed(4),rows,hairline,
+    lenPos:lenAt(lowImgL,edgeL),lenNeg:lenAt(lowImgR,edgeR),colorLin,mask:hair,W,H};
 }
 // the photograph as a texture (kept per shot, so rebuilds reuse the upload)
 const PHOTO_TEX=new WeakMap();
 function photoTexture(sh){
-  let t=PHOTO_TEX.get(sh); if(t) return t;
   const px=cleanShot(sh).px;
+  let t=PHOTO_TEX.get(sh); if(t&&t.userData.src===px) return t; if(t) t.dispose();
   t=new THREE.DataTexture(new Uint8Array(px.buffer,px.byteOffset,px.length),sh.W,sh.H,THREE.RGBAFormat);
-  t.colorSpace=THREE.SRGBColorSpace; t.generateMipmaps=true;
+  t.userData.src=px; t.colorSpace=THREE.SRGBColorSpace; t.generateMipmaps=true;
   t.minFilter=THREE.LinearMipmapLinearFilter; t.magFilter=THREE.LinearFilter; t.anisotropy=4; t.needsUpdate=true;
   PHOTO_TEX.set(sh,t); return t;
 }
@@ -3113,6 +3494,48 @@ async function createTracker(){
   }
   throw err||new Error('no tracker');
 }
+// ── hair, segmented ──
+// MediaPipe's hair segmenter (≈0.8 MB, same wasm as the tracker) reads hair
+// per pixel in each calibration photo — the colour classifier before it only
+// walked up the forehead, and couldn't tell blond hair from skin or strands
+// from shadow. It loads alongside the tracker; everything that uses it falls
+// back to the old reading if it can't.
+const HAIR_MODEL='https://storage.googleapis.com/mediapipe-models/image_segmenter/hair_segmenter/float32/latest/hair_segmenter.tflite';
+const SEG={seg:null,ready:null,err:null,delegate:null};
+function loadSegmenter(){
+  if(SEG.ready) return SEG.ready;
+  SEG.ready=(async()=>{
+    const {ImageSegmenter,FilesetResolver}=await import(MP+'/vision_bundle.mjs');
+    const files=await FilesetResolver.forVisionTasks(MP+'/wasm');
+    const order=/[?&]cpu\b/.test(location.search)?['CPU']:['GPU','CPU'];
+    let err=null;
+    for(const delegate of order){
+      try{ SEG.seg=await ImageSegmenter.createFromOptions(files,{baseOptions:{modelAssetPath:HAIR_MODEL,delegate},
+          runningMode:'IMAGE',outputCategoryMask:false,outputConfidenceMasks:true});
+        SEG.delegate=delegate; return SEG.seg; }
+      catch(e){ err=e; console.warn('hair segmenter '+delegate+':',e); }
+    }
+    SEG.err=err; throw err;
+  })();
+  SEG.ready.catch(()=>{});
+  return SEG.ready;
+}
+// a shot's hair confidence, 0–255 per pixel (null when there is no segmenter)
+const HAIRMASK=new WeakMap();
+function hairMask(sh){
+  if(HAIRMASK.has(sh)) return HAIRMASK.get(sh);
+  if(!SEG.seg) return null;
+  let out=null;
+  try{
+    const r=SEG.seg.segment(new ImageData(new Uint8ClampedArray(sh.px),sh.W,sh.H));
+    const cm=r&&r.confidenceMasks, mk=cm&&cm[cm.length-1];            // the last class is hair
+    if(mk){ const f=mk.getAsFloat32Array(), w=mk.width, h=mk.height; out=new Uint8Array(sh.W*sh.H);
+      for(let y=0;y<sh.H;y++){ const fy=Math.min(h-1,(y*h/sh.H)|0);
+        for(let x=0;x<sh.W;x++){ const fx=Math.min(w-1,(x*w/sh.W)|0); out[y*sh.W+x]=Math.round(clamp(f[fy*w+fx],0,1)*255); } } }
+    if(r&&r.close) r.close();
+  }catch(e){ console.warn('hair segmentation:',e); }
+  HAIRMASK.set(sh,out); return out;
+}
 function trackLoop(video){
   let last=-1;
   const step=()=>{
@@ -3141,8 +3564,10 @@ async function startCamera(){
   if(TRK.on) return;
   b.textContent='Starting…'; b.disabled=true;
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) return fail('No camera API','needs HTTPS and a browser with getUserMedia');
-  // the tracker (wasm + model, a few MB) loads while the camera is asked for
+  // the tracker (wasm + model, a few MB) loads while the camera is asked for,
+  // and the hair segmenter with it (calibration photos need it, not frames)
   const trk=TRK.lmk?Promise.resolve():createTracker(); trk.catch(()=>{});
+  loadSegmenter().then(()=>{ if(ID.shots&&ID.lm&&!ID.hairFit&&refreshHair()){ buildAvatar(); ID.gainLog=calibrateColour(); } }).catch(()=>{});
   let stream;
   try{ stream=await navigator.mediaDevices.getUserMedia({audio:false,
     video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}}); }
@@ -3305,11 +3730,12 @@ function avatarParts(){
       skinIndex:arr(g,'skinIndex'),skinWeight:arr(g,'skinWeight'),morphs,importance:imp,mask,
       roughness:0.62,metalness:0,specular:LIKE.spec});
   }
-  for(const [m,ro,me] of [[AV.neck,0.72,0],[AV.hair,0.58,0.03]]){
-    if(!m) continue; const g=m.geometry;
+  for(const [m,ro,me,sp] of [[AV.neck,0.72,0,1],[AV.hair,0.58,0.03,1]]){
+    if(!m) continue; const g=m.geometry, phys=m.material&&m.material.isMeshPhysicalMaterial;
     if(m===AV.hair) parts.hair=parts.length;
     parts.push({positions:arr(g,'position'),normals:arr(g,'normal'),colors:arr(g,'color'),index:g.index.array,
-      skinIndex:arr(g,'skinIndex'),skinWeight:arr(g,'skinWeight'),roughness:ro,metalness:me});
+      skinIndex:arr(g,'skinIndex'),skinWeight:arr(g,'skinWeight'),
+      roughness:phys?m.material.roughness:ro,metalness:phys?m.material.metalness:me,specular:phys?m.material.specularIntensity:sp});
   }
   // ears ride the head bone rigidly: carry them into bind space through the
   // head bone's bind matrix (the inverse of its bone inverse)
@@ -3452,8 +3878,8 @@ window.mosaic={THREE,
   get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);},
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
-  get av(){ return {outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
-  LIKE, trackerAnchors,
+  get av(){ return {outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
+  LIKE, CONFORM, trackerAnchors,
   // the avatar seen by a calibration photo's own camera, over that photo — a
   // likeness you can overlay (photo | avatar | 50:50)
   renderAtShot(id='center'){
@@ -3481,6 +3907,21 @@ window.mosaic={THREE,
     return m.map(v=>+(v/n).toFixed(3)); },
   gainTest(g){ ID.gain=g; buildAvatar(); return this.shotMean(); },
   like(o){ Object.assign(LIKE,o); buildAvatar(); return JSON.stringify(LIKE); },
+  loadSegmenter(){ return loadSegmenter().then(()=>SEG.delegate); },
+  hairFitImage(){ const f=fitHair(), sh=ID.shots&&ID.shots.center; if(!f||!sh) return null;
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H), pr=(x,y,z)=>[cam.pu[0]*x+cam.pu[1]*y+cam.pu[2]*z+cam.pu[3],cam.pv[0]*x+cam.pv[1]*y+cam.pv[2]*z+cam.pv[3]];
+    const cv=document.createElement('canvas'); cv.width=sh.W; cv.height=sh.H; const g=cv.getContext('2d'), im=new ImageData(new Uint8ClampedArray(sh.px),sh.W,sh.H);
+    for(let i=0;i<sh.W*sh.H;i++) if(f.mask[i]){ im.data[i*4]=im.data[i*4]*0.5+127; im.data[i*4+2]*=0.5; }
+    g.putImageData(im,0,0); g.lineWidth=2;
+    g.fillStyle='#0ff'; for(const r of f.rows) for(const x of [r[1],r[2]]) if(x!=null){ const a=pr(x,r[0],AN.CZ); g.fillRect(a[0]-1.5,a[1]-1.5,3,3); }
+    g.strokeStyle='#ff0'; g.beginPath(); f.hairline.forEach((q,k)=>{ const a=pr(q[0],q[1],0.06); k?g.lineTo(...a):g.moveTo(...a); }); g.stroke();
+    g.fillStyle='#f0f'; for(const [y,s] of [[f.lenNeg,-1],[f.lenPos,1]]) if(y!=null){ const a=pr(s*0.09,y,AN.CZ); g.fillRect(a[0]-6,a[1]-2,12,4); }
+    g.fillStyle='#fff'; g.font='14px monospace'; g.fillText((f.bald?'BALD ':'')+'top '+f.top+' len+x '+f.lenPos+' len-x '+f.lenNeg,8,18);
+    return cv.toDataURL('image/png'); },
+  hairMaskImage(id='center'){ const sh=ID.shots&&ID.shots[id]; if(!sh) return null; const m=hairMask(sh); if(!m) return 'no mask';
+    const cv=document.createElement('canvas'); cv.width=sh.W; cv.height=sh.H; const g=cv.getContext('2d'), im=new ImageData(new Uint8ClampedArray(sh.px),sh.W,sh.H);
+    for(let i=0;i<sh.W*sh.H;i++){ const a=m[i]/255; im.data[i*4]=im.data[i*4]*(1-a)+255*a; im.data[i*4+1]*=1-a*0.8; im.data[i*4+2]*=1-a*0.8; }
+    g.putImageData(im,0,0); return cv.toDataURL('image/png'); },
   preloadTracker(){ return (TRK.lmk?Promise.resolve():createTracker()).then(()=>TRK.delegate); },
   trackPause(on=true){ TRK.paused=on; if(on){ const st=CAP.st; st.yaw=st.pitch=st.roll=0; for(const k of BS) st.bs[k]=0; st.gx=st.gy=0; } },
   residuals(){ if(!ID.lm||!AV.S) return null; const get=modelGetter(AV.S), out={};
@@ -3494,6 +3935,26 @@ window.mosaic={THREE,
   async settled(){ for(;;){ const p=TES.built; await p; if(!TES.waiting&&p===TES.built) return !!TES.set;
     await new Promise(r=>setTimeout(r,30)); } },
   freeze(on=true){FROZEN=on;},
+  // a clean render for inspection (no UI): head turned/tilted, expressions,
+  // optionally the bare geometry in grey — returns a PNG data URL
+  snap(o={}){
+    const {yaw=0,pitch=0,zoom=1.35,bs={},jaw=0,grey=false,W=440,H=520,cy=-0.012,hide=[]}=o, B=AV.bones, M=AV.morphIdx, R=Math.PI/180;
+    const hid=(hide.includes('mouth')?AV.mouthParts||[]:[]).filter(m=>m.visible); for(const m of hid) m.visible=false;
+    const inf=AV.head.morphTargetInfluences, infS=Array.from(inf), saved=Object.values(B).map(b=>[b,b.rotation.clone(),b.position.clone()]);
+    const mat=AV.head.material, rootR=AV.root.rotation.clone();
+    for(const [b] of saved) b.rotation.set(0,0,0); B.root.position.y=-0.30; AV.root.rotation.set(0,0,0);
+    B.head.rotation.set(pitch*R,yaw*R,0); B.jaw.rotation.x=jaw*0.38; inf.fill(0);
+    for(const k in bs) if(M[k]!=null) inf[M[k]]=bs[k];
+    if(grey) AV.head.material=new THREE.MeshStandardMaterial({color:0xb8b0a8,roughness:0.6});
+    AV.root.updateMatrixWorld(true);
+    const cam=new THREE.PerspectiveCamera(camera.fov,W/H,0.01,10); cam.position.set(0,cy,0.60/zoom); cam.lookAt(0,cy,0);
+    const rt=screenTarget(W,H), px=new Uint8Array(W*H*4), bg=scene.background;
+    renderer.setRenderTarget(rt); renderer.render(scene,cam); renderer.readRenderTargetPixels(rt,0,0,W,H,px); renderer.setRenderTarget(null); rt.dispose();
+    if(grey){ AV.head.material.dispose(); AV.head.material=mat; } for(const m of hid) m.visible=true;
+    for(const [b,r,q] of saved){ b.rotation.copy(r); b.position.copy(q); } infS.forEach((v,k)=>inf[k]=v); AV.root.rotation.copy(rootR); AV.root.updateMatrixWorld(true);
+    const cv=document.createElement('canvas'); cv.width=W; cv.height=H; const g=cv.getContext('2d'), img=g.createImageData(W,H);
+    for(let y=0;y<H;y++) img.data.set(px.subarray((H-1-y)*W*4,(H-y)*W*4),y*W*4);
+    g.putImageData(img,0,0); return cv.toDataURL('image/png'); },
   // lift: raise the view by that many half-heights of the frame. Applied at
   // once — mesh and tiles alike — so a render straight after sees it.
   setView({yaw=0,zoom=1,lift=0}={}){ orbit.yaw=yaw*Math.PI/180; orbit.dist=0.60/zoom; camera.position.z=orbit.dist;

@@ -145,7 +145,11 @@ writes photo | avatar | ΔE and prints both sides' mean colour. `mosaic.like()`
 switches the likeness stages (`{texture, probe, outline, conform, photo,
 spec}`) for ablations, `mosaic.preloadTracker()` loads the tracker before the
 camera opens (so a scripted fake camera starts in step with the prompts), and
-`mosaic.av` reports the fit, the exposure and the colour loop's log. Headless,
+`mosaic.av` reports the fit, the exposure and the colour loop's log.
+`mosaic.snap({yaw, pitch, zoom, cy, bs, jaw, grey})` renders the avatar alone
+(turned, with expressions, or as bare grey geometry) for inspection, and
+`mosaic.hairFitImage()` / `hairMaskImage(id)` draw the hair segmentation and
+what was measured from it over the calibration photo. Headless,
 Chromium's `--use-file-for-fake-video-capture=<file.y4m>` plays a clip as the
 webcam; the numbers in [docs/roadmap.md](../docs/roadmap.md) come from rendered
 heads turning left, right, up and down as the calibration asks.

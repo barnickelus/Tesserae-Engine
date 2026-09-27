@@ -1150,6 +1150,56 @@
       filled as skin, not grown as hair; the photo's own shading beyond the
       rig's stays in the albedo; a photo with closed eyes paints closed lids.
 
+- [x] **VibeMesh — a calibration that holds its shape, and the user's hair.**
+      Tried on an iPad, the likeness read "a little wonky", the hair was a
+      generic cap, and every eye, nostril and lip had the same folds. Seen
+      bare (no texture, turned, smiling), the geometry was crumpled: the
+      landmark warp was a Gaussian RBF fitted exactly to ~400 targets, and
+      wherever neighbouring landmarks disagreed by a millimetre it rang into
+      dents and ridges. Now:
+      · the warp is a smoothing biharmonic spline (φ = −r, plus a constant):
+        the least-bending field near the landmarks, features (eyes, brows,
+        lips, nose) held tight, the rest loosely, depth loosest — 0.4 mm
+        across the face, 1.2–1.3 mm in depth; each pose's landmarks are the
+        median of its frames, aligned to the photographed one (a blink or a
+        jittery frame no longer shapes the face);
+      · the outline fit gained face length, with the chin's height as a
+        target: Lee Perry-Smith's silhouette 9.5 → 3.0 mm rms, the portrait's
+        7.9 → 2.3 mm (the jaw alone had stalled at 6.3);
+      · the eyes' and mouth's rims are set on the user's own tracked contours
+        (lid margins, the line where the lips meet), matched in each
+        outline's normalised frame, the skin within 6 mm following; each
+        eyeball is centred behind its real opening, and the teeth and mouth
+        cavity move with the lip line (placed by the warp at their own depth,
+        the lower teeth had come through the chin);
+      · hair: MediaPipe's hair segmenter (0.8 MB, loaded with the tracker) on
+        every calibration photo; the front photo's mask, read through its
+        fitted camera, gives the hairline (walked up from the brows over a
+        closed mask, median then gaussian), the silhouette each side, how far
+        the hair hangs each side, its colour, and baldness. From these a
+        shell grows over the scalp — as thick as the silhouette stands off
+        the head, its edge tapering under the skin across the hairline (so
+        no grid steps), the skin's colour beneath at the taper — with a
+        curtain to each side's length, each vertex coloured from the photos
+        that saw hair there. A "Yours" style is chosen automatically (or
+        Bald); the old heuristics remain the fallback;
+      · colour: the other photos are matched to the front one before they
+        blend (per-view gains up to 1.4×), the chin-up/down photos weigh
+        little in colour, hair and dark blobs are cleaned from the face only
+        above the eyes / the upper lip (stubble and the chin's shadow are
+        likeness), the shading correction is held within ±30%, and hair,
+        iris and sclera reflect the room at low specular (dark hair had read
+        silver, irises milky).
+      Measured as before (the eye model on the avatar against the front
+      photo, over the face): Lee Perry-Smith 17.3 / 9.6 → 14.6 / 8.1 ΔE at
+      30 / 240 ppd (form 0.70 / 0.91 → 0.76 / 0.94); the portrait
+      25.1 / 13.8 → 22.6–23.1 / 11.1–12.6 (0.56 / 0.88 → 0.59–0.60 /
+      0.89–0.91; the range is run to run — the hair's segmentation varies
+      frame to frame). Tiles against their mesh unchanged (11.9 / 4.9).
+      Open: lip volume and the lid's crease still come from the generator;
+      loose strands and updos are approximated by a shell; the iPad path is
+      still verified only headless.
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
