@@ -101,6 +101,30 @@ second skeleton (Soldier's visor) resolved against the first mesh's bones,
 tile rotations taken from scaled bone matrices (every Mixamo rig), and a
 rotated armature node counted twice (CesiumMan).
 
+## Optics check — the tessera, seen by a model of the eye
+
+```
+node optics-check.mjs Portrait "room,flat,thin|room,pure,thin" --zoom 2.2 --lift 0.3 --ppd 60,240,960,1920 --shots ../shots
+node optics-check.mjs Michelle "room,flat,thin|room,flat,thin,grid" --pose SambaDance@1.3
+PAGE=path/to/older.html node optics-check.mjs Empress "flat,thin"        # measure any version of the page
+node --test test/*.test.mjs                                               # its S-CIELAB, and the tile's optical rules
+```
+
+Renders `tessera-mosaic.html`'s original model and its tessera version from one
+camera under one light, then compares them the way a viewer would: S-CIELAB
+(Zhang & Wandell) — an opponent colour transform, each channel blurred by the
+eye's contrast sensitivity at a viewing distance in pixels per degree, CIELAB
+ΔE — plus the signed lightness and saturation bias and an SSIM of the
+eye-filtered lightness ("form"). More ppd = further away; the ladder runs from
+a visible mosaic (60) to full fusion (1920). A variant is a comma list of the
+page's button labels (or `js:<code>` with `M` = `window.mosaic`, for
+experiments); builds and `Math.random` are seeded, so runs repeat exactly.
+`--shots` writes original | tessera | ΔE heat map composites.
+
+Every rule in [docs/optical-language.md](../docs/optical-language.md) was kept
+or dropped on these numbers. `lib/scielab.mjs` is the eye model;
+`test/optics.test.mjs` tests the tile's rules in `src/core/optics.ts`.
+
 ## Forge check — the page, end to end, against the real Worker
 
 ```
