@@ -1,0 +1,15 @@
+{
+  "name": "tessera-forge-worker",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that lets tessera-forge call OpenAI without a key in the browser",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "miniflare": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

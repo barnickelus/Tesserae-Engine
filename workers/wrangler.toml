@@ -1,0 +1,35 @@
+# The Worker that lets examples/tessera-forge.html call OpenAI with no key in
+# the browser. Deploy steps: docs/tessera-forge-openai-integration.md.
+#
+# Secrets are never in this file. Set them with
+#   npx wrangler secret put OPENAI_API_KEY      (required)
+#   npx wrangler secret put ACCESS_CODE         (optional — callers must send it)
+# or let .github/workflows/deploy-forge-worker.yml do it from repo secrets.
+
+name = "tessera-forge"
+main = "tessera-forge-openai.js"
+compatibility_date = "2026-07-01"
+
+[vars]
+# The page's origin — scheme + host, no path. Comma-separate to add another
+# (e.g. "https://barnickelus.github.io,http://localhost:8000" while testing).
+ALLOWED_ORIGIN = "https://barnickelus.github.io"
+# Hard cap on what this Worker spends per UTC day, at list prices. "0" = no cap.
+DAILY_BUDGET_USD = "1.00"
+# Patch requests allowed per minute from one address (IPv6: per /64).
+RATE_LIMIT_PER_MINUTE = "8"
+# Optional:
+# MAX_OUTPUT_TOKENS = "8000"      # per call, reasoning included; sets the reservation size
+# DEFAULT_MODEL = "gpt-5-mini"    # used when the page asks for a model not in the table
+# REASONING_EFFORT = "low"        # valid values differ per model; unset = the model's default
+# MODELS = '{"gpt-5-mini":[0.25,2],"gpt-6-luna":[0.1,0.5]}'   # allowlist + USD per 1M tokens [in, out]
+
+# The ledger: daily spend + per-address rate limit, in one SQLite-backed
+# Durable Object (available on the Workers Free plan).
+[[durable_objects.bindings]]
+name = "LEDGER"
+class_name = "Ledger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Ledger"]
