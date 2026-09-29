@@ -1441,11 +1441,13 @@ function buildAvatar(){
   // showed through an open mouth as a skin-coloured floor between two thin
   // shells). The head's sits deep and round, its underside clear of the
   // chin's swing; the jaw's is tall enough to meet it at a full opening.
+  // sized to this head's chin (mouth line to chin bottom), or a short face showed the head's shell under its chin
+  const chinH=Math.max(0.025,H.P.MY-H.P.CHY), cs=chinH/0.041;
   const cavMat=new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}), cavGeo=new THREE.SphereGeometry(0.024,20,14);
-  const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,1.05,1.05);
-  cav.position.fromArray(toHead(wm([0,H.P.MY-0.008,0.002]))); head.add(cav);
-  const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.70,0.60);
-  cav2.position.fromArray(toJaw(wm([0,H.P.MY-0.012,0.019]))); jaw.add(cav2);
+  const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,1.05*cs,1.05*cs);
+  cav.position.fromArray(toHead(wm([0,H.P.MY-0.008*cs,0.002]))); head.add(cav);
+  const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.70*cs,0.60);
+  cav2.position.fromArray(toJaw(wm([0,H.P.MY-0.012*cs,0.019]))); jaw.add(cav2);
   cav.userData.tesseraShared=cav2.userData.tesseraShared=true;
   const teethMat=new THREE.MeshStandardMaterial({color:0xf2ece2,roughness:0.35});
   const upT=new THREE.Mesh(new THREE.BoxGeometry(0.028,0.0055,0.007),teethMat);
@@ -4240,7 +4242,7 @@ function wireTesserae(){
 let FROZEN=false;
 window.mosaic={THREE,
   get scene(){return scene;}, get camera(){return camera;}, get renderer(){return renderer;},
-  get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);},
+  get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);}, get H(){return AV.H;},
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
   get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
