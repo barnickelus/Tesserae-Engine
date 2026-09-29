@@ -1387,7 +1387,7 @@ const TRAITS={hair:'short',beard:'none'};
 // spec: the skin's specular strength — the photo already holds the person's
 // own highlights, and a full sheen of the room on top greyed dark skin, brows
 // and makeup
-const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true,mouth:true,hairTex:true,lashes:true};   // §8b, each switchable for comparison
+const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true,mouth:true,hairTex:true,hairTexViews:'all',lashes:true};   // §8b, each switchable for comparison
 
 /* Eye: white sclera sphere + a domed iris cap coloured radially in
    vertex colours (pupil → iris → limbal ring). Avoids projecting a
@@ -1861,8 +1861,14 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   const noise=(x,y,z)=>{const s=Math.sin(x*211.3+y*157.7+z*93.1)*43758.545;return s-Math.floor(s);};
   const base=F.colorLin||[0,1,2].map(k=>srgb2lin(new THREE.Color().setHSL(COL.hair.h,COL.hair.s,COL.hair.l).toArray()[k]));
   // the photos that saw hair: each view's camera and mask
+  // (hm: where the photo shows hair, for the texture — the front view's fitted
+  // body (fitHair's two-level mask) and the sides at the seed level, since very
+  // dark hair reads at middling confidence: at the confident level alone a
+  // black-haired head had texture on 150 of 4,300 vertices)
   const VIEWS=['center','left','right'].map(id=>{ const sh=ID.shots&&ID.shots[id]; if(!sh) return null; const m=hairMask(sh); if(!m) return null;
-    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); return cam?{id,sh,m,...cam,orient:strandField(sh,m)}:null; }).filter(Boolean);
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); if(!cam) return null;
+    const hm=id==='center'&&F.mask&&F.W===sh.W?i=>F.mask[i]>0:i=>m[i]>=64;
+    return {id,sh,m,hm,...cam,orient:strandField(sh,m)}; }).filter(Boolean);
   // the strands' direction at a point: each view's orientation where it saw
   // hair, brought into the model through the view's own camera, in the shell's
   // surface; one sign (down the head, else toward +x) so neighbours agree
@@ -1953,11 +1959,11 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   // camera's own resolution, each view where it saw hair squarely (the vertex
   // colour, a 3 mm average, stays beneath — the tesserae read that)
   if(LIKE.texture&&LIKE.hairTex&&VIEWS.length){
-    const n=Pp.length/3, Nn=g.attributes.normal.array, T=VIEWS.slice(0,3), pw=new Float32Array(n*3), pg=new Float32Array(n*3).fill(1), VG=(AV.photo&&AV.photo.viewGain)||{};
+    const n=Pp.length/3, Nn=g.attributes.normal.array, T=VIEWS.filter(V=>LIKE.hairTexViews!=='center'||V.id==='center').slice(0,3), pw=new Float32Array(n*3), pg=new Float32Array(n*3).fill(1), VG=(AV.photo&&AV.photo.viewGain)||{};
     T.forEach((V,k)=>{ const uv=new Float32Array(n*2);
       for(let i=0;i<n;i++){ const x=Pp[i*3],y=Pp[i*3+1],z=Pp[i*3+2], [u,v]=V.project(x,y,z); uv[i*2]=u/V.sh.W; uv[i*2+1]=v/V.sh.H;
         const f=Nn[i*3]*V.dir[0]+Nn[i*3+1]*V.dir[1]+Nn[i*3+2]*V.dir[2], X=Math.round(u), Y=Math.round(v);
-        const inHair=X>=1&&Y>=1&&X<V.sh.W-1&&Y<V.sh.H-1&&V.m[Y*V.sh.W+X]>=128;
+        const inHair=X>=1&&Y>=1&&X<V.sh.W-1&&Y<V.sh.H-1&&V.hm(Y*V.sh.W+X);
         pw[i*3+k]=inHair?smoothstep(0.3,0.7,f)*(i<nv?smoothstep(0.15,0.5,cov[i]):1):0; }
       g.setAttribute('photoUv'+k,new THREE.BufferAttribute(uv,2)); });
     for(let k=T.length;k<3;k++) g.setAttribute('photoUv'+k,new THREE.BufferAttribute(new Float32Array(n*2),2));
