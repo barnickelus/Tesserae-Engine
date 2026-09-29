@@ -2626,7 +2626,13 @@ function mouthMorphs(H,si,sw,jawPivot){
 // features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
 // held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
 const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003,
-  mouthAnchors:true,chinAnchors:true,perioralSkip:true,chinLift:0};   // chinLift: metres the chin anchors sit above the sculpt's chin bottom (the tracker's menton sits above the silhouette's)   // …Tri: with a triangulated cloud (§8); the last three: the mouth (and chin midline) on the sculpt's own features, the tracker's perioral ring left out — each false for comparison
+  mouthAnchors:true,chinAnchors:false,perioralSkip:true,chinLift:0};
+  // Measured (front view, ΔE at 30 ppd, lower is closer; Lee Perry-Smith /
+  // the portrait): the tracker's anchors throughout 13.2 / 22.4 but a creased
+  // lip; the mouth and chin both on the sculpt 14.3 / 23.1 at the best chin
+  // lift (7 mm; the tracker's menton sits above the silhouette's); the mouth
+  // on the sculpt with the tracker's chin 13.8 / 22.7 and a smooth lip — the
+  // default. chinAnchors and chinLift stay for comparison.   // …Tri: with a triangulated cloud (§8); the last three: the mouth (and chin midline) on the sculpt's own features, the tracker's perioral ring left out — each false for comparison
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
 // The smoothing spline itself: anchors A (xyz), their targets R (xyz),

@@ -154,7 +154,12 @@ the fitted cloud, for scoring a triangulation offline.
 `mosaic.fakeRead({pucker:{sx,dy,dz,jaw,score}, …})` feeds the reading step
 synthetic mouth shapes (the neutral landmarks with the lips moved) and
 `mosaic.read` reports what a reading caught, so the mouth pipeline can be
-checked without a face that talks.
+checked without a face that talks. `mosaic.rebuildAvatar()` builds the avatar
+again from the same identity (`mosaic.rebuild` is the tesserae's), so settings
+— `mosaic.CONFORM.mouthAnchors`, `chinAnchors`, `perioralSkip`, `chinLift`,
+or a `LIKE` switch — can be compared within one calibration; `mosaic.H` is
+the built head's grid (`pos`, `canon`, `rims`, `mrow`) and `mosaic.lmModel(lm)`
+is where the conform's anchor for a tracker landmark sits on the sculpt.
 `mosaic.snap({yaw, pitch, zoom, cy, bs, jaw, grey})` renders the avatar alone
 (turned, with expressions, or as bare grey geometry) for inspection, and
 `mosaic.hairFitImage()` / `hairMaskImage(id)` draw the hair segmentation and
