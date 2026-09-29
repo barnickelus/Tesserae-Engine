@@ -1363,6 +1363,99 @@
       reproduced last round's numbers to a few tenths, so the harness is
       reliable to about that.
 
+    - **VibeMesh — a lower face the tracker reads as it is, a mouth that talks, lashes, hair from three photographs, a neck, and rows that follow the face.**
+      Asked for: mouth movement and the features — hair, the lower chin and
+      jaw, eyelashes and lips — pushed further toward the person; a neck that
+      connects to the head; better tesserae.
+      · The lower face, re-sculpted. The lips at a real pair's heights (the
+        upper vermilion ~9 mm, the lower ~11; they were twice that), the chin
+        with a front that stands (the pogonion) and a bottom that turns under
+        (the ellipsoid had receded 8 mm for every 5 down there), and the
+        anchor table measured again on it (`trackerAnchors`): the tracker
+        now reads the render's mouth closed (13 and 14 half a millimetre
+        apart, 5 mm above the slit; before, 7 mm apart and 8 mm above), its
+        nose base at the sculpt's and its chin at the pogonion. With the
+        table consistent, the perioral ring is anchored again and the mouth's
+        own contour stays analytic. The outline fit reads the head's
+        silhouette only — the neck below the jaw's border is no part of the
+        face's outline (with it, the fit had narrowed the jaw to 0.80 and its
+        taper to 0.55 to match a neck-wide chin).
+      · The neck. The ellipsoid used to close to a point under the chin with a
+        tube rising inside the head. Below the jaw's border (the menton in
+        front, the mandible's edge at the sides, the nape behind) the head's
+        own surface is now the neck: the throat turning under the chin into
+        an elliptic column that widens to the bust's collar, its foot capped
+        and passed just inside the collar's ring; the sternocleidomastoids
+        as ridges from behind the ear to the sternal notch, the hollow above
+        the notch, the trapezius behind. Its rows are the neck bone's (and no
+        further than just under the chin the jaw's: the throat had swung down
+        with a dropped jaw and folded). Its colour comes from the front photo
+        only where that reads as the person's skin — the face's chroma and
+        not much darker — since under a chin the photo holds the chin's
+        shadow, a collar or the background (a dark band had run under every
+        chin).
+      · The mouth's motion. Seven shapes more from the tracker — the upper lip
+        lifted off the teeth, the lower drawn down, both rolled in over the
+        teeth (f, v), the lower shrugged up with the chin's skin bunching,
+        the corners dimpled back, the mouth slid to either side — each a morph
+        the tiles carry too; the mandible slides forward as it opens (the
+        condyle off its fossa, 3 mm at full opening) so the chin comes
+        forward as well as down; the visemes bite the lower lip on f and v.
+        Found on the way: the packet reserved 8 shapes' bytes after 11 were
+        sent, so the last three, and any prosody or text after them, were
+        dropped — sized by the list now. And the shapes are blended on the
+        CPU into the head's geometry (`applyMorphs`) instead of through
+        three's morph texture: seventeen targets took a software renderer
+        15 s to compile, and the tiles' bed compiled them again; the tiles
+        already blend theirs that way, and the bed shares the geometry.
+      · Eyelashes. A lash every millimetre along each lid's margin (the rim
+        the calibration set on the user's own lid contour), each a tapered
+        strip curling up and out (upper, longer toward the outer corner) or
+        down (lower), coloured darker than the hair, on the head bone; the
+        upper fans swing down with a blink. Drawn as they are under the
+        tesserae, like the eyes.
+      · Hair. The side views' hair masks, read on the head's mid-sagittal
+        plane through each view's own camera, give the profile — how far the
+        hair stands behind the head at each height (the front view can't
+        say; the sides' thickness had stood in and flattened every back).
+        The strands' direction across each photograph (the structure tensor
+        of its luminance, blurred over ~7 px, where the mask says hair),
+        brought into the model through the view's camera, is the shell's
+        flow — the tesserae's slivers follow the real strands. And the
+        photographs are projected onto the hair as onto the face, each view
+        where it saw hair squarely, so the strands keep the camera's own
+        resolution: the photograph as shot (the skin takes the cleaned one,
+        strands across the face painted out; on the hair that showed a
+        skin-coloured forehead wherever a fringe hangs, a full ΔE on the
+        portrait's front view), gated by the fitted hair body in front and
+        the segmenter's seed level at the sides — very dark hair reads at
+        middling confidence, and at the confident level a black-haired head
+        had texture on 150 of 4,300 vertices (the strands' own tone and the
+        forehead between them: the front view 23.5 → 21.9 with the raw
+        photograph gated so, the side views adding a few tenths at the
+        temples and the sides' own look).
+      · The head grid's wrap seam (down the back) is two columns of the same
+        vertices with half the faces each; their normals are now joined (a
+        hair shell offset along them had opened a crack down the back).
+      · Tesserae. The face carries a flow of its own: near the features, the
+        tangent of their contours (the lid margins, the lips' line, the
+        nose's sides), round the head between — and the kit now lets a flow
+        steer square tiles' courses (`flowShape: 0`; the andamento's field
+        is seeded by the flow as by a strong colour contour) instead of
+        cutting slivers, so the rows run round the eyes and mouth and up the
+        nose as a mosaicist lays a face (opus vermiculatum). Each tessera is
+        set a little off true about its own sides (`tilt`, 0.06 rad), the
+        uneven glint of a hand-set wall.
+      Measured (ΔE at 30 ppd, front/left/right/up/down, against the round's
+      start): Lee Perry-Smith 13.7 / 15.7 / 14.4 / 18.7 / 19.6 → 13.6 / 16.8 / 14.4 / 18.1 / 19.1; the portrait 23.5 / 25.9 / 22.3 / 30.3 / 28.5 → 22.3 / 23.4 / 22.5 / 29.1 / 28.8.
+      The portrait gains at the front and the left (a lower face the tracker
+      reads as it is, and the fringe as the photograph's own strands); Lee
+      Perry-Smith, bald, holds within the harness's own spread. That spread
+      is a few tenths at the front and about one ΔE on the side views, where
+      each calibration's fit of the same video differs (his left view read
+      15.1, 15.6, 15.7 and 16.8 across four calibrations this round), so
+      the side numbers say less than the front ones.
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
