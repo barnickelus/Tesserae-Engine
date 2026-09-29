@@ -86,6 +86,8 @@ export function hslToRgb(h, s, l) {
  *   morphs? (array of per-vertex xyz DELTAS, one per blendshape),
  *   importance? (0–1 per vertex: features that deserve small tiles),
  *   mask? (0–1 per vertex: < 0.5 = hidden, e.g. scalp under hair),
+ *   flowShape? (0: the flow only steers square tiles' rows — a face laid along
+ *     its features; 1, the default: tiles along a flow are cut as slivers),
  *   flow? (xyz per vertex: a direction the tesserae should run along —
  *   hair strands; such tiles are cut as slivers, long axis along it) }
  *
@@ -125,6 +127,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     sr: new Float32Array(n), sg: new Float32Array(n), sb: new Float32Array(n),
     ro: new Float32Array(n), me: new Float32Array(n), sp: new Float32Array(n), imp: new Float32Array(n), part: new Uint16Array(n),
     fl: parts.some((p) => p.flow) ? new Float32Array(n * 3) : null,
+    fs: parts.some((p) => p.flow) ? new Uint8Array(n).fill(1) : null,
     skinIdx: new Uint16Array(n * 4), skinWt: new Float32Array(n * 4),
     morph: M ? new Float32Array(n * M * 3) : null,
   };
@@ -145,7 +148,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     S.sr[i] = linearToSrgb(r); S.sg[i] = linearToSrgb(gg); S.sb[i] = linearToSrgb(bb);
     S.ro[i] = p.roughness ?? 0.6; S.me[i] = p.metalness ?? 0; S.sp[i] = p.specular ?? 1;
     S.imp[i] = p.importance ? L(p.importance, 0, 1) : 0;
-    if (S.fl && p.flow) { S.fl[i * 3] = L(p.flow, 0); S.fl[i * 3 + 1] = L(p.flow, 1); S.fl[i * 3 + 2] = L(p.flow, 2); }
+    if (S.fl && p.flow) { S.fl[i * 3] = L(p.flow, 0); S.fl[i * 3 + 1] = L(p.flow, 1); S.fl[i * 3 + 2] = L(p.flow, 2); S.fs[i] = p.flowShape ?? 1; }
     S.part[i] = triPart[lo];
     S.wa[i] = run / n / triW[lo];                       // the area this sample stands for
     if (p.skinIndex) {
@@ -202,7 +205,7 @@ export const LAYING = {
   minSamples: 6,
   semantic: true,       // the samples' own importance picks a target size: 0 → the
                         // largest tiles, 1 → the smallest (a generator's feature masks)
-  andamento: { on: true, edgeGain: 0.6, course: 0.08, spread: 0.85, smooth: 14, rounds: 6, facing: -0.3, depth: 2 },
+  andamento: { on: true, edgeGain: 0.6, course: 0.08, spread: 0.85, smooth: 14, rounds: 6, facing: -0.3, depth: 2, flowGain: 1.2 },
 };
 
 /**
@@ -271,7 +274,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
       for (let o = 0; o < 8; o++) if (kids[o].length)
         stack.push({ x: c.x + (o & 1 ? h : 0), y: c.y + (o & 2 ? h : 0), z: c.z + (o & 4 ? h : 0), s: h, d: c.d + 1, ids: kids[o] });
     } else {
-      seeds.push({ x: st.px, y: st.py, z: st.pz, nx: st.ux, ny: st.uy, nz: st.uz, s: c.s, d: c.d, ids });
+      seeds.push({ x: st.px, y: st.py, z: st.pz, nx: st.ux, ny: st.uy, nz: st.uz, s: c.s, d: c.d, ids, flow: st.flow });
       depthCount[c.d] = (depthCount[c.d] || 0) + 1;
     }
   }
@@ -312,7 +315,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
       x: px + ux * lift, y: py + uy * lift, z: pz + uz * lift, nx: ux, ny: uy, nz: uz,
       tx: tx / tl, ty: ty / tl, tz: tz / tl, contour: pa.contour, edge: pa.conf,
       s: s0, area: st.W * nbar, r: st.r, g: st.g, b: st.b, sr: st.sr, sg: st.sg, sb: st.sb,
-      ro: toksvig(st.ro, nbar), me: st.me, sp: st.sp, imp: st.imp, curv, ca: st.ca, cb: st.cb, flow: st.flow,
+      ro: toksvig(st.ro, nbar), me: st.me, sp: st.sp, imp: st.imp, curv, ca: st.ca, cb: st.cb, flow: st.flow, fs: S.fs ? S.fs[best] : 1,
       part: +Object.keys(parts).reduce((a, b) => parts[a] >= parts[b] ? a : b),
       skinIdx, skinWt, morph,
     });
@@ -351,6 +354,10 @@ function andamento(seeds, S, ox, oy, oz, size, A) {
     const th = 0.5 * Math.atan2(2 * Jxy, Jxx - Jyy) + Math.PI / 2;   // along the contour
     edge[k * 2] = Math.cos(th); edge[k * 2 + 1] = Math.sin(th);
     zr0[k] = conf[k] * Math.cos(4 * th) + A.course; zi0[k] = conf[k] * Math.sin(4 * th);
+    // a part's own flow (a face's features, hair's strands) steers the field
+    // as a strong contour would, and diffuses like one
+    if (sd.flow && A.flowGain) { const fl = sd.flow, u = fl[0] * F[o] + fl[1] * F[o + 1] + fl[2] * F[o + 2], v = fl[0] * F[o + 3] + fl[1] * F[o + 4] + fl[2] * F[o + 5];
+      if (u * u + v * v > 1e-8) { const tf = Math.atan2(v, u); zr0[k] += A.flowGain * Math.cos(4 * tf); zi0[k] += A.flowGain * Math.sin(4 * tf); } }
   }
   // Neighbours, from one hash per octree depth with cells the size of that
   // depth's tiles: a pair is found from its smaller tile's side, in the
@@ -700,7 +707,7 @@ export function makeGlyphs(THREE) {
 // face area of each unit shape (rounded corners taken off)
 export const SHAPE_AREA = [1 - (4 - Math.PI) * 0.09 * 0.09, 0.42 * 1.3 - (4 - Math.PI) * 0.07 * 0.07, 0.75 * Math.sqrt(3) * 0.62 * 0.62];
 export function shapeOf(t, laying = LAYING) {
-  if (t.flow) return 1;                                        // along the strands
+  if (t.flow && t.fs !== 0) return 1;                          // along the strands (a face's flow only steers its squares)
   return t.curv > laying.curvForce ? 2 : t.imp > laying.subThreshold * 1.3 ? 1 : 0;
 }
 
@@ -713,7 +720,7 @@ export function shapeOf(t, laying = LAYING) {
  * that disable THREE.ColorManagement hand in the values their shaders already use.
  */
 export function buildTileMeshes(THREE, tiles, opts = {}) {
-  const { RoundedBoxGeometry, inset = 0.9, bedTint = 0.5, paint = 'flat', split = SPLITS.bold, glyphs = null, noise = null, rgbLift = 1.0, pickGlyph = glyphOf } = opts;
+  const { RoundedBoxGeometry, inset = 0.9, bedTint = 0.5, paint = 'flat', split = SPLITS.bold, glyphs = null, noise = null, rgbLift = 1.0, pickGlyph = glyphOf, tilt = 0 } = opts;
   const shapes = [
     () => new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09),
     () => new RoundedBoxGeometry(0.42, 1.3, 0.42, 2, 0.07),
@@ -764,7 +771,11 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
       }
       surf[j * 3] = t.ro; surf[j * 3 + 1] = t.me; surf[j * 3 + 2] = t.sp ?? 1;
       bed[j * 3] = t.r * bedTint; bed[j * 3 + 1] = t.g * bedTint; bed[j * 3 + 2] = t.b * bedTint;
-      q.set(tileQuat(t, shape, j), j * 4);
+      // tilt: each tessera set a little off true, about its own sides, so a
+      // wall of them catches the light unevenly — the glint of a hand-set mosaic
+      let tq = tileQuat(t, shape, j);
+      if (tilt) tq = quatMul(tq, quatMul(quatAxisAngle([1, 0, 0], tilt * (hash01(ti, 0x7117) - 0.5) * 2), quatAxisAngle([0, 1, 0], tilt * (hash01(ti, 0x7118) - 0.5) * 2)));
+      q.set(tq, j * 4);
     });
     mesh.instanceColor = new THREE.InstancedBufferAttribute(col, 3);
     geo.setAttribute('aSurf', new THREE.InstancedBufferAttribute(surf, 3));

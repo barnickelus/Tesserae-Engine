@@ -19,7 +19,14 @@ per-part specular so they shine as the skin does). The kit carries the page's
 paints — flat, pure, muted (the patch's own light and dark as the accents,
 `decomposeMuted`) and rgb (a per-channel dither of pure R, G, B, exact in
 linear light and lifted where a tone curve clips its dots) — and cuts a part
-that declares a `flow` (hair, down the head) as slivers along it.
+that declares a `flow` (hair, along the strands the photographs show) as
+slivers along it, or, with `flowShape: 0`, keeps square tiles and lets the
+flow steer their courses: the andamento's direction field is seeded by the
+flow as by a strong colour contour (`andamento.flowGain`), so a face laid
+with its features' own contours as the flow runs round the eyes and the
+mouth and up the nose as a mosaicist lays it (opus vermiculatum). Each tile
+may also be set a little off true about its own sides (`tilt`, radians), the
+uneven glint of a hand-set wall.
 Nothing here was kept on argument alone: every rule was measured by the eye
 model below, and the ones that didn't help are listed with the ones that did.
 

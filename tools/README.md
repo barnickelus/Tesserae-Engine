@@ -160,7 +160,7 @@ again from the same identity (`mosaic.rebuild` is the tesserae's), so settings
 or a `LIKE` switch — can be compared within one calibration; `mosaic.H` is
 the built head's grid (`pos`, `canon`, `rims`, `mrow`) and `mosaic.lmModel(lm)`
 is where the conform's anchor for a tracker landmark sits on the sculpt.
-`mosaic.snap({yaw, pitch, zoom, cy, bs, jaw, grey})` renders the avatar alone
+`mosaic.snap({yaw, pitch, zoom, cx, cy, bs, jaw, grey})` renders the avatar alone
 (turned, with expressions, or as bare grey geometry) for inspection, and
 `mosaic.hairFitImage()` / `hairMaskImage(id)` draw the hair segmentation and
 what was measured from it over the calibration photo. Headless,

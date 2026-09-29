@@ -99,6 +99,25 @@ test('a flowing part is cut as slivers, each carrying its flow', () => {
   for (const t of tiles) assert.ok(t.ca && t.cb && luminance(...t.ca) >= luminance(...t.cb) - 1e-9, 'accents ordered');
 });
 
+test('a flow with flowShape 0 steers square tiles instead of cutting slivers, and the rows follow it', () => {
+  // a grid coloured by x has its colour contours along y; a flow along +x
+  // (flowShape 0) must turn the tiles' courses to run along x instead
+  // (a square's course is a direction modulo 90°, so the flow is set on the
+  // diagonal, where it differs from the grid's own axis-aligned contours)
+  const g = grid(), n = g.positions.length / 3, flow = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { flow[i * 3] = Math.SQRT1_2; flow[i * 3 + 1] = Math.SQRT1_2; }
+  const S = sampleSurfaces([{ ...g, flow, flowShape: 0 }], 20000, { seed: 9 });
+  const { tiles } = layTesserae(S, { maxDepth: 5 });
+  assert.ok(tiles.length > 50);
+  let diagonal = 0;
+  for (const t of tiles) { assert.ok(t.flow, 'flow carried'); assert.equal(t.fs, 0, 'flow shape kept'); assert.notEqual(shapeOf(t), 1, 'not a sliver');
+    if (Math.abs(Math.abs(t.tx) - Math.abs(t.ty)) < 0.3) diagonal++; }
+  assert.ok(diagonal > tiles.length * 0.8, `courses along the flow (${diagonal}/${tiles.length} diagonal)`);
+  const P = sampleSurfaces([g], 20000, { seed: 9 }), { tiles: plain } = layTesserae(P, { maxDepth: 5 });
+  let axial = 0; for (const t of plain) if (Math.max(Math.abs(t.tx), Math.abs(t.ty)) > 0.9) axial++;
+  assert.ok(axial > plain.length * 0.8, `without the flow, along the colour contours (${axial}/${plain.length} axial)`);
+});
+
 test('andamento across tile sizes: small and large tiles still partition the surface, each tile local', () => {
   // importance on the right half only: the octree cuts small tiles there and
   // large ones on the left, so the relaxation's neighbour lists span sizes

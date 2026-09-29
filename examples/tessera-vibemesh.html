@@ -276,7 +276,8 @@ const lin2srgb=c=>c<=0.0031308?c*12.92:1.055*Math.pow(Math.max(0,c),1/2.4)-0.055
 const Tier={TEXT:1,GLYPH:2,SPRITE:3,PUPPET:4,AVATAR3D:5};
 const TN={1:'TEXT',2:'GLYPH',3:'SPRITE',4:'PUPPET',5:'AVATAR3D'};
 const HZ={1:2,2:4,3:10,4:15,5:20};
-const BS=['jawOpen','smile','frown','browUp','browDown','blinkL','blinkR','pucker','funnel','press','wide'];   // funnel/press/wide: the lips' O, M and E
+const BS=['jawOpen','smile','frown','browUp','browDown','blinkL','blinkR','pucker','funnel','press','wide',
+  'upperUp','lowerDown','rollIn','shrug','dimple','shiftL','shiftR'];   // funnel/press/wide: the lips' O, M and E
 
 // Pure + deterministic: both peers compute the same tier from the same
 // exchanged profiles, so no coordinator is needed.
@@ -303,7 +304,7 @@ function localProfile(){
 const q8=v=>clamp(Math.round(v*127),-127,127), qu=v=>clamp(Math.round(v*255),0,255);
 function encode(s,tier,seq){
   const tb=s.textDirty&&s.text?new TextEncoder().encode(s.text):null, pr=s.pros;
-  const n=10+(tier>=3?3:0)+(tier>=4?10:0)+(pr?2:0)+(tb?2+tb.length:0);
+  const n=10+(tier>=3?3:0)+(tier>=4?BS.length+2:0)+(pr?2:0)+(tb?2+tb.length:0);   // (sized by BS: three shapes and the text after them were once dropped past a fixed 10)
   const b=new Uint8Array(n), d=new DataView(b.buffer);
   b[0]=0x56;b[1]=0x4d;b[2]=4;b[3]=tier; d.setUint16(4,seq&0xffff,true);
   b[6]=(s.speaking?1:0)|(tb?2:0)|((s.gest&0xf)<<2)|(pr?64:0);
@@ -494,19 +495,39 @@ function derived(S){
 // out: [x,y,z, frontness, lipMask, browMask, anatRelief]
 function sculptPoint(th,phi,S,P,out){
   const {A,B,C,CZ,EY,FL,MY,NBY,NTY,BY,CHY,LW}=P;
-  const sp=Math.sin(phi), cp=Math.cos(phi);
-      const xd=sp*Math.sin(th), yd=cp, zd=sp*Math.cos(th);
+  const sp=Math.sin(phi), cp=Math.cos(phi), sa=Math.sin(th), ca=Math.cos(th);
+      let xd=sp*sa, yd=cp, zd=sp*ca;
       let x=A*xd, y=B*yd, z=CZ+C*zd;
       if(y<0)y*=FL;                                  // face length below eye line
+      // the mandible: taper the lower face, pull the back of the jaw in
+      const taper=(xx,zz,yy,c)=>{ const tj=cl01((-0.015-yy)/0.098), tp=Math.pow(tj,1.35);
+        xx*=(1-0.40*tp*S.jawTaper)*(1+(S.jawW-1)*tp*1.1); if(c<0) zz+=0.034*Math.pow(tj,1.55)*(-c); return [xx,zz]; };
+      // ── the jaw's border, and a NECK below it ──
+      // The ellipsoid used to close to a point under the chin, and a tube rose
+      // inside the head to meet it. Below the border (the menton in front, the
+      // mandible's edge at the sides, the nape behind) the surface is now the
+      // neck itself: the throat turning under the chin (the cervicomental
+      // angle) into an elliptic column that widens to the bust's collar.
+      const yJ=CHY+0.006+0.038*(1-ca)/2, phiJ=Math.acos(clamp(yJ/(B*FL),-1,1));
+      const wN=0.042*(1+0.35*(S.jawW-1)), dN=0.043, czN=-0.020, wF=0.052, dF=0.049, czF=-0.018;   // the foot: the bust's collar ring
+      // the column the neck is: nothing it passes through may be narrower
+      // than it, so the head's bottom is pushed out to its wall as the
+      // border nears (the ellipsoid had pinched to a point under the chin)
+      // — at the sides and back only: the chin in front keeps its own width
+      // (lifted too, it grew a ledge as wide as the neck, and the outline
+      // fit narrowed the jaw to match)
+      const column=(xx,zz,yy)=>{ const nx=xx/wN, nz=(zz-czN)/dN, rr=Math.hypot(nx,nz), lift=smoothstep(yJ+0.032,yJ,yy)*smoothstep(0.75,0.25,ca);
+        if(rr<1&&lift>0&&rr>1e-6){ const k=mix(1,1/rr,lift); return [xx*k, czN+(zz-czN)*k]; } return [xx,zz]; };
+      let neckU=-1;
+      if(phi>phiJ){
+        neckU=(phi-phiJ)/(Math.PI-phiJ);                            // 0 at the border, 1 at the foot
+        const spJ=Math.sin(phiJ); let xb=A*spJ*sa, zb=CZ+C*spJ*ca; [xb,zb]=taper(xb,zb,yJ,ca*spJ); [xb,zb]=column(xb,zb,yJ);
+        const s=smoothstep(0,0.30,neckU), sf=smoothstep(0.30,1,neckU);
+        const wn=mix(wN,wF,sf), dn=mix(dN,dF,sf), czn=mix(czN,czF,sf);
+        x=mix(xb,wn*sa,s); z=mix(zb,czn+dn*ca,s); y=yJ-neckU*(yJ-NECK_FOOT);   // a level foot, whatever the border's height
+        xd=sa; yd=-0.2; zd=ca;                                        // its outward direction, for the layers below
+      } else { [x,z]=taper(x,z,y,zd); [x,z]=column(x,z,y); zd=mix(zd,ca,smoothstep(yJ+0.032,yJ,y)); }   // (the column's facing takes over as the border nears, so the throat's terms don't jump)
       const f=smoothstep(0.02,0.46,zd);              // frontness
-
-      // ── mandible: taper the lower face, pull the back of the jaw in ──
-      const tj=cl01((-0.015-y)/0.098);
-      const tp=Math.pow(tj,1.35);
-      x*=(1-0.40*tp*S.jawTaper)*(1+(S.jawW-1)*tp*1.1);
-      if(zd<0) z+=0.034*Math.pow(tj,1.55)*(-zd);
-      // neck-ward tuck under the chin
-      z+=0.012*cl01((CHY+0.028-y)/0.03)*(zd<0?-zd:0);
 
       let dx=0,dy=0,dz=0;
 
@@ -538,17 +559,26 @@ function sculptPoint(th,phi,S,P,out){
         const nm=Math.exp(-(((y-(NTY+0.006))/0.030)**2))*Math.exp(-((x/0.024)**2))*f;
         dx+=Math.sign(x||1e-9)*0.0060*(S.noseW-1)*nm;
       }
-      // ── lips ──
-      const lipU=g2(x,LW*1.06,y-(MY+0.0075),0.0078), lipL=g2(x,LW*0.96,y-(MY-0.0108),0.0092);
-      dz+=0.0062*S.lipFull*f*lipU + 0.0074*S.lipFull*f*lipL;
-      dz-=0.0044*f*g2(x,LW*1.18,y-MY,0.0032);
+      // ── lips, at a real pair's heights (upper vermilion ~9 mm, lower ~11;
+      // they were twice that, and the tracker read the render's mouth line 8 mm
+      // above the slit) ──
+      const lipU=g2(x,LW*1.06,y-(MY+0.0046),0.0050), lipL=g2(x,LW*0.96,y-(MY-0.0056),0.0058);
+      dz+=0.0060*S.lipFull*f*lipU + 0.0070*S.lipFull*f*lipL;
+      dz-=0.0036*f*g2(x,LW*1.18,y-MY,0.0022);              // the line where they meet
       // fuller lips are taller as well as more protruding
-      dy+=Math.sign(y-MY||1e-9)*0.0075*(S.lipFull-1)*f*g2(x,LW*1.10,y-MY,0.0135);
-      dz-=0.0019*f*g2(x,0.0046,y-(MY+0.019),0.0100);      // philtrum
+      dy+=Math.sign(y-MY||1e-9)*0.0045*(S.lipFull-1)*f*g2(x,LW*1.10,y-MY,0.0090);
+      dz-=0.0019*f*g2(x,0.0046,y-(MY+0.0165),0.0080);      // philtrum
       for(const sx of[1,-1]) dz-=0.0031*f*g2(x-sx*LW*1.02,0.0082,y-MY,0.0082);
-      // ── chin + mentolabial crease ──
+      // ── chin: the mentolabial crease, a soft chin, and a front that stands
+      // (the pogonion) down to a bottom that turns under (the menton). The
+      // ellipsoid recedes 8 mm for every 5 down here, so the tracker read the
+      // render's chin bottom 16 mm above the sculpt's: the block pays back the
+      // ellipsoid's recession below the crease, then lets go under the chin ──
+      dz-=0.0030*f*g2(x,0.0225,y-(MY-0.0170),0.0055);
       dz+=0.0078*S.chinProj*f*g2(x,0.0265,y-(CHY+0.0225),0.0265);
-      dz-=0.0032*f*g2(x,0.0225,y-(MY-0.0265),0.0078);
+      { const yr=(CHY+0.026)/(B*FL), zR=CZ+C*Math.sqrt(Math.max(0,1-yr*yr));
+        const block=Math.max(0,zR-z)*0.85*S.chinProj*Math.exp(-((x/0.024)**2))*smoothstep(CHY+0.026,CHY+0.016,y)*smoothstep(CHY-0.008,CHY+0.004,y);
+        dz+=f*block; }
       // ── cheekbones, hollows, temples ──
       for(const sx of[1,-1]){
         const gk=g2(x-sx*0.048*S.headW,0.0300,y+0.0040,0.0220);
@@ -592,12 +622,20 @@ function sculptPoint(th,phi,S,P,out){
         }
         dr+=0.0034*S.fatSubmental*g3(x,y,z, 0,-0.110,0.011, 0.030,0.016,0.026);
       }
+      // the neck's own anatomy: the sternocleidomastoids, a ridge each side from
+      // behind the ear down and forward to the sternal notch; the hollow between
+      // them above the notch; the trapezius filling the back
+      if(neckU>=0){
+        for(const sx of[1,-1]) dr+=0.0026*ridgeF(x,y,z, sx*0.048,yJ+0.010,-0.030, sx*0.013,NECK_FOOT-0.005,0.036, 0.011);
+        dr-=0.0022*g3(x,y,z, 0,NECK_FOOT+0.006,0.045, 0.012,0.012,0.014);
+        dr+=0.0030*g3(x,y,z, 0,NECK_FOOT+0.010,-0.055, 0.040,0.030,0.020)*smoothstep(0.3,1,neckU);
+      }
       const rl=Math.hypot(xd,yd,zd)||1;
       dx+=xd/rl*dr; dy+=yd/rl*dr; dz+=zd/rl*dr;
 
       x+=dx; y+=dy; z+=dz;
   out[0]=x; out[1]=y; out[2]=z; out[3]=f;
-  out[4]=lipU+lipL; out[5]=browM; out[6]=dr;
+  out[4]=lipU+lipL; out[5]=browM; out[6]=dr; out[7]=neckU;   // (−1 on the head, 0…1 down the neck)
   return out;
 }
 
@@ -608,13 +646,14 @@ function buildHead(S, opts){
   const uMap=cdfRemap(NA,u=>1+2.8*Math.exp(-((u-0.5)**2)/(0.10*0.10)));
   // polar: φ=0 crown, φ=π chin — concentrate over the face band
   const vMap=cdfRemap(NP,v=>1+2.4*Math.exp(-((v-0.62)**2)/(0.052))
-    +1.1*Math.exp(-((v-0.44)**2)/(0.016))+1.9*Math.exp(-((v-0.50)**2)/(0.0035)));
+    +1.1*Math.exp(-((v-0.44)**2)/(0.016))+1.9*Math.exp(-((v-0.50)**2)/(0.0035))
+    +1.6*Math.exp(-((v-0.955)**2)/(0.0022)));        // and the neck, which the last tenth of φ now is
 
   const P=derived(S);
   const {A,B,C,CZ,EY,FL,MY,NBY,NTY,BY,CHY,LW}=P;
   const SP=new Float32Array(8);
 
-  const nv=(NA+1)*(NP+1);
+  const nv=(NA+1)*(NP+1)+1;                          // + the neck's foot, capped (seen from below otherwise)
   const pos=new Float32Array(nv*3), canon=new Float32Array(nv*3);
   const front=new Float32Array(nv), region=new Float32Array(nv*4); // lip, brow, socket, beardable
   const anat=new Float32Array(nv);                                  // signed soft-tissue relief
@@ -635,10 +674,12 @@ function buildHead(S, opts){
       region[vi*4]=smoothstep(0.26,0.70,lipU)*f;                     // lips
       region[vi*4+1]=browM;                                          // brow hair
       region[vi*4+2]=f*Math.max(g2(x-EY,0.026,y-0.001,0.017),g2(x+EY,0.026,y-0.001,0.017));
-      region[vi*4+3]=f*smoothstep(MY+0.030,MY-0.010,y);              // beard zone
+      region[vi*4+3]=f*smoothstep(MY+0.030,MY-0.010,y)*smoothstep(CHY-0.016,CHY-0.004,y);   // beard zone, to just under the chin
       vi++;
     }
   }
+  { const cap=vi, cz=-0.018; pos[cap*3]=0; pos[cap*3+1]=NECK_FOOT; pos[cap*3+2]=cz; canon.set(pos.subarray(cap*3,cap*3+3),cap*3);
+    thphi[cap*2]=2*Math.PI; thphi[cap*2+1]=Math.PI; }
 
   // ── apertures: real holes for the eyes and mouth ──────────────
   // Analytic ellipses. The grid is far too coarse to resolve a 31 mm
@@ -695,6 +736,7 @@ function buildHead(S, opts){
     // reverse it so normals and FrontSide culling point outward.
     idx.push(a,c,b, a,d,c);
   }
+  { const cap=nv-1; for(let iu=0;iu<NA;iu++){ const a=at(iu,NP), b=at(iu+1,NP); idx.push(a,b,cap); } }   // the foot's cap, facing down
   // snap the rim ring onto the analytic aperture boundary (and keep each
   // rim's vertices: §8b sets them on the user's own contours)
   const rims={eyeP:[],eyeN:[],mouth:[]};
@@ -737,7 +779,7 @@ function anchorSpecs(P){
     [33,EY+0.0158*S.eyeSize,0.0005],[133,EY-0.0148*S.eyeSize,0.0012],
     [362,EY-0.0148*S.eyeSize,0.0012],[263,EY+0.0158*S.eyeSize,0.0005],
     [159,EY,0.0088],[145,EY,-0.0072],[386,EY,0.0088],[374,EY,-0.0072],
-    [61,LW,MY],[291,LW,MY],[0,0,MY+0.0108*S.lipFull],[17,0,MY-0.0168*S.lipFull],
+    [61,LW,MY],[291,LW,MY],[0,0,MY+0.0090*S.lipFull],[17,0,MY-0.0110*S.lipFull],
     [13,0,MY+0.0022],[14,0,MY-0.0026],
     [152,0,CHY+0.0045],[175,0,CHY+0.0165],
     [234,A*0.985,-0.0100],[454,A*0.985,-0.0100],
@@ -835,9 +877,11 @@ function buildMorphs(H,pos){
   const mk=()=>new Float32Array(n*3);
   const g2=(dx,rx,dy,ry)=>Math.exp(-((dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)));
   const smile=mk(),frown=mk(),bUp=mk(),bDn=mk(),blL=mk(),blR=mk(),puck=mk(),wide=mk(),funnel=mk(),press=mk();
+  const uUp=mk(),lDn=mk(),roll=mk(),shrug=mk(),dimple=mk(),shL=mk(),shR=mk();
   for(let i=0;i<n;i++){
     const x=H.canon[i*3],y=H.canon[i*3+1],z=H.canon[i*3+2],f=H.front[i];
     const lip=H.region[i*4], brow=H.region[i*4+1];
+    const up=smoothstep(MY-0.001,MY+0.002,y), lo=1-up;                  // which lip
     // corners of the mouth
     for(const sx of[1,-1]){
       const c=f*g2(x-sx*LW,0.0165,y-MY,0.0135);
@@ -855,6 +899,19 @@ function buildMorphs(H,pos){
     // to the mouth line and drawn in
     funnel[i*3]-=x*0.30*lb; funnel[i*3+2]+=0.0072*lb; funnel[i*3+1]+=Math.sign(y-MY||1)*0.0022*lb;
     press[i*3+1]+=(MY-y)*0.45*lb; press[i*3+2]-=0.0024*lb; press[i*3]+=x*0.06*lb;
+    // the upper lip lifted (levator): the vermilion and the skin above it rise, the teeth show
+    { const sk=f*g2(x,LW*0.9,y-(MY+0.013),0.0085); uUp[i*3+1]+=0.0058*lb*up+0.0028*sk; uUp[i*3+2]+=0.0010*lb*up; }
+    // the lower lip drawn down and a little out (depressor)
+    { const sk=f*g2(x,LW*0.9,y-(MY-0.015),0.0085); lDn[i*3+1]-=0.0062*lb*lo+0.0026*sk; lDn[i*3+2]+=0.0012*lb*lo; }
+    // both lips rolled in over the teeth: thinner and back
+    roll[i*3+2]-=0.0046*lb; roll[i*3+1]+=(MY-y)*0.35*lb;
+    // the lower lip shrugged up, the chin's skin bunching under it, its dimple
+    { const ch=f*g2(x,0.018,y-(MY-0.021),0.0100), dm=f*g2(x,0.009,y-(MY-0.029),0.0060);
+      shrug[i*3+1]+=0.0046*lb*lo+0.0032*ch; shrug[i*3+2]+=0.0024*lb*lo+0.0008*lb*up-0.0016*dm; }
+    // the corners pulled back and out (the buccinator's dimple)
+    for(const sx of[1,-1]){ const c=f*g2(x-sx*LW*1.05,0.0120,y-MY,0.0100); dimple[i*3+2]-=0.0046*c; dimple[i*3]+=sx*0.0016*c; }
+    // the whole mouth slid to one side
+    { const band=f*g2(x,LW*1.3,y-MY,0.0160); shL[i*3]+=0.0060*band; shR[i*3]-=0.0060*band; }
     // brows
     const bw=cl01(f*g2(x,0.048,y-BY,0.0165)+brow*1.2);
     bUp[i*3+1]+=0.0092*bw; bUp[i*3+2]+=0.0012*bw;
@@ -875,6 +932,66 @@ function buildMorphs(H,pos){
   }
   out.smile=smile;out.frown=frown;out.browUp=bUp;out.browDown=bDn;
   out.blinkL=blL;out.blinkR=blR;out.pucker=puck;out.mouthWide=wide;out.funnel=funnel;out.press=press;
+  out.upperUp=uUp;out.lowerDown=lDn;out.rollIn=roll;out.shrug=shrug;out.dimple=dimple;out.shiftL=shL;out.shiftR=shR;
+  return out;
+}
+
+/* ── Eyelashes ──
+   A lash every millimetre along each lid's margin (the rim vertices, which
+   the calibration set on the user's own lid contour), each a tapered strip
+   of three segments curling up and out (upper) or down (lower), longer
+   toward the outer corner, coloured darker than the hair. Upper and lower
+   lashes of each eye are their own meshes in a group at the eye's centre,
+   so the upper fan can swing down with the lid. Drawn as they are under
+   the tesserae, like the eyes. */
+function buildLashes(H,nrm,COL,W,headBone){
+  if(!H.rims) return null;
+  const hc=new THREE.Color().setHSL(COL.hair.h,COL.hair.s*0.6,Math.min(COL.hair.l*0.45,0.12));
+  const dark=[srgb2lin(hc.r),srgb2lin(hc.g),srgb2lin(hc.b)], G=ID.gain||[1,1,1], P=H.pos;
+  const hash=(a,b)=>{ const s=Math.sin(a*127.1+b*311.7)*43758.5453; return s-Math.floor(s); };
+  const out={groups:[],upper:[]};
+  const mat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.5,metalness:0,side:THREE.DoubleSide});
+  for(const [rim,sx,ctr] of [[H.rims.eyeP,1,W.eL],[H.rims.eyeN,-1,W.eR]]){
+    if(!rim||rim.length<6) continue;
+    let cx=0,cy=0,cz=0; for(const i of rim){ cx+=P[i*3]; cy+=P[i*3+1]; cz+=P[i*3+2]; } cx/=rim.length; cy/=rim.length; cz/=rim.length;
+    let hw=1e-3; for(const i of rim) hw=Math.max(hw,Math.abs(P[i*3]-cx));
+    const ring=rim.map(i=>({i,a:Math.atan2(P[i*3+1]-cy,(P[i*3]-cx)*sx)})).sort((p,q)=>p.a-q.a);
+    for(const upper of [true,false]){
+      const pos=[],col=[],idx=[]; let seed=upper?1:7;
+      for(let k=0;k<ring.length;k++){
+        const a=ring[k].i, b=ring[(k+1)%ring.length].i;
+        const ya=(P[a*3+1]+P[b*3+1])/2; if((ya>cy+0.0003)!==upper) continue;
+        const L=Math.hypot(P[b*3]-P[a*3],P[b*3+1]-P[a*3+1],P[b*3+2]-P[a*3+2]), nL=Math.max(1,Math.round(L/(upper?0.0006:0.0009)));
+        for(let m=0;m<nL;m++){
+          const t=(m+0.5)/nL, r=[0,1,2].map(j=>P[a*3+j]+(P[b*3+j]-P[a*3+j])*t), n=[0,1,2].map(j=>nrm[a*3+j]+(nrm[b*3+j]-nrm[a*3+j])*t);
+          const nl=Math.hypot(...n)||1; n[0]/=nl; n[1]/=nl; n[2]/=nl;
+          const lat=[(r[0]-cx),0,(r[2]-cz)], ll=Math.hypot(lat[0],lat[2])||1; lat[0]/=ll; lat[2]/=ll;
+          const outer=cl01(((r[0]-cx)*sx)/hw*0.5+0.5), h1=hash(seed,k*31+m), h2=hash(seed+3,k*17+m);
+          const len=(upper?0.0072*(0.75+0.5*outer):0.0034*(0.9+0.25*outer))*(0.65+0.6*h1);
+          // out of the lid first (along the lid's normal, fanned a little), then
+          // curling up (upper) or down (lower) toward the tip
+          const up=upper?1:-1, h3=hash(seed+5,k*13+m), fan=(h3-0.5)*0.5;
+          const d=[n[0]*0.85+lat[0]*(0.25+fan), n[1]*0.85+up*0.18, n[2]*0.85+lat[2]*(0.25+fan)], dl=Math.hypot(...d)||1;
+          d[0]/=dl; d[1]/=dl; d[2]/=dl;
+          const w=[d[1]*n[2]-d[2]*n[1], d[2]*n[0]-d[0]*n[2], d[0]*n[1]-d[1]*n[0]], wl=Math.hypot(...w)||1; w[0]/=wl; w[1]/=wl; w[2]/=wl;
+          const pts=[r,[r[0]+d[0]*len*0.5,r[1]+d[1]*len*0.5+up*len*0.10,r[2]+d[2]*len*0.5],[r[0]+d[0]*len*0.92,r[1]+d[1]*len*0.92+up*len*0.42,r[2]+d[2]*len*0.92]];
+          const hwid=[0.00012,0.00008,0.00002], base=pos.length/3, c=dark.map((v,j)=>Math.min(1,v*(0.8+0.3*h2))*G[j]);
+          for(let q=0;q<3;q++){ const p=pts[q], e=hwid[q];
+            pos.push(p[0]-w[0]*e-ctr[0],p[1]-w[1]*e-ctr[1],p[2]-w[2]*e-ctr[2], p[0]+w[0]*e-ctr[0],p[1]+w[1]*e-ctr[1],p[2]+w[2]*e-ctr[2]);
+            col.push(...c,...c); }
+          idx.push(base,base+1,base+3, base,base+3,base+2, base+2,base+3,base+5, base+2,base+5,base+4);
+        }
+      }
+      if(!idx.length) continue;
+      const g=new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+      g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(col),3));
+      g.setIndex(idx); g.computeVertexNormals();
+      const mesh=new THREE.Mesh(g,mat); mesh.userData.tesseraShared=true; mesh.frustumCulled=false;
+      const grp=new THREE.Group(); grp.position.set(ctr[0]-W.head[0],ctr[1]-W.head[1],ctr[2]-W.head[2]); grp.add(mesh); headBone.add(grp);
+      out.groups.push(grp); if(upper) out.upper.push(grp);
+    }
+  }
   return out;
 }
 
@@ -885,6 +1002,11 @@ function buildMorphs(H,pos){
 // and the lower lip went in behind the upper); from here the lip's swing is
 // three parts down to one back, the chin's about even, as a mandible's is.
 const JAW_PIVOT=[0,-0.042,-0.030];
+// a mandible doesn't only hinge: as it opens the condyle slides down and
+// forward off its fossa, so the chin comes forward as well as down (3 mm at a
+// full opening here) — a pure hinge had the chin swing back into the neck
+function jawSlide(B,open){ const b=AV.jawBind; if(!b) return; B.jaw.position.set(b.x,b.y-0.0012*open,b.z+0.0032*open); }
+const NECK_FOOT=-0.162;                              // where the sculpt's neck ends, inside the bust's collar
 function buildSkin(H){
   const n=H.nv, si=new Uint16Array(n*4), sw=new Float32Array(n*4);
   const {MY,CHY}=H.P, MAR0=H.P.LW*0.90;                          // the mouth slit's half-width (the aperture's)
@@ -900,9 +1022,10 @@ function buildSkin(H){
     const cy=MY-0.012*sx, hy=0.0012+0.0168*sx;
     let wj=smoothstep(cy+hy,cy-hy,y)*smoothstep(-0.055,0.005,z);
     wj*=smoothstep(0.085,0.050,Math.abs(x))*0.55+0.45*smoothstep(0.090,0.020,Math.abs(x));
+    wj*=smoothstep(CHY-0.014,CHY+0.002,y);                   // and no further than just under the chin: the throat stays with the neck (it had swung down with the jaw, and folded)
     wj=cl01(wj);
-    let wn=smoothstep(CHY+0.012,CHY-0.040,y)*(1-f*0.8);   // under-chin toward neck
-    wn=cl01(wn)*0.65;
+    let wn=smoothstep(CHY+0.004,CHY-0.046,y);             // the throat and neck: the neck bone's, more with every row down
+    wn=cl01(wn);
     const wh=Math.max(0,1-wj-wn);
     si[i*4]=2;si[i*4+1]=3;si[i*4+2]=1;si[i*4+3]=0;
     const t=wh+wj+wn||1;
@@ -1039,47 +1162,54 @@ const FITP=[
    50 mm up); 1 is the nose tip itself; 10 sits 3 cm lower — so the fit
    chased them to its limits: jaw width, chin and cheekbones pinned. Each
    anchor now keeps following its feature as parameters move it, offset to
-   where the tracker actually puts that landmark. */
+   where the tracker actually puts that landmark.
+   Measured again on the head with lips at a real pair's heights, a chin
+   that stands and turns under, and a neck: the tracker reads that render's
+   mouth closed (13 and 14 half a millimetre apart, 5 mm above the slit;
+   before, 7 mm apart and 8 mm above), its nose base at the sculpt's (7 mm
+   high before), its chin at the pogonion — which it does on photographs
+   too. */
 const LM_TP=[
-6.2832,2.0858,6.2832,1.9012,6.2832,1.9526,6.227,1.7449,6.2832,1.8536,6.2832,1.7939,6.2832,1.6219,null,null,6.2832,1.4439,6.2832,1.3741,6.2832,1.156,6.2832,2.1066,
-6.2832,2.1275,6.2832,2.143,6.2832,2.2161,6.258,2.2728,6.2546,2.3073,6.2505,2.3445,6.2657,2.3398,6.2832,1.9297,6.1802,1.9308,4.9808,1.2693,5.973,1.635,5.8837,1.6408,
-5.7951,1.6362,5.6638,1.5905,6.0389,1.621,5.8179,1.4499,5.9346,1.4609,5.7288,1.4583,5.6666,1.4822,5.6477,1.6152,5.8015,2.3765,5.6714,1.5606,5.2586,1.5314,5.543,1.5607,
-5.8646,1.8376,6.1488,2.0717,6.1589,2.1252,6.0219,2.084,5.914,2.1069,6.0493,2.1247,5.9484,2.1254,5.6756,2.2051,6.2122,1.9053,6.2171,1.8563,5.5024,1.4125,6.0487,1.7115,
-6.0167,1.8879,6.0134,1.858,5.5841,1.817,6.2216,1.7985,5.7428,1.3619,5.6076,1.3763,5.1914,1.2011,6.1122,1.4184,6.0268,1.4902,5.6692,2.1368,5.1939,1.9874,6.0651,1.9129,
-6.1224,1.9291,5.7657,2.1603,5.8172,2.1605,5.5303,1.3318,6.007,1.9065,5.8989,1.3733,5.8817,1.3264,5.7788,1.1544,5.3907,1.2818,5.8431,1.2575,5.3908,1.3784,5.2034,1.3382,
-6.1493,2.0989,6.0346,2.106,5.9261,2.1112,6.0817,1.9222,5.7935,2.1617,5.8063,2.1993,5.8012,2.161,6.1077,1.9028,5.9748,2.1357,6.062,2.1318,6.1696,2.1407,6.0779,2.3357,
-6.0435,2.3419,6.0656,2.3029,6.0914,2.2698,6.138,2.2091,5.9735,2.1833,5.9308,2.2027,5.77,2.2582,5.6792,2.2884,5.8708,2.0386,5.6507,1.7112,6.2832,1.9448,5.8677,2.1813,
-5.8132,2.1935,6.1514,1.95,6.0292,1.9312,6.1396,1.9413,5.9713,1.7371,5.8306,1.7689,5.9937,1.8776,5.4965,1.1672,5.6084,1.2531,5.7004,1.3144,5.7275,2.2733,6.0885,1.3505,
-6.055,1.2754,6.02,1.1507,5.7295,1.6216,5.571,1.6423,6.088,1.6032,5.6033,1.5027,6.1036,1.6844,6.0632,1.8745,5.4573,1.6585,5.5912,1.6874,5.6824,1.7143,5.8468,1.7121,
-5.9676,1.6933,6.0457,1.6721,6.2184,1.6308,5.3017,1.7663,5.5273,1.4842,6.2403,1.929,6.0463,1.7666,5.357,1.5011,6.1043,1.6478,5.9854,1.8739,5.6453,1.5532,6.0684,1.837,
-5.7147,1.8256,6.1094,1.5864,6.1428,1.8127,5.1024,2.21,5.971,2.1738,5.3371,1.7455,4.9667,2.1106,5.2735,1.4349,5.8944,2.4188,6.2422,1.9423,5.9708,1.7998,5.4398,1.5584,
-null,null,5.925,1.6213,5.6908,2.2176,5.236,1.8698,5.7195,2.5842,6.0711,2.3538,6.0845,2.2783,6.2832,1.2859,6.2731,2.6041,6.0177,1.6176,6.086,1.6037,6.1075,1.5901,
-5.3983,1.4619,6.0856,1.5462,null,null,null,null,null,null,null,null,5.3332,1.3945,null,null,6.2832,2.0002,5.9749,2.0091,6.0757,1.9108,6.1559,1.9963,
-6.2832,1.5355,5.2229,2.3062,5.7252,2.342,5.7832,2.5127,5.9189,2.0755,6.112,1.5698,6.1624,1.7129,null,null,5.4344,2.5246,5.3884,1.8495,6.0469,2.1975,5.9868,2.2324,
-5.9215,2.281,5.862,2.3291,5.8859,2.3098,5.8669,2.1402,5.8316,2.1363,5.8137,2.134,5.773,2.0826,5.4262,1.9179,6.1631,1.6551,6.1279,1.5357,6.1053,1.5431,5.8986,2.146,
-5.2388,2.0444,6.1909,1.5352,5.8412,2.3353,6.2832,1.7383,6.2204,1.6923,6.2832,1.6851,6.098,1.7874,6.2584,2.4504,6.2678,2.379,6.0897,2.3655,5.5719,2.2142,5.9033,1.9097,
-5.6378,2.2898,5.6988,1.8958,5.7985,1.9622,5.5701,1.9747,6.0416,2.4263,6.0463,1.8106,5.4072,2.2479,5.5392,2.3261,5.5549,2.1311,5.1527,1.9613,5.3654,2.1286,5.014,1.9668,
-5.6919,2.032,6.1038,1.7384,6.0929,1.8962,6.0393,1.9054,6.1386,1.8635,6.0638,1.4699,5.9189,1.4292,5.7894,1.4192,5.6851,1.43,5.6151,1.4564,5.618,1.5544,5.4642,1.6408,
-5.6793,1.6435,5.7549,1.6656,5.8664,1.6705,5.9736,1.6597,6.0451,1.6416,6.0906,1.6265,5.5147,1.6031,6.0374,1.9158,6.1606,1.7616,6.1517,1.9024,6.1806,1.9223,6.1518,1.9085,
-6.0564,1.9279,6.2014,1.9267,6.2062,1.939,6.1207,1.5884,6.1361,1.5981,6.1572,1.6092,null,null,5.6604,1.5118,6.3394,1.7449,6.9026,1.5905,6.3861,1.9308,7.5855,1.2693,
-6.5934,1.635,6.6826,1.6408,6.7713,1.6362,6.928,1.5929,6.5275,1.621,6.7485,1.4499,6.6318,1.4609,6.8376,1.4583,6.8998,1.4822,6.9187,1.6152,6.7214,2.3806,6.8949,1.5606,
-7.3078,1.5314,7.0234,1.5607,6.7018,1.8376,6.4176,2.0717,6.4074,2.1252,6.5445,2.084,6.6402,2.1112,6.5044,2.1318,6.5915,2.1357,6.8756,2.2176,6.3542,1.9053,6.3492,1.8563,
-7.064,1.4125,6.5177,1.7115,6.5496,1.8879,6.553,1.858,6.9823,1.817,6.3448,1.7985,6.8236,1.3619,6.9588,1.3763,7.375,1.2011,6.4542,1.4184,6.5396,1.4902,6.8971,2.1368,
-null,null,6.5064,1.9116,6.444,1.9291,6.8337,2.1622,6.7715,2.1627,7.036,1.3318,6.5594,1.9065,6.6674,1.3733,6.6846,1.3264,6.7876,1.1544,7.1757,1.2818,6.7232,1.2575,
-7.1756,1.3784,7.363,1.3382,6.417,2.0989,6.5317,2.106,6.618,2.1254,6.4847,1.9222,6.7652,2.161,6.7531,2.1935,6.7545,2.1627,6.4586,1.9028,6.5725,2.1412,6.4937,2.1373,
-6.3968,2.1407,6.4627,2.3344,6.4652,2.3335,6.4448,2.2977,6.4349,2.2636,6.4017,2.2105,6.6059,2.1863,6.6505,2.205,6.7788,2.2435,6.8361,2.2727,6.6955,2.0386,6.9157,1.7112,
-6.6746,2.1768,6.6987,2.1813,6.415,1.95,6.5372,1.9312,6.4267,1.9413,6.5951,1.7371,6.7358,1.7689,6.5727,1.8776,7.0699,1.1672,6.9579,1.2531,6.8659,1.3144,6.7964,2.2582,
-6.4779,1.3505,6.5114,1.2754,6.5463,1.1507,6.8369,1.6216,6.9954,1.6423,6.4783,1.6032,6.9631,1.5027,6.4628,1.6844,6.5031,1.8745,7.1091,1.6585,6.9752,1.6874,6.884,1.7143,
-6.7196,1.7121,6.5987,1.6933,6.5207,1.6721,6.348,1.6308,7.2646,1.7663,7.0391,1.4842,6.3261,1.929,6.5201,1.7666,7.2094,1.5011,6.4621,1.6478,6.581,1.8739,6.9484,1.5544,
-6.498,1.837,6.8517,1.8256,6.4588,1.5901,6.4236,1.8127,7.464,2.21,6.5954,2.1738,7.2293,1.7455,7.5997,2.1106,7.2929,1.4349,6.6184,2.4237,6.3242,1.9423,6.5956,1.7998,
-7.1266,1.5584,6.8513,1.6201,6.7771,1.625,6.8324,2.2116,7.3304,1.8698,6.8124,2.6059,6.3652,2.3382,6.4819,2.2783,6.5487,1.6176,6.4804,1.6037,6.4622,1.5928,7.168,1.4619,
-6.4807,1.5462,null,null,6.8932,1.5201,7.0206,1.5269,7.0284,1.5406,7.2331,1.3945,6.8833,1.6012,6.5915,2.0091,6.5012,1.9129,6.4104,1.9963,7.3435,2.3062,6.7112,2.342,
-6.7833,2.5427,6.6474,2.0755,6.4543,1.5698,6.404,1.7129,6.2884,2.416,null,null,6.5154,2.1974,6.5706,2.2218,6.6292,2.2799,6.6458,2.3059,6.6815,2.3129,6.6677,2.146,
-6.6994,2.1402,6.7348,2.1363,6.7934,2.0826,7.1402,1.9179,6.4032,1.6551,6.4385,1.5357,6.461,1.5431,6.6489,2.1491,7.3276,2.0444,6.3754,1.5352,6.7044,2.3291,6.346,1.6923,
-6.4683,1.7874,6.4953,2.3756,6.9944,2.2142,6.6631,1.9097,6.8871,2.2884,6.8675,1.8958,6.7678,1.9622,6.9962,1.9747,6.4792,2.4335,6.5201,1.8106,7.1592,2.2479,7.0272,2.3261,
-7.0115,2.1311,7.4136,1.9613,7.201,2.1286,7.3724,1.9874,6.8745,2.032,6.4626,1.7384,6.4735,1.8962,6.527,1.9054,6.4278,1.8635,6.5026,1.4699,6.6475,1.4292,6.777,1.4192,
-6.8813,1.43,6.9513,1.4564,6.9949,1.5572,7.1022,1.6408,6.8871,1.6435,6.8114,1.6656,6.7,1.6705,6.5928,1.6597,6.5213,1.6416,6.4757,1.6265,7.0516,1.6031,6.529,1.9158,
-6.4058,1.7616,6.4147,1.9024,6.3857,1.9223,6.4356,1.9055,6.51,1.9279,6.365,1.9267,6.3602,1.939,6.457,1.5864,6.4303,1.5981,6.4092,1.6092,6.8885,1.5469,6.9441,1.5131];
+6.2832,2.1527,6.2832,1.9624,6.2832,2.0150,6.2279,1.7726,6.2832,1.9009,6.2832,1.8280,6.2832,1.6374,null,null,6.2832,1.4433,6.2832,1.3675,6.2832,1.1170,6.2832,2.1753,
+6.2832,2.1935,6.2832,2.2071,6.2832,2.2136,6.2832,2.2919,6.2832,2.3194,6.2832,2.3672,6.2832,2.4444,6.2832,1.9865,6.1882,1.9855,4.9381,1.2280,5.9683,1.6439,5.8805,1.6500,
+5.7911,1.6453,5.6649,1.5996,6.0352,1.6292,5.8236,1.4500,5.9364,1.4603,5.7238,1.4594,5.6712,1.4832,5.6464,1.6213,5.6269,2.4824,5.7009,1.5644,5.3626,1.5271,5.5651,1.5627,
+5.8579,1.8715,6.1517,2.1380,6.1621,2.1915,6.0182,2.1528,5.9207,2.1701,6.0578,2.1905,5.9704,2.1921,5.6854,2.2534,6.1886,1.9664,6.1958,1.9064,5.5300,1.4113,6.0434,1.7329,
+6.0236,1.9316,6.0130,1.8997,5.5675,1.8442,6.2224,1.8305,5.7592,1.3604,5.6083,1.3745,5.1724,1.1601,6.1153,1.4149,6.0266,1.4906,5.6417,2.1885,5.6391,1.9894,6.0594,1.9592,
+6.1370,1.9839,5.7918,2.2039,5.8352,2.2009,5.5312,1.3255,6.0125,1.9502,5.9212,1.3686,5.9047,1.3176,5.7700,1.1162,5.3816,1.2573,5.8413,1.2361,5.3822,1.3703,5.1912,1.3139,
+6.1500,2.1685,6.0358,2.1738,5.9416,2.1827,6.0884,1.9710,5.8059,2.1976,5.8723,2.2207,5.8623,2.1977,6.0950,1.9491,6.0148,2.1961,6.0908,2.1992,6.1735,2.2050,6.0697,2.3891,
+6.0961,2.3582,6.1278,2.3143,6.1304,2.2818,6.1819,2.2086,5.9971,2.2004,5.9522,2.2209,5.8831,2.2671,5.8354,2.2946,5.8682,2.0939,5.6790,1.7100,6.2832,2.0047,5.9380,2.1995,
+5.9049,2.2054,6.1657,2.0089,6.0189,1.9811,6.1518,1.9981,5.9642,1.7597,5.8263,1.7927,6.0054,1.9166,5.4895,1.1259,5.6043,1.2322,5.7148,1.3083,5.7584,2.3016,6.1049,1.3413,
+6.0636,1.2558,6.0255,1.1154,5.7270,1.6299,5.5656,1.6492,6.0821,1.6123,5.6033,1.5026,6.1035,1.7037,6.0709,1.9165,5.4895,1.6622,5.5774,1.6998,5.6704,1.7309,5.8412,1.7291,
+5.9635,1.7091,6.0387,1.6870,6.2222,1.6462,5.2900,1.7803,5.5187,1.4815,6.2330,1.9876,6.0600,1.7942,5.5009,1.4882,6.1022,1.6613,5.9838,1.9151,5.6348,1.5578,6.0631,1.8765,
+5.8647,1.8214,6.1041,1.5976,6.1501,1.8480,5.1391,2.2295,5.8673,2.2160,5.4478,1.7484,5.0360,2.1319,5.3309,1.4151,5.4801,2.5501,6.2427,2.0020,5.9687,1.8305,5.4661,1.5578,
+5.7770,1.6269,5.8774,1.6290,5.8286,2.2324,5.2115,1.8889,5.9093,2.6161,5.1779,2.5258,5.5522,2.3918,6.2832,1.2653,6.2832,2.6276,6.0169,1.6231,6.0883,1.6077,6.1107,1.6001,
+5.3874,1.4545,6.0956,1.5430,null,null,null,null,null,null,null,null,5.3510,1.3675,5.6768,1.6138,6.2832,2.0650,5.9878,2.0683,6.0665,1.9509,6.1424,2.0628,
+6.2832,1.5419,5.6877,2.2993,5.2028,2.4899,5.8677,2.5903,5.8163,2.1031,6.1091,1.5739,6.1695,1.7364,6.2832,2.6014,5.5256,2.5841,5.3736,1.8666,6.0805,2.2026,6.0386,2.2535,
+5.9712,2.3025,5.9452,2.3234,5.9221,2.3381,5.9054,2.1951,5.8723,2.1886,5.8373,2.1834,5.7568,2.1348,5.4107,1.9496,6.1628,1.6722,6.1262,1.5398,6.1208,1.5482,5.9479,2.1954,
+5.2240,2.0775,6.1890,1.5396,5.7697,2.3915,6.2832,1.7669,6.2244,1.7148,6.2832,1.7074,6.1098,1.8183,6.2832,2.5490,6.2832,2.4923,5.9924,2.4757,5.5410,2.2757,5.9091,1.9524,
+5.6368,2.3364,5.6853,1.9339,5.7872,2.0061,5.5431,2.0164,5.9178,2.5362,6.0787,1.8426,5.3663,2.3012,5.6014,2.3685,5.5243,2.1841,5.1477,1.9863,5.3403,2.1711,5.1561,1.9963,
+5.6813,2.0771,6.1136,1.7640,6.0910,1.9385,6.0372,1.9502,6.1305,1.9083,6.0647,1.4702,5.9240,1.4282,5.7903,1.4191,5.6849,1.4298,5.6156,1.4564,5.6033,1.5601,5.4969,1.6388,
+5.6746,1.6527,5.7521,1.6768,5.8625,1.6826,5.9686,1.6711,6.0398,1.6524,6.0869,1.6371,5.5103,1.5973,6.0520,1.9587,6.1676,1.7903,6.1355,1.9472,6.1747,1.9732,6.1447,1.9508,
+6.0389,1.9817,6.2054,1.9829,6.2149,1.9963,6.1125,1.5951,6.1345,1.6067,6.1546,1.6195,null,null,5.6426,1.5141,6.3385,1.7726,6.9220,1.5885,6.3610,1.9829,7.6283,1.2280,
+6.5981,1.6439,6.6859,1.6500,6.7752,1.6453,6.9015,1.5996,6.5312,1.6292,6.7428,1.4500,6.6300,1.4603,6.8426,1.4594,6.8952,1.4832,6.9200,1.6213,6.9394,2.4824,6.9129,1.5629,
+7.3764,1.5129,7.0654,1.5624,6.7084,1.8715,6.4147,2.1380,6.4043,2.1915,6.5482,2.1528,6.6457,2.1701,6.5086,2.1905,6.5960,2.1921,6.8810,2.2534,6.3568,1.9609,6.3706,1.9064,
+7.0938,1.4106,6.5230,1.7329,6.5428,1.9316,6.5534,1.8997,6.9989,1.8442,6.3276,1.8306,6.8457,1.3598,6.9580,1.3745,7.3940,1.1601,6.4511,1.4149,6.5398,1.4906,6.9246,2.1885,
+7.0014,1.9797,6.4930,1.9586,6.4294,1.9839,6.8388,2.2161,6.7805,2.2120,7.0352,1.3255,6.5291,1.9502,6.6756,1.3692,6.6948,1.3189,6.7964,1.1162,7.1848,1.2573,6.7251,1.2361,
+7.1841,1.3703,7.3751,1.3139,6.4163,2.1685,6.5306,2.1738,6.6248,2.1827,6.4779,1.9710,6.8016,2.2145,6.7378,2.2324,6.7448,2.2106,6.4309,1.9472,6.5692,2.2004,6.4858,2.2026,
+6.3928,2.2050,6.4967,2.3891,6.4702,2.3582,6.4386,2.3143,6.4360,2.2818,6.4081,2.2138,6.5858,2.2076,6.6142,2.2209,6.6833,2.2671,6.7479,2.3028,6.6982,2.0939,6.8898,1.7034,
+6.6614,2.2054,6.6941,2.2207,6.4007,2.0089,6.5275,1.9817,6.4145,1.9981,6.6022,1.7597,6.7400,1.7927,6.5778,1.9226,7.0769,1.1259,6.9620,1.2322,6.8902,1.3084,6.8080,2.3016,
+6.4865,1.3399,6.5242,1.2530,6.5617,1.1106,6.8393,1.6299,7.0007,1.6492,6.4843,1.6123,6.9630,1.5026,6.4629,1.7037,6.4954,1.9165,7.1157,1.6617,6.9890,1.6998,6.8960,1.7309,
+6.7251,1.7291,6.6028,1.7091,6.5276,1.6870,6.3442,1.6462,7.2764,1.7803,7.0477,1.4815,6.3245,1.9855,6.5064,1.7942,6.8222,1.4888,6.4642,1.6613,6.5825,1.9151,6.9316,1.5578,
+6.5033,1.8765,6.7016,1.8214,6.4552,1.5937,6.4163,1.8480,7.1529,2.2264,6.7541,2.2186,7.2048,1.7482,7.6309,2.1472,7.2355,1.4151,7.0863,2.5501,6.3237,2.0020,6.5977,1.8305,
+7.1621,1.5572,6.7894,1.6269,6.6889,1.6290,6.8195,2.2624,7.3548,1.8889,6.6571,2.6161,7.4370,2.5449,7.0815,2.3956,6.5495,1.6231,6.4780,1.6077,6.4622,1.5976,7.2683,1.4502,
+6.4708,1.5430,null,null,null,null,6.8977,1.5260,6.9476,1.5403,6.8253,1.3926,6.8896,1.6138,6.5786,2.0683,6.4714,1.9491,6.4240,2.0628,6.8787,2.2993,7.3636,2.4899,
+6.6986,2.5903,6.5011,2.0850,6.4573,1.5739,6.3968,1.7364,7.0408,2.5841,7.1928,1.8666,6.5084,2.2106,6.5277,2.2535,6.5952,2.3025,6.6443,2.3381,6.6255,2.3421,6.6610,2.1951,
+6.7041,2.1977,6.7605,2.1976,6.8096,2.1348,7.1556,1.9496,6.4036,1.6722,6.4402,1.5398,6.4456,1.5482,6.6283,2.1995,7.3424,2.0775,6.3773,1.5396,6.7967,2.3915,6.3419,1.7148,
+6.4566,1.8183,6.5740,2.4757,7.0254,2.2757,6.6572,1.9524,6.9296,2.3364,6.8811,1.9339,6.7792,2.0061,7.0233,2.0164,6.6486,2.5362,6.4876,1.8426,7.2000,2.3012,6.9650,2.3685,
+7.0421,2.1841,7.4187,1.9863,7.2261,2.1711,7.4103,1.9963,6.8851,2.0771,6.4528,1.7640,6.4754,1.9385,6.4999,1.9509,6.4359,1.9083,6.5016,1.4702,6.6424,1.4282,6.7761,1.4191,
+6.8815,1.4298,6.9508,1.4564,6.9630,1.5601,7.1138,1.6366,6.8918,1.6527,6.8143,1.6768,6.7038,1.6826,6.5978,1.6711,6.5266,1.6524,6.4795,1.6371,7.0905,1.5885,6.5070,1.9592,
+6.3987,1.7903,6.4295,1.9478,6.3777,1.9664,6.4326,1.9536,6.5109,1.9813,6.3502,1.9813,6.3515,1.9963,6.4538,1.5951,6.4319,1.6067,6.4118,1.6195,6.9191,1.5507,6.9238,1.5141,
+null,null,null,null,null,null,null,null,5.8834,1.6300,null,null,6.9352,1.5777,null,null,null,null,6.7320,1.6283];
 // the table is the avatar's own anatomy (its right eye is 33, at −x); the
 // model is the user's MIRROR (their right eye lands at +x): mirror θ about 2π
 const lmTP=i=>LM_TP[i*2]==null?null:[4*Math.PI-LM_TP[i*2],LM_TP[i*2+1]];
@@ -1316,6 +1446,12 @@ function buildAvatar(){
   const wp=(p)=>{ if(!field) return p.slice(); const d=field(p[0],p[1],p[2]); return [p[0]+d[0],p[1]+d[1],p[2]+d[2]]; };
 
   const nrm=computeNormals(H.pos,H.idx,H.nv);
+  // the grid's wrap seam (down the back of the head) is two columns of the
+  // same vertices, each with half the faces: give both the whole (a shell
+  // offset along them opened a crack down the back of the hair)
+  for(let iv=0;iv<=H.NP;iv++){ const a=iv*(H.NA+1), b=a+H.NA;
+    for(let k=0;k<3;k++) nrm[a*3+k]=nrm[b*3+k]=nrm[a*3+k]+nrm[b*3+k];
+    const l=Math.hypot(nrm[a*3],nrm[a*3+1],nrm[a*3+2])||1; for(let k=0;k<3;k++){ nrm[a*3+k]/=l; nrm[b*3+k]=nrm[a*3+k]; } }
   // the photographs: their median skin tones the parts they never saw
   const photo=LIKE.photo?bakePhoto(H,nrm):null;
   if(photo&&photo.skinLin) COL.skin=linToHSL(photo.skinLin);
@@ -1332,7 +1468,7 @@ function buildAvatar(){
   if(ID.mouth&&LIKE.mouth){ const um=mouthMorphs(H,si,sw,wp(JAW_PIVOT)); if(um){ Object.assign(morphs,um); AV.mouth=Object.keys(um); } }
 
   const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.BufferAttribute(H.pos,3));
+  geo.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(H.pos),3));   // (its own copy: the blendshapes are blended into it, applyMorphs)
   geo.setAttribute('normal',new THREE.BufferAttribute(nrm,3));
   geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
   geo.setAttribute('skinIndex',new THREE.BufferAttribute(si,4));
@@ -1344,15 +1480,15 @@ function buildAvatar(){
     geo.setAttribute('photoW',new THREE.BufferAttribute(pw,3)); geo.setAttribute('photoG',new THREE.BufferAttribute(pg,3)); }
   geo.setIndex(H.idx.length>65535?new THREE.BufferAttribute(new Uint32Array(H.idx),1)
                                  :new THREE.BufferAttribute(new Uint16Array(H.idx),1));
-  geo.morphAttributes.position=[];
+  // Blendshapes are blended on the CPU each frame (applyMorphs), not by
+  // three's morph texture: with seventeen targets the GPU shader took a
+  // software renderer 15 s to compile, and the tiles' bed compiled it again.
+  // Four thousand vertices by the shapes in play is nothing for the CPU,
+  // and the tiles already blend theirs that way. The geometry carries no
+  // morphAttributes; the mesh keeps its morphTargetInfluences array.
+  AV.morphBase=Float32Array.from(H.pos); AV.morphs=[]; AV.morphIdx={}; AV.morphRest=false;
   AV.morphIdx={};
-  const order=MORPH_ORDER;
-  order.forEach((k,i)=>{
-    const d=morphs[k], t=new Float32Array(H.nv*3);
-    for(let j=0;j<H.nv*3;j++) t[j]=H.pos[j]+d[j];
-    geo.morphAttributes.position.push(new THREE.BufferAttribute(t,3));
-    AV.morphIdx[k]=i;
-  });
+  MORPH_ORDER.forEach((k,i)=>{ AV.morphs.push(morphs[k]); AV.morphIdx[k]=i; });
 
   // ── skeleton ──────────────────────────────────────────────────
   // Bone WORLD positions (canonical head space). Locals are derived so
@@ -1370,6 +1506,7 @@ function buildAvatar(){
   const eL=new THREE.Bone(); eL.position.fromArray(sub(W.eL,W.head)); head.add(eL);
   const eR=new THREE.Bone(); eR.position.fromArray(sub(W.eR,W.head)); head.add(eR);
   const bones=[root,neck,head,jaw,eL,eR];
+  AV.jawBind=jaw.position.clone();
 
   const grp=new THREE.Group();
   grp.add(root);
@@ -1386,6 +1523,7 @@ function buildAvatar(){
     :new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.62,metalness:0.0,specularIntensity:LIKE.spec,side:THREE.FrontSide});
   if(tex) photoSkin(skinMat,photo.front.tex.map(t=>photoTexture(t.sh)),photo.front.tex.map(t=>{ const g=G||[1,1,1]; return [g[0]*t.gain[0],g[1]*t.gain[1],g[2]*t.gain[2]]; }),!!LIKE.unlit);
   const mesh=new THREE.SkinnedMesh(geo,skinMat);
+  mesh.morphTargetInfluences=new Array(MORPH_ORDER.length).fill(0);
   mesh.frustumCulled=false;
   grp.add(mesh);
   mesh.bind(skel);
@@ -1422,6 +1560,10 @@ function buildAvatar(){
     sk.userData.tesseraShared=true;
     bone.add(sk);
   }
+  // ── eyelashes: fans of lashes along each lid margin, on the head bone (the
+  // eye bones turn with the gaze; lids don't), the upper ones swung down with
+  // a blink by the puppet ──
+  AV.lashes=buildLashes(H,nrm,COL,W,head);
 
   // ── mouth cavity + teeth (positions are bone-local, hence the offsets) ──
   const toHead=w=>sub(w,W.head), toJaw=w=>sub(w,W.jaw);
@@ -1495,9 +1637,8 @@ function disposeTree(o){
 function buildBust(H,COL,skel){
   const SEC=[[-0.300,0.150,0.078,-0.010],[-0.262,0.146,0.075,-0.010],
     [-0.228,0.132,0.070,-0.012],[-0.202,0.101,0.063,-0.014],
-    [-0.182,0.072,0.056,-0.016],[-0.164,0.052,0.049,-0.018],
-    [-0.146,0.043,0.044,-0.019],[-0.126,0.039,0.041,-0.020],
-    [-0.106,0.038,0.034,-0.030],[-0.090,0.036,0.030,-0.034]];   // the top two ride inside the head: kept behind the mouth's space (their fronts had shown through an open mouth)
+    [-0.182,0.072,0.056,-0.016],[-0.165,0.0526,0.0496,-0.018],
+    [-0.155,0.0504,0.0474,-0.018]];                   // its top passes just inside the sculpt's neck (whose foot is at -0.162, 0.052 wide): the surfaces cross, no edge shows
   const NR=48, NS=SEC.length;
   const nv=NR*NS, pos=new Float32Array(nv*3), col=new Float32Array(nv*3);
   const si=new Uint16Array(nv*4), sw=new Float32Array(nv*4), idx=[];
@@ -1667,8 +1808,13 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   const NA=H.NA, NP=H.NP, nv=(NA+1)*(NP+1), P=H.pos;
   // the head's own silhouette (each side) and top, from the conformed mesh
   const BIN=0.002, Y0=-0.22, NB=Math.ceil(0.44/BIN), bin=y=>clamp(Math.floor((y-Y0)/BIN),0,NB-1);
-  const headPos=new Float32Array(NB).fill(-1), headNeg=new Float32Array(NB).fill(1); let headTop=-1;
-  for(let i=0;i<nv;i++){ const b=bin(P[i*3+1]); headPos[b]=Math.max(headPos[b],P[i*3]); headNeg[b]=Math.min(headNeg[b],P[i*3]); headTop=Math.max(headTop,P[i*3+1]); }
+  const headPos=new Float32Array(NB).fill(-1), headNeg=new Float32Array(NB).fill(1), headBack=new Float32Array(NB).fill(1); let headTop=-1;
+  for(let i=0;i<nv;i++){ const b=bin(P[i*3+1]); headPos[b]=Math.max(headPos[b],P[i*3]); headNeg[b]=Math.min(headNeg[b],P[i*3]); headBack[b]=Math.min(headBack[b],P[i*3+2]); headTop=Math.max(headTop,P[i*3+1]); }
+  // and behind: how far the hair stands off the back of the head at each
+  // height, from the side views' profile (the front view can't see it; the
+  // sides' own thickness stood in for it and flattened every head's back)
+  const hBack=new Float32Array(NB).fill(NaN);
+  for(const [y,zb] of (F.prof||[])){ const b=bin(y); hBack[b]=isNaN(hBack[b])?zb:Math.min(hBack[b],zb); }
   // the hair's silhouette per side, binned the same way; thickness = how far it
   // stands off the head there (gaps filled from the nearest measured height)
   const hPos=new Float32Array(NB).fill(NaN), hNeg=new Float32Array(NB).fill(NaN);
@@ -1678,7 +1824,7 @@ function buildHairFit(H,nrm,COL,F,skinCol){
     let last=NaN; for(let b=NB-1;b>=0;b--){ if(!isNaN(t[b])) last=t[b]; else if(!isNaN(last)) t[b]=last; }   // up to the crown
     const sm=new Float32Array(NB); for(let b=0;b<NB;b++){ let a=0,n=0; for(let k=-3;k<=3;k++){ const v=t[clamp(b+k,0,NB-1)]; if(!isNaN(v)){ a+=v; n++; } } sm[b]=n?a/n:NaN; }
     return sm; };
-  const tPos=thick(hPos,headPos,1), tNeg=thick(hNeg,headNeg,-1);
+  const tPos=thick(hPos,headPos,1), tNeg=thick(hNeg,headNeg,-1), tBack=thick(hBack,headBack,-1);
   const tTop=clamp((F.top!=null?F.top:headTop+0.008)-headTop,0.002,0.08), tFront=Math.min(0.007,tTop);
   // the front hairline, by model x (extended level past its ends, then down the temples)
   const HL=F.hairline.slice().sort((a,b)=>a[0]-b[0]);
@@ -1699,7 +1845,7 @@ function buildHairFit(H,nrm,COL,F,skinCol){
     cov[i]=smoothstep(-0.004,0.016,(y-line)/Math.sqrt(1+sl*sl));
     const nx=nrm[i*3],ny=nrm[i*3+1],nz=nrm[i*3+2], b=bin(y);
     let side=x>0?tPos[b]:tNeg[b]; if(isNaN(side)) side=0.004;
-    const tb=Math.max(isNaN(tPos[b])?0:tPos[b],isNaN(tNeg[b])?0:tNeg[b],0.004);
+    const tb=isNaN(tBack[b])?Math.max(isNaN(tPos[b])?0:tPos[b],isNaN(tNeg[b])?0:tNeg[b],0.004):tBack[b];
     t[i]=nx*nx*side+(ny>0?ny*ny*tTop:ny*ny*side)+(nz>0?nz*nz*tFront:nz*nz*tb);
   }
   // even the thickness over the scalp's own grid
@@ -1710,7 +1856,17 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   const base=F.colorLin||[0,1,2].map(k=>srgb2lin(new THREE.Color().setHSL(COL.hair.h,COL.hair.s,COL.hair.l).toArray()[k]));
   // the photos that saw hair: each view's camera and mask
   const VIEWS=['center','left','right'].map(id=>{ const sh=ID.shots&&ID.shots[id]; if(!sh) return null; const m=hairMask(sh); if(!m) return null;
-    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); return cam?{sh,m,...cam}:null; }).filter(Boolean);
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); return cam?{id,sh,m,...cam,orient:strandField(sh,m)}:null; }).filter(Boolean);
+  // the strands' direction at a point: each view's orientation where it saw
+  // hair, brought into the model through the view's own camera, in the shell's
+  // surface; one sign (down the head, else toward +x) so neighbours agree
+  const flowAt=(x,y,z,nx,ny,nz)=>{ let ax=0,ay=0,w=0;
+    for(const V of VIEWS){ const f=nx*V.dir[0]+ny*V.dir[1]+nz*V.dir[2]; if(f<0.25||!V.orient) continue; const [u,v]=V.project(x,y,z); const o=V.orient(u,v); if(!o) continue;
+      const p0=V.back(u,v,z), pu=V.back(u+1,v,z), pv=V.back(u,v+1,z), c=Math.cos(o[0]), sn=Math.sin(o[0]);
+      let dx=c*(pu[0]-p0[0])+sn*(pv[0]-p0[0]), dy=c*(pu[1]-p0[1])+sn*(pv[1]-p0[1]); const l=Math.hypot(dx,dy)||1; dx/=l; dy/=l;
+      if(dy>0.2||(Math.abs(dy)<=0.2&&dx<0)){ dx=-dx; dy=-dy; }
+      const k=f*f*o[1]; ax+=dx*k; ay+=dy*k; w+=k; }
+    if(w<0.05) return null; const dn=ax*nx+ay*ny, rx=ax-dn*nx, ry=ay-dn*ny, rz=-dn*nz, l=Math.hypot(rx,ry,rz)||1; return [rx/l,ry/l,rz/l]; };
   const photoCol=(x,y,z,nx,ny,nz)=>{ let a=[0,0,0], w=0;
     for(const V of VIEWS){ const f=nx*V.dir[0]+ny*V.dir[1]+nz*V.dir[2]; if(f<0.25) continue;
       const [u,v]=V.project(x,y,z);
@@ -1724,10 +1880,12 @@ function buildHairFit(H,nrm,COL,F,skinCol){
     return c.map((v,j)=>Math.min(1,v)*G[j]); };
   const pos=new Float32Array(nv*3), col=new Float32Array(nv*3), si=new Uint16Array(nv*4), sw=new Float32Array(nv*4);
   const cover=H.hairCover=new Float32Array(nv);
+  const FL=[], defFlow=(nx,ny,nz)=>{ let fx=-ny*nx, fy=-1+ny*ny, fz=-ny*nz; const l=Math.hypot(fx,fy,fz)||1; return [fx/l,fy/l,fz/l]; };   // down the head, in the surface
   for(let i=0;i<nv;i++){
     const c=cov[i], th=t[i]*c-0.0008*(1-c);                 // the edge sinks just under the skin
     const x=P[i*3]+nrm[i*3]*th, y=P[i*3+1]+nrm[i*3+1]*th, z=P[i*3+2]+nrm[i*3+2]*th;
     pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z; cover[i]=smoothstep(0.1,0.6,c);
+    FL.push(...(flowAt(x,y,z,nrm[i*3],nrm[i*3+1],nrm[i*3+2])||defFlow(nrm[i*3],nrm[i*3+1],nrm[i*3+2])));
     const cc=colorAt(x,y,z,nrm[i*3],nrm[i*3+1],nrm[i*3+2],0);
     // where the shell thins to nothing it takes the skin's colour beneath, so
     // the hairline reads as a soft change of colour, not the mesh's edge
@@ -1765,6 +1923,7 @@ function buildHairFit(H,nrm,COL,F,skinCol){
         const x=x0*k+sway, z=(z0+0.012)*k-0.012+sway*0.5;
         Pp.push(x,y,z);
         const rl=Math.hypot(x,z+0.012)||1; C.push(...colorAt(x,y,z,x/rl,0,(z+0.012)/rl,r*3));
+        FL.push(...(flowAt(x,y,z,x/rl,0,(z+0.012)/rl)||[0,-1,0]));
         const wh=1-cl01((tt-0.25)/0.75)*0.75, wn=(1-wh)*0.6;
         SI.push(2,1,0,0); SW.push(wh,wn,1-wh-wn,0);
       }
@@ -1778,14 +1937,49 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(C),3));
   g.setAttribute('skinIndex',new THREE.BufferAttribute(new Uint16Array(SI),4));
   g.setAttribute('skinWeight',new THREE.BufferAttribute(new Float32Array(SW),4));
+  g.setAttribute('flow',new THREE.BufferAttribute(new Float32Array(FL),3));
   g.setIndex(idx.length>65535?new THREE.BufferAttribute(new Uint32Array(idx),1):new THREE.BufferAttribute(new Uint16Array(idx),1));
   g.computeVertexNormals();
   // the photo's hair already holds its own highlights: a full sheen of the room
   // on top turned dark hair silver
-  const m=new THREE.SkinnedMesh(g,new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.55,metalness:0,
-    specularIntensity:HAIR_SPEC,side:THREE.DoubleSide}));
+  const mat=new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.55,metalness:0,specularIntensity:HAIR_SPEC,side:THREE.DoubleSide});
+  // the photographs themselves on the hair, as on the face: its strands at the
+  // camera's own resolution, each view where it saw hair squarely (the vertex
+  // colour, a 3 mm average, stays beneath — the tesserae read that)
+  if(LIKE.texture&&VIEWS.length){
+    const n=Pp.length/3, Nn=g.attributes.normal.array, T=VIEWS.slice(0,3), pw=new Float32Array(n*3), pg=new Float32Array(n*3).fill(1), VG=(AV.photo&&AV.photo.viewGain)||{};
+    T.forEach((V,k)=>{ const uv=new Float32Array(n*2);
+      for(let i=0;i<n;i++){ const x=Pp[i*3],y=Pp[i*3+1],z=Pp[i*3+2], [u,v]=V.project(x,y,z); uv[i*2]=u/V.sh.W; uv[i*2+1]=v/V.sh.H;
+        const f=Nn[i*3]*V.dir[0]+Nn[i*3+1]*V.dir[1]+Nn[i*3+2]*V.dir[2], X=Math.round(u), Y=Math.round(v);
+        const inHair=X>=1&&Y>=1&&X<V.sh.W-1&&Y<V.sh.H-1&&V.m[Y*V.sh.W+X]>=128;
+        pw[i*3+k]=inHair?smoothstep(0.3,0.7,f)*(i<nv?smoothstep(0.15,0.5,cov[i]):1):0; }
+      g.setAttribute('photoUv'+k,new THREE.BufferAttribute(uv,2)); });
+    for(let k=T.length;k<3;k++) g.setAttribute('photoUv'+k,new THREE.BufferAttribute(new Float32Array(n*2),2));
+    g.setAttribute('photoW',new THREE.BufferAttribute(pw,3)); g.setAttribute('photoG',new THREE.BufferAttribute(pg,3));
+    photoSkin(mat,T.map(V=>photoTexture(V.sh)),T.map(V=>{ const vg=VG[V.id]||[1,1,1]; return [G[0]*vg[0],G[1]*vg[1],G[2]*vg[2]]; }),false);
+  }
+  const m=new THREE.SkinnedMesh(g,mat);
   m.frustumCulled=false;
   return m;
+}
+// The strands' orientation across a photograph: the structure tensor of its
+// luminance (a gradient's outer product, blurred over ~7 px), read where the
+// mask says hair. Returns (u, v) → [angle along the strand, coherence], null
+// where nothing runs. A strand is dark against light or the reverse, so its
+// direction is the gradient's normal.
+function strandField(sh,m){
+  const W=sh.W,H=sh.H,px=sh.px,N=W*H, L=new Float32Array(N);
+  for(let i=0;i<N;i++) L[i]=0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
+  const Jxx=new Float32Array(N),Jxy=new Float32Array(N),Jyy=new Float32Array(N);
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){ const i=y*W+x; if(m[i]<64) continue; const gx=L[i+1]-L[i-1], gy=L[i+W]-L[i-W]; Jxx[i]=gx*gx; Jxy[i]=gx*gy; Jyy[i]=gy*gy; }
+  const blur=A=>{ const R=3, T=new Float32Array(N), O=new Float32Array(N);
+    for(let y=0;y<H;y++){ let s=0; for(let x=0;x<W+R;x++){ if(x<W) s+=A[y*W+x]; if(x>2*R) s-=A[y*W+x-2*R-1]; if(x>=R) T[y*W+x-R]=s/(2*R+1); } }
+    for(let x=0;x<W;x++){ let s=0; for(let y=0;y<H+R;y++){ if(y<H) s+=T[y*W+x]; if(y>2*R) s-=T[(y-2*R-1)*W+x]; if(y>=R) O[(y-R)*W+x]=s/(2*R+1); } }
+    return O; };
+  const bxx=blur(blur(Jxx)), bxy=blur(blur(Jxy)), byy=blur(blur(Jyy));
+  return (u,v)=>{ const X=Math.round(u), Y=Math.round(v); if(X<0||Y<0||X>=W||Y>=H) return null; const i=Y*W+X, a=bxx[i], b=bxy[i], c=byy[i];
+    const coh=Math.sqrt((a-c)*(a-c)+4*b*b)/(a+c+1e-6); if(a+c<4||coh<0.2) return null;
+    return [0.5*Math.atan2(2*b,a-c)+Math.PI/2, coh]; };
 }
 const HAIR_SPEC=0.3;
 
@@ -1806,6 +2000,17 @@ function gestureOffset(now){
   return {y:0,p:6*e,r:Math.sin(t*6)*5*e,bob:Math.abs(Math.sin(t*7))*0.02*e,jaw:0.25*e,br:0.6*e};
 }
 
+// the head's blendshapes, blended into its geometry (see buildAvatar); the
+// tiles' bed shares that geometry, so it follows
+function applyMorphs(){
+  const m=AV.head; if(!m||!AV.morphs) return;
+  const inf=m.morphTargetInfluences, P=m.geometry.attributes.position, A=P.array, B=AV.morphBase, n=A.length;
+  let any=false; for(let k=0;k<inf.length;k++) if(inf[k]){ any=true; break; }
+  if(!any&&AV.morphRest) return;
+  A.set(B);
+  for(let k=0;k<inf.length;k++){ const w=inf[k]; if(!w) continue; const D=AV.morphs[k]; for(let j=0;j<n;j++) A[j]+=w*D[j]; }
+  P.needsUpdate=true; AV.morphRest=!any;
+}
 function puppet(now,dt){
   if(!AV.built) return;
   const B=AV.bones, g=gestureOffset(now), R=Math.PI/180;
@@ -1821,6 +2026,7 @@ function puppet(now,dt){
   // jaw is a real hinge; visemes and gestures add to it
   const jaw=cl01((REM.bs.jawOpen||0)+g.jaw);
   B.jaw.rotation.x=jaw*0.38*(ID.jawGain||1);
+  jawSlide(B,jaw*(ID.jawGain||1));
 
   // gaze
   B.eL.rotation.set(REM.gy*0.32,-REM.gx*0.42,0);
@@ -1842,10 +2048,13 @@ function puppet(now,dt){
   set('browDown',REM.bs.browDown);
   set('blinkL',Math.max(REM.bs.blinkL,auto));
   set('blinkR',Math.max(REM.bs.blinkR,auto));
+  if(AV.lashes){ const bl=[cl01(Math.max(REM.bs.blinkL,auto)),cl01(Math.max(REM.bs.blinkR,auto))];   // the upper lashes ride the closing lid
+    AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=(bl[k]||0)*0.85; }); }
   set('pucker',REM.bs.pucker);
   set('mouthWide',Math.max(REM.wide||0,REM.bs.wide||0));
   set('funnel',REM.bs.funnel||0);
   set('press',REM.bs.press||0);
+  for(const k of ['upperUp','lowerDown','rollIn','shrug','dimple','shiftL','shiftR']) set(k,REM.bs[k]||0);
 }
 
 /* ═══ §7 CAPTURE — MediaPipe → AvatarState ═══════════════════════════ */
@@ -1930,10 +2139,21 @@ const BS_MAP={
   funnel:B=>B.mouthFunnel*1.3,
   press:B=>(B.mouthPressLeft+B.mouthPressRight)/2*1.6,
   wide:B=>(B.mouthStretchLeft+B.mouthStretchRight)/2*1.4,
+  // and the rest of a talking mouth: the upper lip lifted off the teeth, the
+  // lower drawn down, the lips rolled in over the teeth (f, v), the lower lip
+  // shrugged up, the corners dimpled back, the whole mouth slid to a side
+  upperUp:B=>(B.mouthUpperUpLeft+B.mouthUpperUpRight)/2*1.5,
+  lowerDown:B=>(B.mouthLowerDownLeft+B.mouthLowerDownRight)/2*1.5,
+  rollIn:B=>Math.max(B.mouthRollUpper,B.mouthRollLower)*1.4,
+  shrug:B=>Math.max(B.mouthShrugLower,B.mouthShrugUpper*0.7)*1.4,
+  dimple:B=>(B.mouthDimpleLeft+B.mouthDimpleRight)/2*1.6,
+  shiftL:B=>B.mouthRight*1.5, shiftR:B=>B.mouthLeft*1.5,          // (the subject's right is the model's +x, as with the blinks)
 };
 const BS_NAMES=['jawOpen','mouthSmileLeft','mouthSmileRight','mouthFrownLeft','mouthFrownRight','browInnerUp',
   'browOuterUpLeft','browOuterUpRight','browDownLeft','browDownRight','eyeBlinkLeft','eyeBlinkRight','mouthPucker',
-  'mouthFunnel','mouthPressLeft','mouthPressRight','mouthStretchLeft','mouthStretchRight'];
+  'mouthFunnel','mouthPressLeft','mouthPressRight','mouthStretchLeft','mouthStretchRight','mouthUpperUpLeft','mouthUpperUpRight',
+  'mouthLowerDownLeft','mouthLowerDownRight','mouthRollUpper','mouthRollLower','mouthShrugUpper','mouthShrugLower','mouthDimpleLeft',
+  'mouthDimpleRight','mouthLeft','mouthRight'];
 const _m4=new THREE.Matrix4(), _eu=new THREE.Euler();
 function captureFrame(lm,dt,ex){
   CAP.latest=lm;
@@ -2626,7 +2846,7 @@ function mouthMorphs(H,si,sw,jawPivot){
 // features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
 // held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
 const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003,
-  mouthAnchors:true,chinAnchors:false,perioralSkip:true,chinLift:0};
+  mouthAnchors:true,chinAnchors:false,perioralSkip:false,chinLift:0};
   // Measured (front view, ΔE at 30 ppd, lower is closer; Lee Perry-Smith /
   // the portrait): the tracker's anchors throughout 13.2 / 22.4 but a creased
   // lip; the mouth and chin both on the sculpt 14.3 / 23.1 at the best chin
@@ -2676,10 +2896,10 @@ let CONFORM_FEAT=null, CONFORM_CACHE=null;
 // bow), the inner contour on the slit, the midline down to the menton.
 // Signed x: the subject's right (61's side) is +x.
 function mouthSpecs(P){
-  const {MY,LW,CHY}=P, hU=0.0108*P.S.lipFull, hL=0.0168*P.S.lipFull, sl=LW*0.9;   // sl: the slit's half-width
+  const {MY,LW,CHY}=P, hU=0.0090*P.S.lipFull, hL=0.0110*P.S.lipFull, sl=LW*0.9;   // the vermilion heights (the sculpt's); sl: the slit's half-width
   const out=[[61,LW,MY],[291,-LW,MY],[0,0,MY+hU],[17,0,MY-hL],[13,0,MY+0.0022],[14,0,MY-0.0026],
     [11,0,MY+0.55*hU],[12,0,MY+0.3*hU],[15,0,MY-0.45*hL],[16,0,MY-0.75*hL],
-    [18,0,MY-hL-0.004],[200,0,MY-hL-0.009],[199,0,MY-hL-0.014],[175,0,CHY+0.0085+CONFORM.chinLift],[152,0,CHY+0.0025+CONFORM.chinLift]];
+    [18,0,MY-hL-0.0035],[200,0,MY-hL-0.010],[199,0,MY-hL-0.016],[175,0,CHY+0.0085+CONFORM.chinLift],[152,0,CHY+0.0025+CONFORM.chinLift]];
   const pairs=[ // [right id, left id, x fraction, y]
     [185,409,0.78*LW,MY+0.35*hU],[40,270,0.60*LW,MY+0.70*hU],[39,269,0.40*LW,MY+0.92*hU],[37,267,0.20*LW,MY+hU],
     [146,375,0.80*LW,MY-0.35*hL],[91,321,0.62*LW,MY-0.70*hL],[181,405,0.42*LW,MY-0.90*hL],[84,314,0.20*LW,MY-hL],
@@ -2749,6 +2969,7 @@ function fitOutline(front,S0,skip=null){
   const width=S=>{ const P=derived(S), best=new Float64Array(tgt.length); chinM=1;
     for(let i=0;i<=NT;i++){ const th=Math.PI*i/NT; let px=0,py=0;
       for(let j=0;j<=NPh;j++){ sculptPoint(th,Math.PI*j/NPh,S,P,o); const x=o[0], y=o[1];
+        if(o[7]>=0) break;                                            // the neck below the jaw's border is no part of the face's outline
         if(i===0&&o[2]>0.02) chinM=Math.min(chinM,y);
         if(j) for(let k=0;k<tgt.length;k++){ const t=tgt[k][0];
           if((py-t)*(y-t)<=0&&py!==y){ const xx=px+(x-px)*(t-py)/(y-py); if(xx>best[k]) best[k]=xx; } }
@@ -3034,7 +3255,7 @@ function polyDist(x,y,P){
 // whatever the rig; turn the head and the rig's light moves across it.
 function shadeProbe(H,nrm,V,W,Hh){
   const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.BufferAttribute(H.pos,3));
+  geo.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(H.pos),3));   // (its own copy: the blendshapes are blended into it, applyMorphs)
   geo.setAttribute('normal',new THREE.BufferAttribute(nrm,3));
   geo.setIndex(H.idx.length>65535?new THREE.BufferAttribute(new Uint32Array(H.idx),1):new THREE.BufferAttribute(new Uint16Array(H.idx),1));
   const A=0.35, mat=new THREE.MeshPhysicalMaterial({color:new THREE.Color(A,A,A),roughness:0.62,metalness:0,specularIntensity:LIKE.spec});
@@ -3201,6 +3422,18 @@ function bakePhoto(H,nrm){
     mask[v]=reach[v]*smoothstep(0.01,0.08,wsum[v]);
     if(mask[v]>0.95&&H.front[v]>0.6&&H.region[v*4]<0.1&&H.region[v*4+1]<0.1&&H.region[v*4+2]<0.2) skin.push(v);
   }
+  // the neck: the front photo sees its top under the chin, but there it holds
+  // the chin's shadow, a collar or the background (a dark band ran under
+  // every chin). Its colour counts only where it reads as this person's skin
+  // — the face's chroma, and not much darker than the face
+  if(skin.length>40){
+    const med=k=>{ const a=skin.map(v=>out[v*3+k]).sort((x,y)=>x-y); return a[a.length>>1]; };
+    const fm=[med(0),med(1),med(2)], ch=c=>{ const t=c[0]+c[1]+c[2]||1e-6; return [c[0]/t,c[1]/t]; }, fc=ch(fm), Lf=lumY(...fm);
+    for(let v=0;v<nv;v++){ if(H.canon[v*3+1]>=H.P.CHY+0.006||wsum[v]<1e-4) continue;
+      const c=[out[v*3],out[v*3+1],out[v*3+2]], cc=ch(c), d=Math.hypot(cc[0]-fc[0],cc[1]-fc[1]);
+      const ok=smoothstep(0.045,0.02,d)*smoothstep(0.45,0.7,lumY(...c)/Math.max(Lf,1e-3));
+      for(let k=0;k<3;k++) out[v*3+k]=fm[k]+(c[k]-fm[k])*ok; mask[v]*=ok; }
+  }
   // the skin the photograph never saw (skull, neck, ears) takes the face's
   // own median — so the seam at the edge of the photo isn't a colour step
   let skinLin=null;
@@ -3302,13 +3535,24 @@ function fitHair(){
   const lowest=(xa,xb)=>{ let low=null; for(let y=0;y<=y1;y++){ let r=0,best=0; for(let x=xa;x<=xb;x++){ r=hair[y*W+x]?r+1:0; if(r>best) best=r; } if(best>=run) low=y; } return low; };
   const lowImgL=lowest(x0,Math.floor(edgeL)), lowImgR=lowest(Math.ceil(edgeR),x1);
   const lenAt=(y,x)=>y==null?null:+back(x,y,zS)[1].toFixed(4);
+  // the profile, from the side views: where the hair's silhouette stands at
+  // each height, read on the head's own mid-sagittal plane (x = 0) — how far
+  // it rises above and stands behind the head, which the front view can't say
+  const prof=[];
+  for(const id of ['left','right']){ const sv=ID.shots&&ID.shots[id]; if(!sv) continue; const Ms=hairMask(sv); if(!Ms) continue;
+    const cs=fitCamera(ID.lm,sv.lm,sv.W,sv.H,id); if(!cs) continue; const Ws=sv.W, Hs=sv.H, Ps=i=>[sv.lm[i].x*Ws,sv.lm[i].y*Hs];
+    const fw=Math.hypot(Ps(234)[0]-Ps(454)[0],Ps(234)[1]-Ps(454)[1])||faceW, cxs=(Ps(234)[0]+Ps(454)[0])/2, ua=Math.max(0,Math.floor(cxs-2.5*fw)), ub=Math.min(Ws-1,Math.ceil(cxs+2.5*fw));
+    const sag=(u,v)=>{ const p0=cs.back(u,v,0), p1=cs.back(u,v,0.1), dx=p1[0]-p0[0]; if(Math.abs(dx)<1e-5) return null; const t=-p0[0]/dx; return [p0[1]+(p1[1]-p0[1])*t, 0.1*t]; };   // the ray's [y, z] where it crosses x = 0
+    for(let v=0;v<Hs;v+=2){ let lo=-1,hi=-1; for(let u=ua;u<=ub;u++) if(Ms[v*Ws+u]>=128){ if(lo<0) lo=u; hi=u; }
+      if(lo<0||hi-lo<3) continue; const a=sag(lo,v), b=sag(hi+1,v); if(!a||!b) continue;
+      prof.push([+((a[0]+b[0])/2).toFixed(4),+Math.min(a[1],b[1]).toFixed(4),+Math.max(a[1],b[1]).toFixed(4)]); } }
   // colour: the confident hair, less its darkest tenth and brightest twentieth
   const cs=[]; for(let i=0;i<N;i+=3) if(hair[i]&&M[i]>200) cs.push([srgb2lin(sh.px[i*4]/255),srgb2lin(sh.px[i*4+1]/255),srgb2lin(sh.px[i*4+2]/255)]);
   cs.sort((a,b)=>lumY(...a)-lumY(...b));
   const core=cs.slice(Math.floor(cs.length*0.1),Math.ceil(cs.length*0.95)), med=k=>{ const v=core.map(c=>c[k]).sort((a,b)=>a-b); return v[v.length>>1]; };
   const colorLin=core.length>30?[med(0),med(1),med(2)]:null;
   // image left is the model's +x
-  return {bald,area,top:top==null?null:+back(cx,top,zS)[1].toFixed(4),rows,hairline,
+  return {bald,area,top:top==null?null:+back(cx,top,zS)[1].toFixed(4),rows,prof,hairline,
     lenPos:lenAt(lowImgL,edgeL),lenNeg:lenAt(lowImgR,edgeR),colorLin,mask:hair,W,H};
 }
 // the photograph as a texture (kept per shot, so rebuilds reuse the upload)
@@ -3438,14 +3682,14 @@ function renderShot(id){
   const B=AV.bones, saved=Object.values(B).map(b=>[b,b.rotation.clone(),b.position.clone()]);
   const inf=AV.head.morphTargetInfluences, infSaved=Array.from(inf), rootRot=AV.root.rotation.clone();
   for(const [b] of saved) b.rotation.set(0,0,0);
-  B.root.position.y=-0.30; inf.fill(0); AV.root.rotation.set(0,0,0);
+  B.root.position.y=-0.30; inf.fill(0); applyMorphs(); AV.root.rotation.set(0,0,0);
   for(const b of TES.beds) if(b.morphTargetInfluences) b.morphTargetInfluences.fill(0);
   AV.root.updateMatrixWorld(true); driveTesserae();
   scene.background=null; renderer.setRenderTarget(rt); renderer.setClearColor(0x000000,0); renderer.clear();
   renderer.render(scene,C); renderer.readRenderTargetPixels(rt,0,0,W,H,px);
   renderer.setRenderTarget(null); rt.dispose(); scene.background=bg; renderer.setClearColor(prevColor,prevAlpha);
   for(const [b,r,p] of saved){ b.rotation.copy(r); b.position.copy(p); }
-  infSaved.forEach((v,k)=>inf[k]=v); AV.root.rotation.copy(rootRot); AV.root.updateMatrixWorld(true); driveTesserae();
+  infSaved.forEach((v,k)=>inf[k]=v); applyMorphs(); AV.root.rotation.copy(rootRot); AV.root.updateMatrixWorld(true); driveTesserae();
   const av=new Uint8ClampedArray(W*H*4), cover=new Uint8Array(W*H);
   for(let y=0;y<H;y++) for(let x=0;x<W;x++){ const i=(y*W+x)*4, j=((H-1-y)*W+(W-1-x))*4, a=px[j+3]/255;
     for(let k=0;k<3;k++) av[i+k]=px[j+k]*a+sh.px[i+k]*(1-a); av[i+3]=255; cover[y*W+x]=a>0.99?1:0; }
@@ -3588,20 +3832,20 @@ setInterval(()=>{
 
 /* ── visemes: text puppets the mouth on the receiving side ── */
 const VIS={a:[.85,0,.2],e:[.5,0,.55],i:[.3,0,.7],o:[.72,.55,0],u:[.4,.85,0],y:[.3,.1,.4],
-  m:[.02,.25,0],b:[.02,.15,0],p:[.02,.15,0],f:[.12,0,.3],v:[.12,0,.3],w:[.3,.75,0],
+  m:[.02,.25,0],b:[.02,.15,0],p:[.02,.15,0],f:[.12,0,.3,.7],v:[.12,0,.3,.7],w:[.3,.75,0],
   s:[.14,0,.5],z:[.14,0,.5],r:[.3,.25,.1],l:[.36,0,.3],t:[.2,0,.35],d:[.2,0,.35],
   n:[.15,.05,.3],k:[.3,0,.2],g:[.3,0,.2],h:[.35,0,.15],c:[.25,0,.35],j:[.28,.2,.2]};
 function startVisemes(text,pros,aro){
   const tr=[]; let t=0;
   const cps=13*(0.85+(aro||0.3)*0.5);
   for(const ch of text.toLowerCase()){
-    let j=0.2,p=0,w=0.3,d=1/cps;
+    let j=0.2,p=0,w=0.3,r=0,d=1/cps;
     if(ch===' '){j=0.05;w=0;d*=1.5;}
     else if('.,!?;:'.includes(ch)){j=0;w=0;d*=3.2;}
-    else if(VIS[ch]){[j,p,w]=VIS[ch];}
-    tr.push({t,j,p,w}); t+=d;
+    else if(VIS[ch]){[j,p,w,r=0]=VIS[ch];}
+    tr.push({t,j,p,w,r}); t+=d;
   }
-  tr.push({t,j:0,p:0,w:0});
+  tr.push({t,j:0,p:0,w:0,r:0});
   REM.vis={tr,dur:t,t0:performance.now(),len:text.length,
     amp:0.55+(pros?pros.energy*0.6:0.3)};
 }
@@ -3649,6 +3893,7 @@ function remoteTick(){
       for(const k of v.tr){ if(k.t<=e)cur=k; else break; }
       REM.bs.jawOpen+=(cur.j*v.amp-REM.bs.jawOpen)*0.55;
       REM.bs.pucker+=(cur.p-REM.bs.pucker)*0.45;
+      REM.bs.rollIn+=((cur.r||0)-(REM.bs.rollIn||0))*0.5;
       REM.wide=mix(REM.wide,cur.w,0.45);
       REM.speaking=true;
     }
@@ -3798,7 +4043,7 @@ function initScene(){
     const now=performance.now(), dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
     remoteTick(); sendLoop(now);
     if(activeTier===Tier.AVATAR3D){
-      puppet(now,dt);
+      puppet(now,dt); applyMorphs();
       if(AV.root){ AV.root.rotation.y=orbit.yaw; AV.root.rotation.x=orbit.pitch; }
       driveTesserae();
       camera.position.z+=(orbit.dist-camera.position.z)*0.1;
@@ -4122,28 +4367,58 @@ const BED_TINT=0.5, SAMPLE_BOOST=7;
 // the rgb paint's dots clip in the room rig's tone curve where flat tiles
 // don't (they're albedo 1): measured 11 L* dark at 1.0, this pays it back
 const RGB_LIFT=1.55;
-const MORPH_ORDER=['smile','frown','browUp','browDown','blinkL','blinkR','pucker','mouthWide','funnel','press'];
+const TILE_TILT=0.06;                                  // radians: each tessera set a little off true, the glint of a hand-set wall
+const MORPH_ORDER=['smile','frown','browUp','browDown','blinkL','blinkR','pucker','mouthWide','funnel','press',
+  'upperUp','lowerDown','rollIn','shrug','dimple','shiftL','shiftR'];
 
+function faceFlow(H,N){
+  const P=H.pos, n=H.nv, flow=new Float32Array(n*3), feats=[];
+  // each rim as a loop, with the tangent at every point
+  for(const rim of [H.rims&&H.rims.eyeP,H.rims&&H.rims.eyeN,H.rims&&H.rims.mouth]){
+    if(!rim||rim.length<6) continue;
+    let cx=0,cy=0; for(const i of rim){ cx+=P[i*3]; cy+=P[i*3+1]; } cx/=rim.length; cy/=rim.length;
+    const ring=rim.map(i=>({i,a:Math.atan2(P[i*3+1]-cy,P[i*3]-cx)})).sort((p,q)=>p.a-q.a);
+    for(let k=0;k<ring.length;k++){ const a=ring[(k+ring.length-1)%ring.length].i, b=ring[(k+1)%ring.length].i, i=ring[k].i;
+      const t=[P[b*3]-P[a*3],P[b*3+1]-P[a*3+1],P[b*3+2]-P[a*3+2]], l=Math.hypot(...t)||1;
+      feats.push([P[i*3],P[i*3+1],P[i*3+2],t[0]/l,t[1]/l,t[2]/l]); }
+  }
+  // the nose's sides run up the bridge
+  { const {NBY,BY,S}=H.P; for(const sx of[1,-1]) for(let y=NBY-0.004;y<BY-0.012;y+=0.004) feats.push([sx*0.013*S.noseW,y,0.075,0,1,0]); }
+  const SIG=0.016;
+  for(let v=0;v<n;v++){
+    const x=P[v*3],y=P[v*3+1],z=P[v*3+2], nx=N[v*3],ny=N[v*3+1],nz=N[v*3+2];
+    // round the head: the tangent of the horizontal ring through this point
+    let fx=z+0.012, fy=0, fz=-x, w0=1; { const l=Math.hypot(fx,fz)||1; fx/=l; fz/=l; }
+    let ax=fx*w0, ay=0, az=fz*w0;
+    for(const f of feats){ const d2=(f[0]-x)**2+(f[1]-y)**2+(f[2]-z)**2; if(d2>9*SIG*SIG) continue;
+      const w=6*Math.exp(-d2/(SIG*SIG)); if(f[3]*ax+f[4]*ay+f[5]*az<0){ ax-=w*f[3]; ay-=w*f[4]; az-=w*f[5]; } else { ax+=w*f[3]; ay+=w*f[4]; az+=w*f[5]; } }
+    const dn=ax*nx+ay*ny+az*nz; ax-=dn*nx; ay-=dn*ny; az-=dn*nz;              // in the surface
+    const l=Math.hypot(ax,ay,az)||1; flow[v*3]=ax/l; flow[v*3+1]=ay/l; flow[v*3+2]=az/l;
+  }
+  return flow;
+}
 function avatarParts(){
   const H=AV.H, parts=[];
   const arr=(g,k)=>g.attributes[k]&&g.attributes[k].array;
-  // head: skinned, eight blendshapes (as deltas), features marked for small
-  // tiles, and the scalp that hair covers left out — it's never seen
+  // head: skinned, its blendshapes (as deltas, at rest whatever the face is
+  // doing), features marked for small tiles, and the scalp that hair covers
+  // left out — it's never seen
   {
-    const g=AV.head.geometry, pos=arr(g,'position'), n=pos.length/3;
-    const morphs=MORPH_ORDER.map(k=>{
-      const t=g.morphAttributes.position[AV.morphIdx[k]].array, d=new Float32Array(n*3);
-      for(let j=0;j<n*3;j++) d[j]=t[j]-pos[j];
-      return d;
-    });
+    const g=AV.head.geometry, pos=AV.morphBase||arr(g,'position'), n=pos.length/3;
+    const morphs=MORPH_ORDER.map(k=>AV.morphs[AV.morphIdx[k]]);
     const imp=new Float32Array(n), mask=new Float32Array(n).fill(1), face=DENSITY[TES.density].face;
     for(let i=0;i<n;i++){
       const lip=H.region[i*4], brow=H.region[i*4+1], sock=H.region[i*4+2];
       imp[i]=cl01(Math.max(lip*1.4,brow*1.1,sock*1.3,H.front[i]*face));
       if(H.hairCover) mask[i]=1-H.hairCover[i];
     }
+    // how the rows run: along the features' own contours near them — round the
+    // eyes and the mouth, up the nose's sides — and round the head between,
+    // as a mosaicist lays a face (opus vermiculatum); square tiles, the flow
+    // steering the andamento rather than cutting slivers
     parts.push({positions:pos,normals:arr(g,'normal'),colors:arr(g,'color'),index:g.index.array,
       skinIndex:arr(g,'skinIndex'),skinWeight:arr(g,'skinWeight'),morphs,importance:imp,mask,
+      flow:faceFlow(H,arr(g,'normal')),flowShape:0,
       roughness:0.62,metalness:0,specular:LIKE.spec});
   }
   for(const [m,ro,me,sp] of [[AV.neck,0.72,0,1],[AV.hair,0.58,0.03,1]]){
@@ -4156,9 +4431,11 @@ function avatarParts(){
       // flow: down the head, in the surface), finer than plain skin, and glass
       // rather than matte — how mosaicists cut hair
       parts.hair=parts.length;
-      const P=part.positions, N=part.normals, n=P.length/3, flow=new Float32Array(n*3), imp=new Float32Array(n).fill(0.5);
-      for(let i=0;i<n;i++){ const nx=N[i*3],ny=N[i*3+1],nz=N[i*3+2]; let fx=-ny*nx, fy=-1+ny*ny, fz=-ny*nz;   // (0,−1,0) less its normal part
-        const l=Math.hypot(fx,fy,fz)||1; flow[i*3]=fx/l; flow[i*3+1]=fy/l; flow[i*3+2]=fz/l; }
+      const P=part.positions, N=part.normals, n=P.length/3, imp=new Float32Array(n).fill(0.5);
+      let flow=arr(g,'flow');                                       // the strands as the photos show them (buildHairFit)…
+      if(!flow){ flow=new Float32Array(n*3);                         // …else down the head, in the surface
+        for(let i=0;i<n;i++){ const nx=N[i*3],ny=N[i*3+1],nz=N[i*3+2]; let fx=-ny*nx, fy=-1+ny*ny, fz=-ny*nz;
+          const l=Math.hypot(fx,fy,fz)||1; flow[i*3]=fx/l; flow[i*3+1]=fy/l; flow[i*3+2]=fz/l; } }
       Object.assign(part,{flow,importance:imp,roughness:0.38,specular:0.6});
     }
     parts.push(part);
@@ -4244,7 +4521,7 @@ function buildTesserae(){
     if((look.paint==='pure'||look.paint==='muted')&&!TES.glyphs) TES.glyphs=TK.makeGlyphs(THREE);
     if((look.paint==='rgb'||look.paint==='blobs')&&!TES.noise) TES.noise=TK.makeNoise(THREE);
     const set=TK.buildTileMeshes(THREE,tiles,{RoundedBoxGeometry,inset:GROUT[look.grout],bedTint:BED_TINT,
-      paint:look.paint,glyphs:TES.glyphs,noise:TES.noise,rgbLift:RGB_LIFT,pickGlyph});
+      paint:look.paint,glyphs:TES.glyphs,noise:TES.noise,rgbLift:RGB_LIFT,tilt:TILE_TILT,pickGlyph});
     for(const m of set.meshes) scene.add(m);
     TES.set=set;
     // the setting bed: the tiled surfaces themselves, just below the faces,
@@ -4311,7 +4588,7 @@ window.mosaic={THREE,
   lmModel(lm,tp){ tp=tp||lmTP(lm); if(!tp) return null; const S=AV.S||measToShape(ID.meas), P=derived(S), o=new Float32Array(8); sculptPoint(tp[0],tp[1],S,P,o); return [o[0],o[1],o[2],P.MY,P.LW]; },
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
-  get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
+  get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog, buildMs:AV.buildMs}; },
   LIKE, CONFORM, LIGHT, trackerAnchors,
   // the avatar seen by a calibration photo's own camera, over that photo — a
   // likeness you can overlay (photo | avatar | 50:50)
@@ -4385,20 +4662,22 @@ window.mosaic={THREE,
   // a clean render for inspection (no UI): head turned/tilted, expressions,
   // optionally the bare geometry in grey — returns a PNG data URL
   snap(o={}){
-    const {yaw=0,pitch=0,zoom=1.35,bs={},jaw=0,grey=false,W=440,H=520,cy=-0.012,hide=[]}=o, B=AV.bones, M=AV.morphIdx, R=Math.PI/180;
+    const {yaw=0,pitch=0,zoom=1.35,bs={},jaw=0,grey=false,W=440,H=520,cx=0,cy=-0.012,hide=[]}=o, B=AV.bones, M=AV.morphIdx, R=Math.PI/180;
     const hid=(hide.includes('mouth')?AV.mouthParts||[]:[]).filter(m=>m.visible); for(const m of hid) m.visible=false;
     const inf=AV.head.morphTargetInfluences, infS=Array.from(inf), saved=Object.values(B).map(b=>[b,b.rotation.clone(),b.position.clone()]);
     const mat=AV.head.material, rootR=AV.root.rotation.clone();
     for(const [b] of saved) b.rotation.set(0,0,0); B.root.position.y=-0.30; AV.root.rotation.set(0,0,0);
-    B.head.rotation.set(pitch*R,yaw*R,0); B.jaw.rotation.x=jaw*0.38; inf.fill(0);
+    B.head.rotation.set(pitch*R,yaw*R,0); B.jaw.rotation.x=jaw*0.38; jawSlide(B,jaw); inf.fill(0);
+    if(AV.lashes) AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=cl01(k?bs.blinkR||0:bs.blinkL||0)*0.85; });
     for(const k in bs) if(M[k]!=null) inf[M[k]]=bs[k];
+    applyMorphs();
     if(grey) AV.head.material=new THREE.MeshStandardMaterial({color:0xb8b0a8,roughness:0.6});
     AV.root.updateMatrixWorld(true);
-    const cam=new THREE.PerspectiveCamera(camera.fov,W/H,0.01,10); cam.position.set(0,cy,0.60/zoom); cam.lookAt(0,cy,0);
+    const cam=new THREE.PerspectiveCamera(camera.fov,W/H,0.01,10); cam.position.set(cx,cy,0.60/zoom); cam.lookAt(cx,cy,0);
     const rt=screenTarget(W,H), px=new Uint8Array(W*H*4), bg=scene.background;
     renderer.setRenderTarget(rt); renderer.render(scene,cam); renderer.readRenderTargetPixels(rt,0,0,W,H,px); renderer.setRenderTarget(null); rt.dispose();
     if(grey){ AV.head.material.dispose(); AV.head.material=mat; } for(const m of hid) m.visible=true;
-    for(const [b,r,q] of saved){ b.rotation.copy(r); b.position.copy(q); } infS.forEach((v,k)=>inf[k]=v); AV.root.rotation.copy(rootR); AV.root.updateMatrixWorld(true);
+    for(const [b,r,q] of saved){ b.rotation.copy(r); b.position.copy(q); } infS.forEach((v,k)=>inf[k]=v); applyMorphs(); AV.root.rotation.copy(rootR); AV.root.updateMatrixWorld(true);
     const cv=document.createElement('canvas'); cv.width=W; cv.height=H; const g=cv.getContext('2d'), img=g.createImageData(W,H);
     for(let y=0;y<H;y++) img.data.set(px.subarray((H-1-y)*W*4,(H-y)*W*4),y*W*4);
     g.putImageData(img,0,0); return cv.toDataURL('image/png'); },
