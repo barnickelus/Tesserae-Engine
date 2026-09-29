@@ -1962,7 +1962,8 @@ function buildHairFit(H,nrm,COL,F,skinCol){
       g.setAttribute('photoUv'+k,new THREE.BufferAttribute(uv,2)); });
     for(let k=T.length;k<3;k++) g.setAttribute('photoUv'+k,new THREE.BufferAttribute(new Float32Array(n*2),2));
     g.setAttribute('photoW',new THREE.BufferAttribute(pw,3)); g.setAttribute('photoG',new THREE.BufferAttribute(pg,3));
-    photoSkin(mat,T.map(V=>photoTexture(V.sh)),T.map(V=>{ const vg=VG[V.id]||[1,1,1]; return [G[0]*vg[0],G[1]*vg[1],G[2]*vg[2]]; }),false);
+    photoSkin(mat,T.map(V=>photoTexture(V.sh,true)),T.map(V=>{ const vg=VG[V.id]||[1,1,1]; return [G[0]*vg[0],G[1]*vg[1],G[2]*vg[2]]; }),false);
+    AV.hairTexViews=T.map(V=>V.id);
   }
   const m=new THREE.SkinnedMesh(g,mat);
   m.frustumCulled=false;
@@ -3564,14 +3565,17 @@ function fitHair(){
     lenPos:lenAt(lowImgL,edgeL),lenNeg:lenAt(lowImgR,edgeR),colorLin,mask:hair,W,H};
 }
 // the photograph as a texture (kept per shot, so rebuilds reuse the upload)
-const PHOTO_TEX=new WeakMap();
-function photoTexture(sh){
-  const px=cleanShot(sh).px;
-  let t=PHOTO_TEX.get(sh); if(t&&t.userData.src===px) return t; if(t) t.dispose();
+const PHOTO_TEX=new WeakMap(), PHOTO_TEX_RAW=new WeakMap();
+// raw: the photograph as shot. The skin takes the cleaned one (hair strands
+// across the face painted out); the hair must not — its texture had shown the
+// cleaned forehead, skin-coloured, where the fringe hangs
+function photoTexture(sh,raw=false){
+  const px=raw?sh.px:cleanShot(sh).px, cache=raw?PHOTO_TEX_RAW:PHOTO_TEX;
+  let t=cache.get(sh); if(t&&t.userData.src===px) return t; if(t) t.dispose();
   t=new THREE.DataTexture(new Uint8Array(px.buffer,px.byteOffset,px.length),sh.W,sh.H,THREE.RGBAFormat);
   t.userData.src=px; t.colorSpace=THREE.SRGBColorSpace; t.generateMipmaps=true;
   t.minFilter=THREE.LinearMipmapLinearFilter; t.magFilter=THREE.LinearFilter; t.anisotropy=4; t.needsUpdate=true;
-  PHOTO_TEX.set(sh,t); return t;
+  cache.set(sh,t); return t;
 }
 // the skin material mixes the projected photos over its vertex colour: per
 // vertex, each view's weight (how squarely and surely it saw the surface) and
@@ -4596,7 +4600,7 @@ window.mosaic={THREE,
   lmModel(lm,tp){ tp=tp||lmTP(lm); if(!tp) return null; const S=AV.S||measToShape(ID.meas), P=derived(S), o=new Float32Array(8); sculptPoint(tp[0],tp[1],S,P,o); return [o[0],o[1],o[2],P.MY,P.LW]; },
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
-  get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog, buildMs:AV.buildMs}; },
+  get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog, buildMs:AV.buildMs, hairTexViews:AV.hairTexViews||null}; },
   LIKE, CONFORM, LIGHT, trackerAnchors,
   // the avatar seen by a calibration photo's own camera, over that photo — a
   // likeness you can overlay (photo | avatar | 50:50)
