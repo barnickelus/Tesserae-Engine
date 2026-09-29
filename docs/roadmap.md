@@ -1309,7 +1309,16 @@
         shear fading over six rows (the sculpt tilts rows a little across
         the span, and a rim projected from a tilted row crossed the next
         row and creased every fitted head's lower lip), its rims then
-        projected straight onto the slit; within
+        projected straight onto the slit. The rims had never been set on a
+        fitted head's own lip line before (no slit, no rims), and doing it
+        showed the contour snap was built for the eyes: a mouth is a lens
+        seventeen times wider than tall, its normalised angle is all y, so
+        a vertex beside a corner followed the rim's centre and crossed the
+        rim, and a closed mouth's contour put both rims on one line. The
+        mouth's neighbourhood now follows the rim point nearest it, the
+        two rims (the cut row's top and bottom edges, paired by column)
+        are kept a slit apart, and each column is walked outward from the
+        slit pushing any row that would cross a rim; within
         the lip span the skin weight splits at the slit (lower lip the
         jaw's, upper the head's), widening to a soft blend past the
         corners; the hinge moved from eye level to the ear canal's (a

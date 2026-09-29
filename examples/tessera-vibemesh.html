@@ -722,7 +722,7 @@ function buildHead(S, opts){
     pos[i*3]=nx; pos[i*3+1]=ny; canon[i*3]=nx; canon[i*3+1]=ny;
   }
 
-  return {NA,NP,nv,pos,canon,front,region,anat,idx,thphi,rims,
+  return {NA,NP,nv,pos,canon,front,region,anat,idx,thphi,rims,mrow:MROW,
     P:{A,B,C,CZ,EY,MY,NBY,NTY,BY,CHY,LW,FL,S}};
 }
 
@@ -2749,7 +2749,7 @@ function snapFeatures(H,cloud){
   // would meet its own line a few mm from the centre and shrink
   const box=Q=>{ let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9; for(const p of Q){ x0=Math.min(x0,p[0]); x1=Math.max(x1,p[0]); y0=Math.min(y0,p[1]); y1=Math.max(y1,p[1]); }
     return {c:[(x0+x1)/2,(y0+y1)/2],h:[Math.max(1e-3,(x1-x0)/2),Math.max(1e-4,(y1-y0)/2)]}; };
-  const move=(rim,C,minHalf)=>{
+  const move=(rim,C,minHalf,byNearest)=>{
     if(rim.length<6||C.some(p=>!p.every(isFinite))) return null;
     const U=box(C), Rb=box(rim.map(i=>[P[i*3],P[i*3+1]])); U.h[1]=Math.max(U.h[1],minHalf||0);
     // the target contour by its normalised angle, interpolated (a ray from the
@@ -2771,18 +2771,37 @@ function snapFeatures(H,cloud){
       return [p[1]+(q[1]-p[1])*t,p[2]+(q[2]-p[2])*t]; };
     // the rim's own outline (before the move), for the falloff's distance
     const poly=R.map(r=>[P[r[3]*3],P[r[3]*3+1]]), rimSet=new Set(rim), FALL=0.006;
+    // a neighbour follows the rim point nearest it when asked (the mouth: a
+    // lens 17 times wider than tall, whose normalised angle is all y, so by
+    // angle a vertex beside a corner followed the rim's centre and crossed
+    // the rim); the eyes keep the angle's radial reading
+    const nearest=(x,y)=>{ let b=0,bd=1e9; for(let k=0;k<R.length;k++){ const q=poly[k], d=(q[0]-x)**2+(q[1]-y)**2; if(d<bd){ bd=d; b=k; } } return [R[b][1],R[b][2]]; };
     const moves=[];
     for(let v=0;v<H.nv;v++){ if(P[v*3+2]<0.02) continue;
       const x=P[v*3], y=P[v*3+1]; if(Math.abs(x-Rb.c[0])>Rb.h[0]+FALL||Math.abs(y-Rb.c[1])>Rb.h[1]+FALL) continue;
       const d=rimSet.has(v)?0:Math.abs(polyDist(x,y,poly)); if(d>FALL) continue;
-      const w=rimSet.has(v)?1:(1-d/FALL)**2, m=dAt(ang(x,y)); moves.push([v,m[0]*w,m[1]*w]); }
+      const w=rimSet.has(v)?1:(1-d/FALL)**2, m=byNearest?nearest(x,y):dAt(ang(x,y)); moves.push([v,m[0]*w,m[1]*w]); }
     for(const [v,dx,dy] of moves){ P[v*3]+=dx; P[v*3+1]+=dy; }
     return U.c; };
   // which eye is which: by the side of model x its contour sits on
   const eyes=EYE_IDS.map(ids=>ids.map(pt)), cx=e=>e.reduce((a,p)=>a+p[0],0)/e.length;
   const eP=eyes.find(e=>cx(e)>0), eN=eyes.find(e=>cx(e)<0);
   out.eyeP=eP?move(H.rims.eyeP,eP,0):null; out.eyeN=eN?move(H.rims.eyeN,eN,0):null;
-  out.mouth=move(H.rims.mouth,[...LIPS_UP_IN,...LIPS_LO_IN.slice(1,-1)].map(pt),0.0006);
+  out.mouth=move(H.rims.mouth,[...LIPS_UP_IN,...LIPS_LO_IN.slice(1,-1)].map(pt),0.0006,true);
+  // The slit's two rims are paired by column (the cut row's top and bottom
+  // edges). A closed mouth's contour put both on one line, and a rim moved
+  // onto the user's line can still reach past the row beyond it: keep the
+  // rims a slit apart, then walk each column outward pushing any row that
+  // would cross the rim — outward only, and only where it must.
+  if(out.mouth&&H.mrow>=0){
+    const NA=H.NA, at=(iu,iv)=>iv*(NA+1)+iu, HALF=0.0006, GAP=0.0005, cx=out.mouth[0], reach=H.P.LW*0.9+0.02;
+    for(let iu=0;iu<=NA;iu++){
+      const u=at(iu,H.mrow), l=at(iu,H.mrow+1); if(Math.abs(P[u*3]-cx)>reach) continue;
+      if(P[u*3+1]-P[l*3+1]<2*HALF){ const mid=(P[u*3+1]+P[l*3+1])/2; P[u*3+1]=mid+HALF; P[l*3+1]=mid-HALF; }
+      let y=P[u*3+1]; for(let iv=H.mrow-1;iv>=Math.max(0,H.mrow-8);iv--){ const i=at(iu,iv); if(P[i*3+1]<y+GAP) P[i*3+1]=y+GAP; y=P[i*3+1]; }
+      y=P[l*3+1]; for(let iv=H.mrow+2;iv<=Math.min(H.NP,H.mrow+9);iv++){ const i=at(iu,iv); if(P[i*3+1]>y-GAP) P[i*3+1]=y-GAP; y=P[i*3+1]; }
+    }
+  }
   return out;
 }
 function conformHead(H,field){
