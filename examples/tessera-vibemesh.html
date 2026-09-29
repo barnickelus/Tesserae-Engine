@@ -522,7 +522,10 @@ function sculptPoint(th,phi,S,P,out){
       if(phi>phiJ){
         neckU=(phi-phiJ)/(Math.PI-phiJ);                            // 0 at the border, 1 at the foot
         const spJ=Math.sin(phiJ); let xb=A*spJ*sa, zb=CZ+C*spJ*ca; [xb,zb]=taper(xb,zb,yJ,ca*spJ); [xb,zb]=column(xb,zb,yJ);
-        const s=smoothstep(0,0.30,neckU), sf=smoothstep(0.30,1,neckU);
+        // the throat turns under the chin within the first third of the neck; the
+        // nape runs down from the occiput over most of it (a short blend there
+        // stepped the neck forward under the skull)
+        const s=smoothstep(0,mix(0.30,0.80,smoothstep(0.3,-0.6,ca)),neckU), sf=smoothstep(0.30,1,neckU);
         const wn=mix(wN,wF,sf), dn=mix(dN,dF,sf), czn=mix(czN,czF,sf);
         x=mix(xb,wn*sa,s); z=mix(zb,czn+dn*ca,s); y=yJ-neckU*(yJ-NECK_FOOT);   // a level foot, whatever the border's height
         xd=sa; yd=-0.2; zd=ca;                                        // its outward direction, for the layers below
@@ -2049,7 +2052,7 @@ function puppet(now,dt){
   set('blinkL',Math.max(REM.bs.blinkL,auto));
   set('blinkR',Math.max(REM.bs.blinkR,auto));
   if(AV.lashes){ const bl=[cl01(Math.max(REM.bs.blinkL,auto)),cl01(Math.max(REM.bs.blinkR,auto))];   // the upper lashes ride the closing lid
-    AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=(bl[k]||0)*0.85; }); }
+    AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=(bl[k]||0)*0.6; }); }
   set('pucker',REM.bs.pucker);
   set('mouthWide',Math.max(REM.wide||0,REM.bs.wide||0));
   set('funnel',REM.bs.funnel||0);
@@ -4668,7 +4671,7 @@ window.mosaic={THREE,
     const mat=AV.head.material, rootR=AV.root.rotation.clone();
     for(const [b] of saved) b.rotation.set(0,0,0); B.root.position.y=-0.30; AV.root.rotation.set(0,0,0);
     B.head.rotation.set(pitch*R,yaw*R,0); B.jaw.rotation.x=jaw*0.38; jawSlide(B,jaw); inf.fill(0);
-    if(AV.lashes) AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=cl01(k?bs.blinkR||0:bs.blinkL||0)*0.85; });
+    if(AV.lashes) AV.lashes.upper.forEach((g,k)=>{ g.rotation.x=cl01(k?bs.blinkR||0:bs.blinkL||0)*0.6; });
     for(const k in bs) if(M[k]!=null) inf[M[k]]=bs[k];
     applyMorphs();
     if(grey) AV.head.material=new THREE.MeshStandardMaterial({color:0xb8b0a8,roughness:0.6});
