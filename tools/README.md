@@ -146,6 +146,11 @@ switches the likeness stages (`{texture, probe, outline, conform, photo,
 spec}`) for ablations, `mosaic.preloadTracker()` loads the tracker before the
 camera opens (so a scripted fake camera starts in step with the prompts), and
 `mosaic.av` reports the fit, the exposure and the colour loop's log.
+`likenessData('left')` (or `right`, `up`, `down`) measures the same avatar in
+the other calibration photos — through each photo's own camera, the
+triangulated bundle's — so the sides and the profile count, not only the
+front. `mosaic.calDump()` returns the calibration's landmarks per view and
+the fitted cloud, for scoring a triangulation offline.
 `mosaic.snap({yaw, pitch, zoom, cy, bs, jaw, grey})` renders the avatar alone
 (turned, with expressions, or as bare grey geometry) for inspection, and
 `mosaic.hairFitImage()` / `hairMaskImage(id)` draw the hair segmentation and

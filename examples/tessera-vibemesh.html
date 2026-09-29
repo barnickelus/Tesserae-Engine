@@ -1210,7 +1210,7 @@ const TRAITS={hair:'short',beard:'none'};
 // spec: the skin's specular strength — the photo already holds the person's
 // own highlights, and a full sheen of the room on top greyed dark skin, brows
 // and makeup
-const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true};   // §8b, each switchable for comparison
+const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true};   // §8b, each switchable for comparison
 
 /* Eye: white sclera sphere + a domed iris cap coloured radially in
    vertex colours (pupil → iris → limbal ring). Avoids projecting a
@@ -1291,8 +1291,10 @@ function buildAvatar(){
   geo.setAttribute('skinIndex',new THREE.BufferAttribute(si,4));
   geo.setAttribute('skinWeight',new THREE.BufferAttribute(sw,4));
   const tex=!!(photo&&photo.front&&LIKE.texture);
-  if(tex){ geo.setAttribute('photoUv',new THREE.BufferAttribute(photo.front.uv,2));
-    geo.setAttribute('photoMix',new THREE.BufferAttribute(photo.front.pm,2)); }
+  if(tex){ const T=photo.front.tex, n=H.nv, pw=new Float32Array(n*3), pg=new Float32Array(n*3).fill(1);
+    T.forEach((t,k)=>{ geo.setAttribute('photoUv'+k,new THREE.BufferAttribute(t.uv,2)); for(let v=0;v<n;v++){ pw[v*3+k]=t.w[v]; pg[v*3+k]=t.g[v]; } });
+    for(let k=T.length;k<3;k++) geo.setAttribute('photoUv'+k,new THREE.BufferAttribute(new Float32Array(n*2),2));
+    geo.setAttribute('photoW',new THREE.BufferAttribute(pw,3)); geo.setAttribute('photoG',new THREE.BufferAttribute(pg,3)); }
   geo.setIndex(H.idx.length>65535?new THREE.BufferAttribute(new Uint32Array(H.idx),1)
                                  :new THREE.BufferAttribute(new Uint16Array(H.idx),1));
   geo.morphAttributes.position=[];
@@ -1335,7 +1337,7 @@ function buildAvatar(){
   // un-tone-mapped — what's left against the camera is registration)
   const skinMat=LIKE.unlit?new THREE.MeshBasicMaterial({vertexColors:true,toneMapped:false})
     :new THREE.MeshPhysicalMaterial({vertexColors:true,roughness:0.62,metalness:0.0,specularIntensity:LIKE.spec,side:THREE.FrontSide});
-  if(tex) photoSkin(skinMat,photoTexture(photo.front.sh),G||[1,1,1],!!LIKE.unlit);
+  if(tex) photoSkin(skinMat,photo.front.tex.map(t=>photoTexture(t.sh)),photo.front.tex.map(t=>{ const g=G||[1,1,1]; return [g[0]*t.gain[0],g[1]*t.gain[1],g[2]*t.gain[2]]; }),!!LIKE.unlit);
   const mesh=new THREE.SkinnedMesh(geo,skinMat);
   mesh.frustumCulled=false;
   grp.add(mesh);
@@ -1650,10 +1652,10 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   const base=F.colorLin||[0,1,2].map(k=>srgb2lin(new THREE.Color().setHSL(COL.hair.h,COL.hair.s,COL.hair.l).toArray()[k]));
   // the photos that saw hair: each view's camera and mask
   const VIEWS=['center','left','right'].map(id=>{ const sh=ID.shots&&ID.shots[id]; if(!sh) return null; const m=hairMask(sh); if(!m) return null;
-    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H); return cam?{sh,m,...cam}:null; }).filter(Boolean);
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); return cam?{sh,m,...cam}:null; }).filter(Boolean);
   const photoCol=(x,y,z,nx,ny,nz)=>{ let a=[0,0,0], w=0;
     for(const V of VIEWS){ const f=nx*V.dir[0]+ny*V.dir[1]+nz*V.dir[2]; if(f<0.25) continue;
-      const u=V.pu[0]*x+V.pu[1]*y+V.pu[2]*z+V.pu[3], v=V.pv[0]*x+V.pv[1]*y+V.pv[2]*z+V.pv[3];
+      const [u,v]=V.project(x,y,z);
       const X=Math.round(u), Yy=Math.round(v); if(X<1||Yy<1||X>=V.sh.W-1||Yy>=V.sh.H-1||V.m[Yy*V.sh.W+X]<128) continue;
       const s=sampleShot(V.sh.px,V.sh.W,V.sh.H,u,v); if(!s) continue; const k=f*f; a[0]+=s[0]*k; a[1]+=s[1]*k; a[2]+=s[2]*k; w+=k; }
     return w?[a[0]/w,a[1]/w,a[2]/w,w]:null; };
@@ -2066,6 +2068,96 @@ function alignCloud(m,ref){
   }
   return o;
 }
+// ── the calibration views, triangulated ──
+// The tracker's z is a guess from one picture, and it made every face flat
+// (measured against the stand-in heads: 5 mm rms in depth, the nose 7 mm off).
+// The turns are real parallax: five views of the same points from 32° apart
+// left/right and 18° up/down. A perspective bundle — one focal length, each
+// view's pose, each landmark's 3D position — solved by alternating linear
+// triangulation with Gauss-Newton on the poses, weights softened on outliers
+// (a landmark the tracker hallucinated on the far side), the focal length by
+// a coarse search. Depth error halves (3.6 mm rms; the nose 3.7). The front
+// view is the world frame; the face-oval landmarks are still the tracker's
+// guess, and the conform leaves them out as before.
+function bundleViews(views,W,H){
+  const ids=Object.keys(views).filter(k=>views[k]&&views[k].length>=468); if(ids.length<3||!views.center) return null;
+  const NV=ids.length, N=468, cx=W/2, cy=H/2, ci=ids.indexOf('center');
+  const U=ids.map(id=>views[id].slice(0,N).map(p=>[p.x*W,p.y*H,p.z*W]));
+  const ec=(P,a,b)=>[(P[a][0]+P[b][0])/2,(P[a][1]+P[b][1])/2,(P[a][2]+P[b][2])/2];
+  const eL0=ec(U[ci],33,133), eR0=ec(U[ci],362,263), iodPx=Math.hypot(eL0[0]-eR0[0],eL0[1]-eR0[1]); if(iodPx<10) return null;
+  const solve=(A,b,n)=>{ const M=Array.from({length:n},(_,r)=>[...Array.from(A.slice(r*n,r*n+n)),b[r]]);
+    for(let c=0;c<n;c++){ let p=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+      [M[c],M[p]]=[M[p],M[c]]; const d=M[c][c]||1e-18;
+      for(let r=0;r<n;r++) if(r!==c){ const f=M[r][c]/d; for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k]; } }
+    return M.map((row,r)=>row[n]/(row[r]||1e-18)); };
+  const rotExp=w=>{ const th=Math.hypot(...w); if(th<1e-12) return [1,0,0,0,1,0,0,0,1];
+    const [x,y,z]=w.map(v=>v/th), c=Math.cos(th), sn=Math.sin(th), C=1-c;
+    return [c+x*x*C,x*y*C-z*sn,x*z*C+y*sn, y*x*C+z*sn,c+y*y*C,y*z*C-x*sn, z*x*C-y*sn,z*y*C+x*sn,c+z*z*C]; };
+  const mul=(A,B)=>{ const o=new Array(9).fill(0); for(let i=0;i<3;i++) for(let j=0;j<3;j++) for(let k=0;k<3;k++) o[i*3+j]+=A[i*3+k]*B[k*3+j]; return o; };
+  const ap=(R,t,X)=>[R[0]*X[0]+R[1]*X[1]+R[2]*X[2]+t[0],R[3]*X[0]+R[4]*X[1]+R[5]*X[2]+t[1],R[6]*X[0]+R[7]*X[1]+R[8]*X[2]+t[2]];
+  const run=f=>{
+    const d0=f/iodPx, own=U.map(P=>P.map(p=>[(p[0]-cx)*d0/f,(p[1]-cy)*d0/f,d0+p[2]/iodPx*1.25]));
+    const X=own[ci].map(p=>p.slice()), R=ids.map(()=>[1,0,0,0,1,0,0,0,1]), T=ids.map(()=>[0,0,0]);
+    for(let v=0;v<NV;v++){ if(v===ci) continue;                    // first guess: the view's own tracker cloud
+      const P=RIGID.map(i=>X[i]), Q=RIGID.map(i=>own[v][i]), cp=[0,0,0], cq=[0,0,0];
+      for(let k=0;k<P.length;k++) for(let a=0;a<3;a++){ cp[a]+=P[k][a]/P.length; cq[a]+=Q[k][a]/P.length; }
+      const Rk=kabsch(P.map(p=>[p[0]-cp[0],p[1]-cp[1],p[2]-cp[2]]),Q.map(q=>[q[0]-cq[0],q[1]-cq[1],q[2]-cq[2]]));
+      const rc=ap(Rk,[0,0,0],cp); R[v]=Rk; T[v]=[cq[0]-rc[0],cq[1]-rc[1],cq[2]-rc[2]]; }
+    const Wt=ids.map(()=>new Float64Array(N).fill(1)), res=ids.map(()=>new Float64Array(N));
+    const proj=(v,Xi)=>{ const Y=ap(R[v],T[v],Xi); return [cx+f*Y[0]/Y[2],cy+f*Y[1]/Y[2],Y]; };
+    const jac=(Y)=>[[f/Y[2],0,-f*Y[0]/(Y[2]*Y[2])],[0,f/Y[2],-f*Y[1]/(Y[2]*Y[2])]];
+    let rms=0;
+    for(let it=0;it<8;it++){
+      for(let i=0;i<N;i++){                                          // structure: linear, then polished
+        const A=new Float64Array(9), b=new Float64Array(3);
+        for(let v=0;v<NV;v++){ const w=Wt[v][i]*(v===ci?2:1); if(w<=0) continue;
+          const xp=(U[v][i][0]-cx)/f, yp=(U[v][i][1]-cy)/f, r=R[v], t=T[v];
+          for(const [a0,a1,a2,rhs] of [[xp*r[6]-r[0],xp*r[7]-r[1],xp*r[8]-r[2],t[0]-xp*t[2]],[yp*r[6]-r[3],yp*r[7]-r[4],yp*r[8]-r[5],t[1]-yp*t[2]]]){
+            const a=[a0,a1,a2]; for(let p=0;p<3;p++){ b[p]+=w*a[p]*rhs; for(let q=0;q<3;q++) A[p*3+q]+=w*a[p]*a[q]; } } }
+        let Xi=solve(A,b,3);
+        for(let g=0;g<3;g++){ const J=new Float64Array(9), g3=new Float64Array(3);
+          for(let v=0;v<NV;v++){ const w=Wt[v][i]*(v===ci?2:1); if(w<=0) continue;
+            const [u,vv,Y]=proj(v,Xi), r=R[v], ru=u-U[v][i][0], rv=vv-U[v][i][1], [du,dv]=jac(Y);
+            const Ju=[0,1,2].map(k=>du[0]*r[k]+du[1]*r[3+k]+du[2]*r[6+k]), Jv=[0,1,2].map(k=>dv[0]*r[k]+dv[1]*r[3+k]+dv[2]*r[6+k]);
+            for(let p=0;p<3;p++){ g3[p]+=w*(Ju[p]*ru+Jv[p]*rv); for(let q=0;q<3;q++) J[p*3+q]+=w*(Ju[p]*Ju[q]+Jv[p]*Jv[q]); } }
+          for(let p=0;p<3;p++) J[p*4]+=1e-9; const d=solve(J,Array.from(g3,v=>-v),3); Xi=Xi.map((v,k)=>v+d[k]); }
+        X[i]=Xi; }
+      for(let v=0;v<NV;v++){ if(v===ci) continue;                    // poses
+        for(let g=0;g<6;g++){ const Jt=new Float64Array(36), gr=new Float64Array(6);
+          for(let i=0;i<N;i++){ const w=Wt[v][i]; if(w<=0) continue;
+            const [u,vv,Y]=proj(v,X[i]), ru=u-U[v][i][0], rv=vv-U[v][i][1], [du,dv]=jac(Y), RX=[Y[0]-T[v][0],Y[1]-T[v][1],Y[2]-T[v][2]];
+            const dw=[[0,RX[2],-RX[1]],[-RX[2],0,RX[0]],[RX[1],-RX[0],0]], Ju=new Array(6), Jv=new Array(6);
+            for(let k=0;k<3;k++){ Ju[k]=du[0]*dw[0][k]+du[1]*dw[1][k]+du[2]*dw[2][k]; Jv[k]=dv[0]*dw[0][k]+dv[1]*dw[1][k]+dv[2]*dw[2][k]; Ju[3+k]=du[k]; Jv[3+k]=dv[k]; }
+            for(let p=0;p<6;p++){ gr[p]+=w*(Ju[p]*ru+Jv[p]*rv); for(let q=0;q<6;q++) Jt[p*6+q]+=w*(Ju[p]*Ju[q]+Jv[p]*Jv[q]); } }
+          for(let p=0;p<6;p++) Jt[p*7]+=1e-6;
+          const d=solve(Jt,Array.from(gr,v=>-v),6);
+          R[v]=mul(rotExp([d[0],d[1],d[2]]),R[v]); T[v]=[T[v][0]+d[3],T[v][1]+d[4],T[v][2]+d[5]]; } }
+      const all=[];                                                  // robust weights
+      for(let v=0;v<NV;v++) for(let i=0;i<N;i++){ const [u,vv]=proj(v,X[i]); res[v][i]=Math.hypot(u-U[v][i][0],vv-U[v][i][1]); all.push(res[v][i]); }
+      all.sort((a,b)=>a-b); const med=all[all.length>>1], th=2.5*med;
+      for(let v=0;v<NV;v++) for(let i=0;i<N;i++) Wt[v][i]=res[v][i]<th?1:th/res[v][i];
+      let s2=0; for(const r of all) s2+=r*r; rms=Math.sqrt(s2/all.length); }
+    // each landmark's confidence: its worst residual against the run's median
+    const all=[]; for(let v=0;v<NV;v++) for(let i=0;i<N;i++) all.push(res[v][i]); all.sort((a,b)=>a-b); const med=all[all.length>>1]||1;
+    const conf=new Float32Array(N); for(let i=0;i<N;i++){ let worst=0; for(let v=0;v<NV;v++) worst=Math.max(worst,res[v][i]); conf[i]=clamp(1-(worst/med-2)/4,0.2,1); }
+    return {X,R,T,rms,conf,perView:Object.fromEntries(ids.map((id,v)=>{ let s2=0; for(let i=0;i<N;i++) s2+=res[v][i]**2; return [id,+Math.sqrt(s2/N).toFixed(2)]; }))}; };
+  // the focal length: whichever the views agree on best (a mild pull toward
+  // 1·W, a typical webcam — the curve is flat, and a wide lens reads shallow)
+  let best=null;
+  for(const k of [0.7,0.85,1.0,1.2,1.5]){ const r=run(k*W), c=r.rms*(1+0.2*Math.abs(Math.log(k))); if(!best||c<best.c) best={...r,k,c}; }
+  if(best.rms>6) return null;                                       // the views don't agree: keep the tracker's
+  // into the model's frame: the mirror, scaled to the eye centres, centred on
+  // the outer corners, z toward the viewer — as toModel, with true depth
+  const X=best.X, eL=ec(X,33,133), eR=ec(X,362,263), s=2*(AN.eyeX+0.0005)/(Math.hypot(eL[0]-eR[0],eL[1]-eR[1],eL[2]-eR[2])||1e-6);
+  const c=[(X[33][0]+X[263][0])/2,(X[33][1]+X[263][1])/2,(X[33][2]+X[263][2])/2], cloud=new Float32Array(N*3);
+  for(let i=0;i<N;i++){ cloud[i*3]=-(X[i][0]-c[0])*s; cloud[i*3+1]=-(X[i][1]-c[1])*s; cloud[i*3+2]=-(X[i][2]-c[2])*s+0.055; }
+  // each view's camera in MODEL space: Y = A·X + b (depth Y.z away from the
+  // camera), u = W/2 + f·Y.x/Y.z, v = H/2 + f·Y.y/Y.z — the mirror included
+  const cc=[c[0],c[1],c[2]+0.055/s], poses={};
+  ids.forEach((id,v)=>{ const R=best.R[v], t=best.T[v];
+    poses[id]={A:R.map(x=>-x/s),b:[R[0]*cc[0]+R[1]*cc[1]+R[2]*cc[2]+t[0],R[3]*cc[0]+R[4]*cc[1]+R[5]*cc[2]+t[1],R[6]*cc[0]+R[7]*cc[1]+R[8]*cc[2]+t[2]],f:best.k*W}; });
+  return {cloud,conf:best.conf,poses,f:+(best.k).toFixed(2),rms:+best.rms.toFixed(2),perView:best.perView,views:NV};
+}
 function finishCalibration(){
   CAL.active=false;
   const got=Object.keys(CAL.views);
@@ -2082,7 +2174,12 @@ function finishCalibration(){
   for(let j=0;j<468*3;j++) fused[j]=acc[j]/w[j];
   const raw=got.map(k=>toModel(CAL.views[k]));
   if(Object.keys(CAL.shots).length) ID.shots={...CAL.shots};
-  commitIdentity(fused,got.length,raw);
+  // three or more views: triangulate (§8, bundleViews); the tracker's guess
+  // is the fallback
+  const vid=el('pip'), t0=performance.now();
+  ID.bundled=LIKE.bundle&&got.length>=3?bundleViews(CAL.views,vid.videoWidth||640,vid.videoHeight||480):null;
+  if(ID.bundled) ID.bundled.ms=Math.round(performance.now()-t0);
+  commitIdentity(ID.bundled?ID.bundled.cloud:fused,got.length,raw);
   el('b-ref').disabled=false;
   hint('Fused '+got.length+' views · Refine to keep converging');
 }
@@ -2090,14 +2187,15 @@ function finishCalibration(){
 // running-average successive sessions so likeness accumulates
 function commitIdentity(cloud,nviews,views){
   // 1. lens: undo the close-range magnification before measuring anything
-  if(views&&views.length>1){
+  if(ID.bundled){ ID.lensK=0; ID.lensErr=null; }        // a triangulated cloud is metric already
+  else if(views&&views.length>1){
     const est=estimateLensK(views);
     ID.lensK=est.k; ID.lensErr=est.err;
   } else if(ID.lensK==null) ID.lensK=2.2;
   const corr=undoPerspective(cloud,ID.lensK);
 
-  // 2. triangulation confidence from cross-view convergence
-  ID.conf=views&&views.length>1?convergence(views,ID.lensK,corr):null;
+  // 2. triangulation confidence: the bundle's residuals, or cross-view convergence
+  ID.conf=ID.bundled?ID.bundled.conf:(views&&views.length>1?convergence(views,ID.lensK,corr):null);
 
   // 3. accumulate across sessions so Refine keeps improving the scan
   if(ID.lm&&CAL.sessions>0&&nviews>1){
@@ -2109,10 +2207,22 @@ function commitIdentity(cloud,nviews,views){
   ID.meas=measureCloud(corr);
   {  // the silhouette fit (§8b) reads the front shot alone: side views put the
      // oval's points somewhere else on the head
+    // (a triangulated cloud puts every outline point at its own depth on its
+    // ray — the eye-plane scale of toModel drew the ears' silhouette ~10% narrow)
     const sh=ID.shots&&ID.shots.center, S0=measToShape(ID.meas);
     for(const k of LOCATION_PARAMS) S0[k]=DEFAULT_SHAPE[k];
     const t0=performance.now();
-    ID.outline=sh?fitOutline(undoPerspective(toModel(sh.lm),ID.lensK),S0):null;
+    // outline landmarks the segmenter sees hair on (hair hanging beside the
+    // face) are left out: the tracker puts them on the hair's edge
+    // (confident hair, above the mouth: on the jaw the segmenter's "hair" is
+    // a beard, which is the outline)
+    let skip=null; const hm=sh&&hairMask(sh);
+    if(hm){ skip=new Set(); const lipV=(sh.lm[61].y+sh.lm[291].y)/2*sh.H;
+      for(const [a,b] of OUTLINE_PAIRS) for(const i of [a,b]){ const X=Math.round(sh.lm[i].x*sh.W), Y=Math.round(sh.lm[i].y*sh.H);
+        if(X>=0&&Y>=0&&X<sh.W&&Y<sh.H&&Y<lipV&&hm[Y*sh.W+X]>=200) skip.add(i); }
+      if(OUTLINE_PAIRS.filter(([a,b])=>!skip.has(a)&&!skip.has(b)).length<6) skip=null; }
+    ID.outline=ID.bundled?fitOutline(corr,S0,skip):sh?fitOutline(undoPerspective(toModel(sh.lm),ID.lensK),S0,skip):null;
+    if(ID.outline&&skip) ID.outline.skipped=skip.size;
     if(ID.outline) ID.outline.ms=Math.round(performance.now()-t0); }
   refreshHair();                   // the hair, from the segmenter's mask (§8b fitHair)
   autoTraits(corr);
@@ -2159,7 +2269,7 @@ function reportCard(f,nv){
     'nose length '+mm(noseL)+' · nose proj '+(deep?mm(f[4*3+2]-(f[50*3+2]+f[280*3+2])/2):'~'),
     'head = '+rat(faceH,noseL)+' nose · '+rat(faceH,lipW)+' lip',
     'soft tissue '+(AV._adip*100).toFixed(0)+'% · bone '+(AV._bone*100).toFixed(0)+'%',
-    'lens k '+(ID.lensK||0).toFixed(2)+(ID.lensErr!=null?' (solved)':' (assumed)')+
+    (ID.bundled?'triangulated '+ID.bundled.views+' views · f '+ID.bundled.f+'W · '+ID.bundled.rms+' px':'lens k '+(ID.lensK||0).toFixed(2)+(ID.lensErr!=null?' (solved)':' (assumed)'))+
       ' · conv '+(ID.conf?(100*[...ID.conf].filter(c=>c>0.25).length/468).toFixed(0)+'%':'—'),
     'fit '+(ID.fitLog?ID.fitLog.length:0)+' params · '+(ID.fitMs||0)+'ms · worst '+
       (ID.fitLog&&ID.fitLog.length?
@@ -2356,13 +2466,14 @@ function autoTraits(cloud){
 // and ridges wherever neighbouring landmarks disagreed by a millimetre.) The
 // features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
 // held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
-const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1};
+const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003};   // …Tri: with a triangulated cloud (§8)
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
 let CONFORM_FEAT=null, CONFORM_CACHE=null;
 function conformField(S,cloud,conf){
   if(!cloud) return null;
-  const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM);
+  const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM)+'|'+!!ID.bundled;
+  const zW=ID.bundled?CONFORM.zTri:CONFORM.z, lamZ=ID.bundled?CONFORM.lamZTri:CONFORM.lamZ;
   if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
   if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
   const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
@@ -2372,7 +2483,7 @@ function conformField(S,cloud,conf){
     const tp=lmTP(lm); if(!tp) continue;
     const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
     sculptPoint(tp[0],tp[1],S,P,o);
-    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*CONFORM.z];
+    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*zW];
     const L=Math.hypot(d[0],d[1],d[2]); if(L>CONFORM.max) d=d.map(v=>v*CONFORM.max/L);
     A.push([o[0],o[1],o[2]]); R.push(d); Wt.push(CONFORM_FEAT.has(lm)?CONFORM.featW:1);
   }
@@ -2394,7 +2505,7 @@ function conformField(S,cloud,conf){
       for(let r=N-1;r>=0;r--){ let v=x[r]; for(let k=r+1;k<N;k++) v-=M[r*N+k]*x[k]; x[r]=v/(M[r*N+r]||1e-18); }
       return x; });
   };
-  const [wx,wy]=solve(CONFORM.lam,[0,1]), [wz]=solve(CONFORM.lamZ,[2]);
+  const [wx,wy]=solve(CONFORM.lam,[0,1]), [wz]=solve(lamZ,[2]);
   const field=(x,y,z,out=[0,0,0])=>{ let a=wx[n],b=wy[n],c=wz[n];
     for(let j=0;j<n;j++){ const r=Math.hypot(x-A[j][0],y-A[j][1],z-A[j][2]); a-=wx[j]*r; b-=wy[j]*r; c-=wz[j]*r; }
     out[0]=a; out[1]=b; out[2]=c; return out; };
@@ -2413,9 +2524,10 @@ function conformField(S,cloud,conf){
 // silhouette runs through them from the ears to the chin — a narrow jaw on a
 // square face was the likeness the conform couldn't reach.
 const OUTLINE_PAIRS=[[93,323],[132,361],[58,288],[172,397],[136,365],[150,379],[149,378],[176,400],[148,377]];
-function fitOutline(front,S0){
+function fitOutline(front,S0,skip=null){
   const tgt=[];
   for(const [a,b] of OUTLINE_PAIRS){ const xa=front[a*3],ya=front[a*3+1],xb=front[b*3],yb=front[b*3+1];
+    if(skip&&(skip.has(a)||skip.has(b))) continue;                   // hair beside the face is not its outline
     if([xa,ya,xb,yb].every(isFinite)) tgt.push([(ya+yb)/2,Math.abs(xa-xb)/2]); }
   if(tgt.length<6) return null;
   const o=new Float32Array(8), NT=30, NPh=60;
@@ -2475,11 +2587,16 @@ function snapFeatures(H,cloud){
   const move=(rim,C,minHalf)=>{
     if(rim.length<6||C.some(p=>!p.every(isFinite))) return null;
     const U=box(C), Rb=box(rim.map(i=>[P[i*3],P[i*3+1]])); U.h[1]=Math.max(U.h[1],minHalf||0);
-    const Cn=C.map(p=>[(p[0]-U.c[0])/U.h[0],(p[1]-U.c[1])/U.h[1]]);
+    // the target contour by its normalised angle, interpolated (a ray from the
+    // centre failed on a closed eye's slit, and the eye stayed the generator's)
+    const Ct=C.map(p=>[Math.atan2((p[1]-U.c[1])/U.h[1],(p[0]-U.c[0])/U.h[0]),p[0],p[1]]).sort((a,b)=>a[0]-b[0]);
+    const tgtAt=a=>{ let k=0; while(k<Ct.length&&Ct[k][0]<a) k++; const p=Ct[(k-1+Ct.length)%Ct.length], q=Ct[k%Ct.length];
+      let span=q[0]-p[0]; if(span<=0) span+=2*Math.PI; let t=a-p[0]; if(t<0) t+=2*Math.PI; t=clamp(t/span,0,1);
+      return [p[1]+(q[1]-p[1])*t,p[2]+(q[2]-p[2])*t]; };
     const ang=(x,y)=>Math.atan2((y-Rb.c[1])/Rb.h[1],(x-Rb.c[0])/Rb.h[0]);
     const R=[];
-    for(const i of rim){ const a=ang(P[i*3],P[i*3+1]), q=rayHit(Cn,[0,0],a); if(!q) continue;
-      let tx=U.c[0]+q[0]*U.h[0], ty=U.c[1]+q[1]*U.h[1];
+    for(const i of rim){ const a=ang(P[i*3],P[i*3+1]), q=tgtAt(a);
+      let tx=q[0], ty=q[1];
       if(minHalf&&Math.abs(ty-U.c[1])<minHalf) ty=U.c[1]+Math.sign(P[i*3+1]-Rb.c[1]||1)*minHalf;   // a closed mouth still parts a little
       R.push([a,tx-P[i*3],ty-P[i*3+1],i]); }
     if(R.length<6) return null;
@@ -2607,8 +2724,26 @@ function cleanShot(sh){
   CLEAN.set(sh,c={px:out,blobs,filled,hair:!!hm});
   return c;
 }
-// least squares for a 2×4 affine u = P·[x,y,z,1] over the tracked points
-function fitCamera(cloud,lm,W,H){
+// A view's camera: the bundle's perspective camera when it triangulated this
+// view (§8), else a 2×4 affine u = P·[x,y,z,1] least-squares fitted over the
+// tracked points. Either way: project(x,y,z) → [u,v,depth], back(u,v,z) →
+// the model (x,y) on the plane z, dir (toward the camera, model space), and
+// each landmark's residual (photo − projection), which bends the projection
+// locally where the model and the tracker disagree.
+function fitCamera(cloud,lm,W,H,id){
+  const B=id&&ID.bundled&&ID.bundled.poses&&ID.bundled.poses[id];
+  if(B){
+    const {A,b,f}=B, cx=W/2, cy=H/2;
+    const project=(x,y,z)=>{ const Yx=A[0]*x+A[1]*y+A[2]*z+b[0], Yy=A[3]*x+A[4]*y+A[5]*z+b[1], Yz=A[6]*x+A[7]*y+A[8]*z+b[2]; return [cx+f*Yx/Yz,cy+f*Yy/Yz,Yz]; };
+    const back=(u,v,z)=>{ const k0=A[2]*z+b[0], k1=A[5]*z+b[1], k2=A[8]*z+b[2], du=u-cx, dv=v-cy;
+      const m00=du*A[6]-f*A[0], m01=du*A[7]-f*A[1], r0=f*k0-du*k2, m10=dv*A[6]-f*A[3], m11=dv*A[7]-f*A[4], r1=f*k1-dv*k2, det=m00*m11-m01*m10||1e-12;
+      return [(r0*m11-m01*r1)/det,(m00*r1-m10*r0)/det]; };
+    const dl=Math.hypot(A[6],A[7],A[8])||1, dir=[-A[6]/dl,-A[7]/dl,-A[8]/dl];
+    const res=new Float32Array(468*2);
+    for(let i=0;i<468;i++){ const x=cloud[i*3]; if(!isFinite(x)||!lm[i]) continue;
+      const q=project(x,cloud[i*3+1],cloud[i*3+2]); res[i*2]=lm[i].x*W-q[0]; res[i*2+1]=lm[i].y*H-q[1]; }
+    return {perspective:true,A,b,f,project,back,dir,res};
+  }
   const AtA=new Float64Array(16), Atu=new Float64Array(4), Atv=new Float64Array(4);
   let n=0;
   for(let i=0;i<468;i++){
@@ -2632,7 +2767,10 @@ function fitCamera(cloud,lm,W,H){
   for(let i=0;i<468;i++){ const x=cloud[i*3],y=cloud[i*3+1],z=cloud[i*3+2];
     if(!isFinite(x)||!lm[i]) continue;
     res[i*2]=lm[i].x*W-(pu[0]*x+pu[1]*y+pu[2]*z+pu[3]); res[i*2+1]=lm[i].y*H-(pv[0]*x+pv[1]*y+pv[2]*z+pv[3]); }
-  return {pu,pv,dir:d,res};
+  const project=(x,y,z)=>[pu[0]*x+pu[1]*y+pu[2]*z+pu[3],pv[0]*x+pv[1]*y+pv[2]*z+pv[3],1];
+  const det=pu[0]*pv[1]-pu[1]*pv[0]||1e-12;
+  const back=(u,v,z)=>{ const a=u-pu[2]*z-pu[3], b=v-pv[2]*z-pv[3]; return [(a*pv[1]-pu[1]*b)/det,(pu[0]*b-pv[0]*a)/det]; };
+  return {perspective:false,pu,pv,dir:d,res,project,back};
 }
 // A render target that reads back what the SCREEN shows. three (r160)
 // tone-maps and sRGB-encodes only for the canvas and XR targets; any other
@@ -2683,10 +2821,9 @@ function shadeProbe(H,nrm,V,W,Hh){
     renderer.setRenderTarget(null); renderer.setClearColor(cc,ca); scene.background=bg; scene.remove(mesh);
     for(const o of hid) o.visible=true; rt.dispose(); geo.dispose(); mat.dispose();
   }
-  const {pu,pv}=V, E=new Float32Array(H.nv);
+  const E=new Float32Array(H.nv);
   for(let v=0;v<H.nv;v++){
-    const x=H.pos[v*3],y=H.pos[v*3+1],z=H.pos[v*3+2];
-    const X=Math.round(pu[0]*x+pu[1]*y+pu[2]*z+pu[3]), Y=Math.round(pv[0]*x+pv[1]*y+pv[2]*z+pv[3]);
+    const q=V.project(H.pos[v*3],H.pos[v*3+1],H.pos[v*3+2]), X=Math.round(q[0]), Y=Math.round(q[1]);
     if(X<1||Y<1||X>=W-1||Y>=Hh-1) continue;
     let L=0,n=0;
     for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const j=((Hh-1-(Y+dy))*W+(W-1-(X+dx)))*4;
@@ -2717,7 +2854,7 @@ function bakePhoto(H,nrm){
   if(!shots||!cloud) return null;
   const views=[];
   for(const [id,sh] of Object.entries(shots)){
-    const cam=fitCamera(cloud,sh.lm,sh.W,sh.H); if(cam) views.push({id,sh,...cam});
+    const cam=fitCamera(cloud,sh.lm,sh.W,sh.H,id); if(cam) views.push({id,sh,...cam});
   }
   if(!views.length) return null;
   const nv=H.nv, K=8;
@@ -2734,7 +2871,7 @@ function bakePhoto(H,nrm){
   }
   const acc=new Float32Array(nv*3), wsum=new Float32Array(nv);
   for(const V of views){
-    const {pu,pv,dir,res,sh}=V, col=new Float32Array(nv*3), fac=new Float32Array(nv), ok=new Uint8Array(nv),
+    const {project,dir,res,sh}=V, col=new Float32Array(nv*3), fac=new Float32Array(nv), ok=new Uint8Array(nv),
       U=new Float32Array(nv), Wp=new Float32Array(nv), gv=new Float32Array(nv).fill(1);
     // a real eye isn't skin: nothing is taken from inside the photo's eye
     // openings (the lids' edges would come out white, or iris-coloured)
@@ -2747,7 +2884,7 @@ function bakePhoto(H,nrm){
       // every vertex gets its projection (the texture's UV interpolates across
       // the photo's edge); only the ones the photo knows are sampled
       const x=H.pos[v*3],y=H.pos[v*3+1],z=H.pos[v*3+2];
-      let u=pu[0]*x+pu[1]*y+pu[2]*z+pu[3], w=pv[0]*x+pv[1]*y+pv[2]*z+pv[3], ru=0,rw=0,ws=0;
+      let [u,w]=project(x,y,z), ru=0,rw=0,ws=0;
       for(let k=0;k<K;k++){ const i=near[v*K+k]; if(i<0) continue; const wk=1/(nd[v*K+k]**2+9e-6);
         ru+=res[i*2]*wk; rw+=res[i*2+1]*wk; ws+=wk; }
       if(ws){ u+=ru/ws; w+=rw/ws; }
@@ -2848,15 +2985,18 @@ function bakePhoto(H,nrm){
   // lashes, freckles. Mixed in where the front camera saw the surface
   // squarely; the per-vertex colour stays underneath everywhere else (and
   // is what the tesserae read)
+  // (and the left and right photos beside it: where the front camera saw a
+  // cheek's side steeply — a smear — the side photo saw it squarely)
   let front=null;
   const Vc=views.find(V=>V.id==='center');
   if(Vc){
-    const uv=new Float32Array(nv*2), pm=new Float32Array(nv*2);
-    for(let v=0;v<nv;v++){
-      uv[v*2]=Vc.U[v]/Vc.sh.W; uv[v*2+1]=Vc.Wp[v]/Vc.sh.H;
-      pm[v*2]=Vc.ok[v]?mask[v]*smoothstep(0.45,0.75,Vc.fac[v]):0; pm[v*2+1]=Vc.g[v];   // steep sides smear
-    }
-    front={sh:Vc.sh,uv,pm};
+    const tex=[];
+    for(const id of ['center','left','right']){ const V=views.find(x=>x.id===id); if(!V) continue;
+      const uv=new Float32Array(nv*2), w=new Float32Array(nv), g=new Float32Array(nv), lo=id==='center'?0.45:0.35, hi=id==='center'?0.75:0.7, amp=id==='center'?1.5:1;
+      for(let v=0;v<nv;v++){ uv[v*2]=V.U[v]/V.sh.W; uv[v*2+1]=V.Wp[v]/V.sh.H;
+        w[v]=V.ok[v]?mask[v]*smoothstep(lo,hi,V.fac[v])*amp:0; g[v]=V.g[v]; }
+      tex.push({id,sh:V.sh,uv,w,g,gain:V.gain}); }
+    front={sh:Vc.sh,tex};
   }
   return {col:out,mask,skinLin,views:views.map(V=>V.id),front,probe:(Vc&&Vc.probe)||null,
     viewGain:Object.fromEntries(views.map(V=>[V.id,V.gain.map(x=>+x.toFixed(3))]))};
@@ -2870,11 +3010,9 @@ function bakePhoto(H,nrm){
 function fitHair(){
   const sh=ID.shots&&ID.shots.center; if(!sh||!ID.lm) return null;
   const M=hairMask(sh); if(!M) return null;
-  const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H); if(!cam) return null;
+  const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,'center'); if(!cam) return null;
   const W=sh.W, H=sh.H, N=W*H, P=i=>[sh.lm[i].x*W,sh.lm[i].y*H];
-  const {pu,pv}=cam, det=pu[0]*pv[1]-pu[1]*pv[0];
-  // image → model (x, y) on the plane z (the affine, inverted with depth fixed)
-  const back=(u,v,z)=>{ const a=u-pu[2]*z-pu[3], b=v-pv[2]*z-pv[3]; return [(a*pv[1]-pu[1]*b)/det,(pu[0]*b-pv[0]*a)/det]; };
+  const back=cam.back;                          // image → model (x, y) on the plane z
   const faceW=Math.hypot(P(234)[0]-P(454)[0],P(234)[1]-P(454)[1]), faceH=Math.hypot(P(10)[0]-P(152)[0],P(10)[1]-P(152)[1]);
   const cx=(P(234)[0]+P(454)[0])/2, x0=Math.max(0,Math.floor(cx-1.7*faceW)), x1=Math.min(W-1,Math.ceil(cx+1.7*faceW));
   const y1=Math.min(H-1,Math.ceil(P(152)[1]+1.3*faceH));
@@ -2955,21 +3093,24 @@ function photoTexture(sh){
   t.minFilter=THREE.LinearMipmapLinearFilter; t.magFilter=THREE.LinearFilter; t.anisotropy=4; t.needsUpdate=true;
   PHOTO_TEX.set(sh,t); return t;
 }
-// the skin material mixes the projected photo over its vertex colour:
-// photoMix = (how much, the photo's de-lighting gain) per vertex; the
-// camera→render gain is a uniform
-function photoSkin(mat,tex,G,raw=false){
+// the skin material mixes the projected photos over its vertex colour: per
+// vertex, each view's weight (how squarely and surely it saw the surface) and
+// its de-lighting gain; per view, the calibration's colour gain
+function photoSkin(mat,texs,gains,raw=false){
+  const n=texs.length;
   mat.onBeforeCompile=sh=>{
-    if(raw) G=[1,1,1];
-    sh.uniforms.photoMap={value:tex}; sh.uniforms.photoGain={value:new THREE.Vector3(G[0],G[1],G[2])};
+    for(let k=0;k<3;k++){ sh.uniforms['photoMap'+k]={value:texs[Math.min(k,n-1)]};
+      const g=raw?[1,1,1]:gains[Math.min(k,n-1)]; sh.uniforms['photoGain'+k]={value:new THREE.Vector3(g[0],g[1],g[2])}; }
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute vec2 photoUv;\nattribute vec2 photoMix;\nvarying vec2 vPhotoUv;\nvarying vec2 vPhotoMix;')
-      .replace('#include <uv_vertex>','#include <uv_vertex>\n\tvPhotoUv=photoUv; vPhotoMix=photoMix;');
+      .replace('#include <common>','#include <common>\nattribute vec2 photoUv0; attribute vec2 photoUv1; attribute vec2 photoUv2;\nattribute vec3 photoW; attribute vec3 photoG;\nvarying vec2 vPUv0; varying vec2 vPUv1; varying vec2 vPUv2; varying vec3 vPW; varying vec3 vPG;')
+      .replace('#include <uv_vertex>','#include <uv_vertex>\n\tvPUv0=photoUv0; vPUv1=photoUv1; vPUv2=photoUv2; vPW=photoW; vPG=photoG;');
+    const tap=(k)=>`if(vPW[${k}]>0.001){ acc+=vPW[${k}]*min(min(texture2D(photoMap${k},vPUv${k}).rgb*${raw?'1.0':`vPG[${k}]`},vec3(1.0))*photoGain${k},vec3(1.0)); ws+=vPW[${k}]; }`;
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nuniform sampler2D photoMap;\nuniform vec3 photoGain;\nvarying vec2 vPhotoUv;\nvarying vec2 vPhotoMix;')
-      .replace('#include <color_fragment>','#include <color_fragment>\n\tdiffuseColor.rgb=mix(diffuseColor.rgb,min(min(texture2D(photoMap,vPhotoUv).rgb*'+(raw?'1.0':'vPhotoMix.y')+',vec3(1.0))*photoGain,vec3(1.0)),'+(raw?'step(0.001,vPhotoMix.x)':'vPhotoMix.x')+');');
+      .replace('#include <common>','#include <common>\nuniform sampler2D photoMap0; uniform sampler2D photoMap1; uniform sampler2D photoMap2;\nuniform vec3 photoGain0; uniform vec3 photoGain1; uniform vec3 photoGain2;\nvarying vec2 vPUv0; varying vec2 vPUv1; varying vec2 vPUv2; varying vec3 vPW; varying vec3 vPG;')
+      .replace('#include <color_fragment>','#include <color_fragment>\n\t{ vec3 acc=vec3(0.0); float ws=0.0; '+[0,1,2].slice(0,n).map(tap).join(' ')+
+        (raw?' if(ws>0.001) diffuseColor.rgb=acc/ws;':' if(ws>0.001) diffuseColor.rgb=mix(diffuseColor.rgb,acc/ws,min(1.0,ws));')+' }');
   };
-  mat.customProgramCacheKey=()=>'vm-photo-skin'+(raw?'-raw':'');
+  mat.customProgramCacheKey=()=>'vm-photo-skin'+n+(raw?'-raw':'');
 }
 // Where the tracker itself finds each landmark on the head: render the
 // head, track the render, raycast every landmark back onto the surface, and
@@ -3040,18 +3181,27 @@ async function trackerAnchors(){
 // image's mirror, so the mirror view keeps triangle winding (read-backs flip
 // x back: pixel (x,y) of the photo is ((H-1-y)·W + W-1-x) of the target)
 function shotCamera(cam,W,H){
-  const {pv,dir}=cam, R=0.3, c0=0.05, pu=[-cam.pu[0],-cam.pu[1],-cam.pu[2],W-cam.pu[3]];
   const C=new THREE.Camera();
-  C.projectionMatrix.set(2*pu[0]/W,2*pu[1]/W,2*pu[2]/W,2*pu[3]/W-1,
-    -2*pv[0]/H,-2*pv[1]/H,-2*pv[2]/H,1-2*pv[3]/H,
-    -dir[0]/R,-dir[1]/R,-dir[2]/R,c0/R,
-    0,0,0,1);
+  if(cam.perspective){
+    // the bundle's camera: view = mirror · (Y = A·X + b), three's camera space
+    // (x right, y up, looking down −z), then a plain perspective with focal f
+    const {A,b,f}=cam, d=b[2], N=0.05*d, F=20*d;
+    const V=new THREE.Matrix4().set(-A[0],-A[1],-A[2],-b[0], -A[3],-A[4],-A[5],-b[1], -A[6],-A[7],-A[8],-b[2], 0,0,0,1);
+    const P=new THREE.Matrix4().set(2*f/W,0,0,0, 0,2*f/H,0,0, 0,0,-(F+N)/(F-N),-2*F*N/(F-N), 0,0,-1,0);
+    C.projectionMatrix.multiplyMatrices(P,V);
+  } else {
+    const {pv,dir}=cam, R=0.3, c0=0.05, pu=[-cam.pu[0],-cam.pu[1],-cam.pu[2],W-cam.pu[3]];
+    C.projectionMatrix.set(2*pu[0]/W,2*pu[1]/W,2*pu[2]/W,2*pu[3]/W-1,
+      -2*pv[0]/H,-2*pv[1]/H,-2*pv[2]/H,1-2*pv[3]/H,
+      -dir[0]/R,-dir[1]/R,-dir[2]/R,c0/R,
+      0,0,0,1);
+  }
   C.projectionMatrixInverse.copy(C.projectionMatrix).invert(); C.updateMatrixWorld(true);
   return C;
 }
 function renderShot(id){
   const sh=ID.shots&&ID.shots[id]; if(!sh||!ID.lm) return null;
-  const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H); if(!cam) return null;
+  const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,id); if(!cam) return null;
   const W=sh.W, H=sh.H, C=shotCamera(cam,W,H);
   const rt=screenTarget(W,H), px=new Uint8Array(W*H*4), bg=scene.background;
   const prevColor=renderer.getClearColor(new THREE.Color()), prevAlpha=renderer.getClearAlpha();
@@ -3331,7 +3481,7 @@ function drawFlat(now){
 
 /* ═══ §13 SCENE + LOOP ═══════════════════════════════════════════════ */
 let scene,camera,renderer,orbit={yaw:0,pitch:0,dist:0.60,drag:null};
-const LIGHT={name:'room',rigs:null,exposure:{room:1,vibe:1}};   // exposure: set by calibrateColour
+const LIGHT={name:'room',rigs:null,exposure:{room:1,vibe:1},key:0.9,fill:0.9};   // exposure: set by calibrateColour; key/fill: the room rig's
 let frames=0,lastFps=performance.now(),fpsEma=60,lastT=performance.now();
 function initScene(){
   renderer=new THREE.WebGLRenderer({canvas:el('gl'),antialias:true,alpha:true});
@@ -3364,10 +3514,15 @@ function initScene(){
   // (sky/ground, cyan rim, warm kicker, a key tinted by mood).
   const env=new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(renderer),0.04).texture;
   LIGHT.rigs={
-    room:()=>{ scene.environment=env; hemi.intensity=0; fill.intensity=0; rim.intensity=0; warm.intensity=0;
-      key.intensity=1.3; key.color.set(0xffffff); key.position.set(0.55,0.85,1.1);
+    // (a hemisphere fill, neutral, so the light isn't the key's alone: the
+    // key and the room's ceiling lit the top of the head 4× brighter than under
+    // the chin, and a camera's room doesn't — the chin-up view read 7 L* dark,
+    // the chin-down view 10 bright)
+    room:()=>{ scene.environment=env; fill.intensity=0; rim.intensity=0; warm.intensity=0;
+      hemi.color.set(0xe8ecf2); hemi.groundColor.set(0xd8cfc6); hemi.intensity=LIGHT.fill;
+      key.intensity=LIGHT.key; key.color.set(0xffffff); key.position.set(0.55,0.85,1.1);
       renderer.toneMapping=THREE.CustomToneMapping; renderer.toneMappingExposure=LIGHT.exposure.room; },   // PBR Neutral (top)
-    vibe:()=>{ scene.environment=null; hemi.intensity=0.48*PI; fill.intensity=0.34*PI;
+    vibe:()=>{ scene.environment=null; hemi.color.set(0x9fb6dd); hemi.groundColor.set(0x2a2018); hemi.intensity=0.48*PI; fill.intensity=0.34*PI;
       rim.intensity=pt(0.55,2.2,[-0.32,0.22,-0.34]); warm.intensity=pt(0.30,2.0,[0.36,-0.24,-0.18]);
       key.intensity=1.05*PI; key.position.set(0.35,0.55,0.95);
       renderer.toneMapping=THREE.LinearToneMapping; renderer.toneMappingExposure=LIGHT.exposure.vibe; },   // (plain, but with an exposure)
@@ -3537,14 +3692,22 @@ function hairMask(sh){
   HAIRMASK.set(sh,out); return out;
 }
 function trackLoop(video){
-  let last=-1;
+  let last=-1, small=null, sctx=null;
   const step=()=>{
     if(!TRK.on) return;
     if(!TRK.paused&&video.readyState>=2&&video.currentTime!==last){
       last=video.currentTime;
       const now=performance.now();
       let r=null;
-      try{ r=TRK.lmk.detectForVideo(video,now); }catch(e){ TRK.err=e; console.warn('track:',e); }
+      // the camera runs at 720p for the photos' sake; on the CPU the tracker
+      // reads a 640-wide copy (its landmarks are normalised, so nothing else
+      // changes — 720p frames cost it 3× on the CPU)
+      let src=video;
+      if(TRK.delegate==='CPU'&&video.videoWidth>720){
+        const w=640, h=Math.round(640*video.videoHeight/video.videoWidth);
+        if(!small){ small=document.createElement('canvas'); small.width=w; small.height=h; sctx=small.getContext('2d',{willReadFrequently:true}); }
+        sctx.drawImage(video,0,0,w,h); src=small; }
+      try{ r=TRK.lmk.detectForVideo(src,now); }catch(e){ TRK.err=e; console.warn('track:',e); }
       const lm=r&&r.faceLandmarks&&r.faceLandmarks[0];
       if(lm){
         if(TRK.lost>=15) hint('Face found');
@@ -3570,7 +3733,7 @@ async function startCamera(){
   loadSegmenter().then(()=>{ if(ID.shots&&ID.lm&&!ID.hairFit&&refreshHair()){ buildAvatar(); ID.gainLog=calibrateColour(); } }).catch(()=>{});
   let stream;
   try{ stream=await navigator.mediaDevices.getUserMedia({audio:false,
-    video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}}); }
+    video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}}); }   // the photo is the face's texture: as sharp as the camera gives
   catch(e){ return fail(e&&e.name==='NotAllowedError'?'Denied':'No camera',e); }
   const pip=el('pip'); pip.srcObject=stream;
   try{ await pip.play(); }catch(_){}
@@ -3878,8 +4041,8 @@ window.mosaic={THREE,
   get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);},
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
-  get av(){ return {outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
-  LIKE, CONFORM, trackerAnchors,
+  get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },
+  LIKE, CONFORM, LIGHT, trackerAnchors,
   // the avatar seen by a calibration photo's own camera, over that photo — a
   // likeness you can overlay (photo | avatar | 50:50)
   renderAtShot(id='center'){
@@ -3909,7 +4072,7 @@ window.mosaic={THREE,
   like(o){ Object.assign(LIKE,o); buildAvatar(); return JSON.stringify(LIKE); },
   loadSegmenter(){ return loadSegmenter().then(()=>SEG.delegate); },
   hairFitImage(){ const f=fitHair(), sh=ID.shots&&ID.shots.center; if(!f||!sh) return null;
-    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H), pr=(x,y,z)=>[cam.pu[0]*x+cam.pu[1]*y+cam.pu[2]*z+cam.pu[3],cam.pv[0]*x+cam.pv[1]*y+cam.pv[2]*z+cam.pv[3]];
+    const cam=fitCamera(ID.lm,sh.lm,sh.W,sh.H,'center'), pr=cam.project;
     const cv=document.createElement('canvas'); cv.width=sh.W; cv.height=sh.H; const g=cv.getContext('2d'), im=new ImageData(new Uint8ClampedArray(sh.px),sh.W,sh.H);
     for(let i=0;i<sh.W*sh.H;i++) if(f.mask[i]){ im.data[i*4]=im.data[i*4]*0.5+127; im.data[i*4+2]*=0.5; }
     g.putImageData(im,0,0); g.lineWidth=2;
@@ -3922,6 +4085,11 @@ window.mosaic={THREE,
     const cv=document.createElement('canvas'); cv.width=sh.W; cv.height=sh.H; const g=cv.getContext('2d'), im=new ImageData(new Uint8ClampedArray(sh.px),sh.W,sh.H);
     for(let i=0;i<sh.W*sh.H;i++){ const a=m[i]/255; im.data[i*4]=im.data[i*4]*(1-a)+255*a; im.data[i*4+1]*=1-a*0.8; im.data[i*4+2]*=1-a*0.8; }
     g.putImageData(im,0,0); return cv.toDataURL('image/png'); },
+  // the room rig's balance, re-applied and re-calibrated (exposure, balance)
+  relight(key,fill){ LIGHT.key=key; LIGHT.fill=fill; if(LIGHT.rigs) LIGHT.rigs.room(); ID.gain=null; LIGHT.exposure.room=1; renderer.toneMappingExposure=1;
+    buildAvatar(); ID.gainLog=calibrateColour(); return JSON.stringify({key,fill,probe:AV.photo&&AV.photo.probe,x:LIGHT.exposure.room}); },
+  calDump(){ const v=el('pip'); return JSON.stringify({W:v.videoWidth,H:v.videoHeight,lm:ID.lm&&Array.from(ID.lm,x=>+x.toFixed(5)),
+    views:Object.fromEntries(Object.entries(CAL.views).map(([k,lm])=>[k,lm.map(p=>[+p.x.toFixed(5),+p.y.toFixed(5),+p.z.toFixed(5)])]))}); },
   preloadTracker(){ return (TRK.lmk?Promise.resolve():createTracker()).then(()=>TRK.delegate); },
   trackPause(on=true){ TRK.paused=on; if(on){ const st=CAP.st; st.yaw=st.pitch=st.roll=0; for(const k of BS) st.bs[k]=0; st.gx=st.gy=0; } },
   residuals(){ if(!ID.lm||!AV.S) return null; const get=modelGetter(AV.S), out={};

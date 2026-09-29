@@ -1200,6 +1200,59 @@
       loose strands and updos are approximated by a shell; the iPad path is
       still verified only headless.
 
+- [x] **VibeMesh — depth from the turns, and the photos from the side.**
+      Seen in profile beside the stand-in heads, both avatars were flat: no
+      nose to speak of, no brow, no chin. Every depth had come from the
+      tracker's z, a guess from one picture. Measured against ground truth
+      (each landmark ray-cast onto the true mesh of the stand-in head, the
+      face outline excluded, the worst 10% trimmed): 3.9 mm rms, 5.2 mm in
+      depth, the nose 7.2 mm off. The calibration's turns are real parallax,
+      so:
+      · the five views are now a perspective bundle — one focal length (a
+        coarse search, pulled mildly toward 1·W), each view's pose, each
+        landmark's position — solved by alternating linear triangulation
+        with Gauss-Newton on the poses, outliers softened (a landmark the
+        tracker hallucinated on the far side); 1.1 px reprojection, 1.1 s.
+        Truth error 3.9 → 2.8 mm rms, depth 5.2 → 3.7, the nose 7.2 → 3.7;
+        the portrait's truth is contaminated by strands (a "nose" 30 mm off)
+        so Lee Perry-Smith is the clean witness. The conform trusts the
+        metric depth (weight 1, λz ÷3); the outline fit reads the
+        triangulated cloud (the eye-plane scale of the old path had drawn
+        the ears' silhouette ~10% narrow — the head grew 13%), skipping
+        outline landmarks the segmenter sees confident hair on above the
+        mouth (hair hanging beside a face is not its outline; a beard is);
+      · every projection is that view's own perspective camera — the texture
+        bake, the shading probe, the hair fit's back-projection, and the
+        likeness render. An affine camera fitted to a metric cloud had put
+        the far outline wide and the nose narrow (the front view had read
+        17.1 against the photo's 14.9 for a moment; with the true camera,
+        12.6);
+      · the skin shader blends three photos (front, left, right) by how
+        squarely and surely each saw the surface, each with its de-lighting
+        gain and the calibration's colour gain; the cheeks' sides had faded
+        to blurred vertex colour with a smear where the front photo saw them
+        steeply. Side views gained 2.5–3 ΔE at once;
+      · the camera is asked for 1280×720 (the photo is the face's texture,
+        and it is visibly sharper: freckles, lashes, brow hairs); on the CPU
+        delegate the tracker reads a 640-wide copy, since 720p frames cost it
+        3× there. Verified with a 720p stand-in clip;
+      · the room rig gained a neutral hemisphere fill (key 0.9, fill 0.9);
+        the eye and mouth rims correspond by normalised angle rather than a
+        ray (a closed eye's slit had failed the ray and left the generator's
+        open eye).
+      Likeness, ΔE at 30 ppd, start of this entry → now, in the front / left
+      / right / chin-up / chin-down calibration views — the side views are
+      new to the measurement (tools/likeness-check on `likenessData(id)`):
+      Lee Perry-Smith 14.9 / 18.2 / 18.1 / 20.3 / 20.6 → 13.1 / 15.3 / 14.2 /
+      18.1 / 19.0 (form at 240 ppd, front, 0.937 → 0.955); the portrait
+      23.7 / 27.4 / 26.6 / 31.3 / 28.8 → 21.9 / 24.5 / 21.3 / 28.5 / 27.2.
+      Tiles against their mesh under the changed rig 11.7 / 4.5 (flat,
+      grout). Not moved: the chin-up and chin-down views' lightness bias (−7
+      / +10 L*) — a sweep of key against fill from 1.3/0 to 0.2/2.4 changed
+      it by under 1 ΔE, so it sits in the photos' own baked light, not the
+      rig. Open: the mouth region still bulges a little in profile; loose
+      strands and updos remain a shell.
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to
