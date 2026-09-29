@@ -1320,25 +1320,48 @@
         are kept a slit apart, and each column is walked outward from the
         slit pushing any row that would cross a rim. Under that lay the
         real fault: the conform's anchors are where the tracker finds
-        each landmark on a render of the default head, and around the
-        mouth it reads that render loosely — the mouth line 8 mm above
-        the sculpt's slit, the lower lip's edge 7 mm below it (the
-        sculpt's is 17), the chin's bottom 15 mm above the sculpt's — so
-        every fitted head had its lip line conformed 8 mm above its slit
-        (the snap then dragged the slit up through the rows) and its chin
-        stretched a third too long. The mouth and the chin's midline are
-        now anchored on the sculpt's own features (corners, vermilion
-        borders and bow, the inner contour on the slit, the midline down
-        to the menton), and the tracker's perioral ring, which contradicts
-        them, is left for the field to interpolate; within
+        each landmark on a render of the default head, and the tracker
+        reads that render's lower face short — the nose base 7 mm above
+        the sculpt's, the mouth line 8 mm above the slit, the lower lip's
+        edge 7 mm below it (the sculpt's is 17), the chin's bottom 16 mm
+        above the sculpt's — so every fitted head had its lip line
+        conformed 8 mm above its slit, and the snap then dragged the slit
+        up through the rows. The mouth is now anchored on the sculpt's own
+        features (corners, vermilion borders and bow, the inner contour on
+        the slit), and the tracker's perioral ring and lip-to-chin
+        midline, which contradict them, are left for the field to
+        interpolate. The chin stays the tracker's: anchoring it on the
+        sculpt too (its menton at the silhouette's bottom) made every chin
+        short, since the tracker's menton on a photo also sits above the
+        bottom — measured, front view at 30 ppd (Lee Perry-Smith / the
+        portrait): the tracker's anchors throughout 13.2 / 22.4 with the
+        creased lip, mouth and chin on the sculpt 14.3 / 23.1 at the best
+        chin lift (7 mm), mouth on the sculpt with the tracker's chin
+        13.8 / 22.7 and a smooth lip. The remaining cost is the sculpt's
+        own lips, twice a real pair's height, squeezed onto the user's;
+        the next step is a lower face the tracker reads as it is (real
+        lip heights, a chin that turns under) and the anchor table
+        measured again on it; within
         the lip span the skin weight splits at the slit (lower lip the
         jaw's, upper the head's), widening to a soft blend past the
         corners; the hinge moved from eye level to the ear canal's (a
-        dropped jaw had swung the lip back more than down); and the two
-        cavity shells were enlarged to close off the interior at any
-        opening — the neck's top rises inside the head and had shown
-        through as a skin-coloured floor. Teeth and a dark mouth at every
-        opening, front and three-quarter.
+        dropped jaw had swung the lip back more than down); the neck's two
+        hidden top sections sit behind the mouth's space (their fronts had
+        shown through an open mouth as a skin-coloured floor) and the two
+        cavity shells close off the interior at any opening, the head's
+        behind the lower teeth's swing; the slit at rest is a line, not a
+        gap that showed the teeth, and the upper incisors hang a
+        millimetre below the lip line. Teeth and a dark mouth at every
+        opening, front and three-quarter, on the fitted heads as well.
+      Cost, all five views (ΔE at 30 ppd, front/left/right/up/down,
+      against the previous commit measured with the same harness):
+      Lee Perry-Smith 13.3 / 15.6 / 13.9 / 17.9 / 19.0 → 13.7 / 15.7 /
+      14.4 / 18.7 / 19.6; the portrait 21.9 / 24.4 / 21.8 / 28.9 / 27.2 →
+      23.5 / 25.9 / 22.3 / 30.3 / 28.5. A working mouth bought for half a
+      to one and a half ΔE, most of it the sculpt's oversized lips squeezed
+      onto real ones; the previous commit measured in the same session
+      reproduced last round's numbers to a few tenths, so the harness is
+      reliable to about that.
 
 ## Backlog
 
