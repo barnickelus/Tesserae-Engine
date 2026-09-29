@@ -2657,6 +2657,40 @@ function fitSpline(A,R,Wt,lam,lamZ){
   return field;
 }
 let CONFORM_FEAT=null, CONFORM_CACHE=null;
+// The mouth and chin, defined on the sculpt itself. LM_TP is where the
+// tracker finds each landmark on a RENDER of the default head, and around
+// the mouth it reads that render loosely: the mouth line 8 mm above the
+// sculpt's slit, the lower lip's edge 7 mm below it (the sculpt's is 17),
+// the chin's bottom 15 mm above the sculpt's. Conforming by those put the
+// user's lip line 8 mm above the slit, and the rim snap then dragged the
+// slit up through the rows above it (creases on every fitted head), while
+// the chin stretched a third too long. Here each mouth landmark is the
+// sculpt's own feature: the corners, the vermilion borders (0, 17 and the
+// bow), the inner contour on the slit, the midline down to the menton.
+// Signed x: the subject's right (61's side) is +x.
+function mouthSpecs(P){
+  const {MY,LW,CHY}=P, hU=0.0108*P.S.lipFull, hL=0.0168*P.S.lipFull, sl=LW*0.9;   // sl: the slit's half-width
+  const out=[[61,LW,MY],[291,-LW,MY],[0,0,MY+hU],[17,0,MY-hL],[13,0,MY+0.0022],[14,0,MY-0.0026],
+    [11,0,MY+0.55*hU],[12,0,MY+0.3*hU],[15,0,MY-0.45*hL],[16,0,MY-0.75*hL],
+    [18,0,MY-hL-0.004],[200,0,MY-hL-0.009],[199,0,MY-hL-0.014],[175,0,CHY+0.0085],[152,0,CHY+0.0025]];
+  const pairs=[ // [right id, left id, x fraction, y]
+    [185,409,0.78*LW,MY+0.35*hU],[40,270,0.60*LW,MY+0.70*hU],[39,269,0.40*LW,MY+0.92*hU],[37,267,0.20*LW,MY+hU],
+    [146,375,0.80*LW,MY-0.35*hL],[91,321,0.62*LW,MY-0.70*hL],[181,405,0.42*LW,MY-0.90*hL],[84,314,0.20*LW,MY-hL],
+    [78,308,sl,MY],[191,415,0.78*sl,MY+0.0009],[80,310,0.62*sl,MY+0.0016],[81,311,0.42*sl,MY+0.0020],[82,312,0.22*sl,MY+0.0022],
+    [95,324,0.78*sl,MY-0.0011],[88,318,0.62*sl,MY-0.0019],[178,402,0.42*sl,MY-0.0024],[87,317,0.22*sl,MY-0.0026]];
+  for(const [r,l,x,y] of pairs){ out.push([r,x,y]); out.push([l,-x,y]); }
+  return out;
+}
+// the tracker's perioral ring on the render, inside the band the specs
+// above define: it contradicts them (a lip edge 7 mm from the line beside
+// one at 17), so the field interpolates across it instead
+const PERIORAL_SKIP=new Set([32,38,41,42,62,72,73,74,76,77,83,85,86,89,90,96,106,140,170,171,179,180,182,183,184,194,201,204,208,
+  262,268,271,272,273,292,302,303,304,306,307,313,315,316,319,320,325,335,369,395,396,403,404,406,407,408,418,421,424,428]);
+// a canonical (x,y) target on the sculpt: invert the base ellipsoid, then sculpt (as modelGetter)
+function sculptAt(S,P,tx,ay,o){
+  const yPre=ay<0?ay/P.FL:ay, phi=Math.acos(clamp(yPre/P.B,-1,1)), sphi=Math.sin(phi)||1e-6;
+  const th=Math.asin(clamp(tx/(P.A*sphi),-1,1)); sculptPoint(th,phi,S,P,o);
+}
 function conformField(S,cloud,conf){
   if(!cloud) return null;
   const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM)+'|'+!!ID.bundled;
@@ -2664,12 +2698,14 @@ function conformField(S,cloud,conf){
   if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
   if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
   const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
+  const MOUTH=new Map(mouthSpecs(P).map(([lm,x,y])=>[lm,[x,y]]));
   for(let lm=0;lm<468;lm+=CONFORM.step){
     if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
+    if(PERIORAL_SKIP.has(lm)) continue;
     if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
-    const tp=lmTP(lm); if(!tp) continue;
     const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
-    sculptPoint(tp[0],tp[1],S,P,o);
+    if(MOUTH.has(lm)){ const [mx,my]=MOUTH.get(lm); sculptAt(S,P,mx,my,o); }
+    else { const tp=lmTP(lm); if(!tp) continue; sculptPoint(tp[0],tp[1],S,P,o); }
     let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*zW];
     const L=Math.hypot(d[0],d[1],d[2]); if(L>CONFORM.max) d=d.map(v=>v*CONFORM.max/L);
     A.push([o[0],o[1],o[2]]); R.push(d); Wt.push(CONFORM_FEAT.has(lm)?CONFORM.featW:1);
@@ -4262,6 +4298,8 @@ let FROZEN=false;
 window.mosaic={THREE,
   get scene(){return scene;}, get camera(){return camera;}, get renderer(){return renderer;},
   get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);}, get H(){return AV.H;},
+  // where the tracker's landmark lm sits on this head's sculpt (the conform's anchor for it), with the mouth line
+  lmModel(lm,tp){ tp=tp||lmTP(lm); if(!tp) return null; const S=AV.S||measToShape(ID.meas), P=derived(S), o=new Float32Array(8); sculptPoint(tp[0],tp[1],S,P,o); return [o[0],o[1],o[2],P.MY,P.LW]; },
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
   // the capture side, for a harness driving a fake camera
   get av(){ return {bundle:ID.bundled&&{f:ID.bundled.f,rms:ID.bundled.rms,perView:ID.bundled.perView,ms:ID.bundled.ms}, outline:ID.outline, conform:AV.conform, photo:AV.photo&&{views:AV.photo.views,probe:AV.photo.probe,viewGain:AV.photo.viewGain}, tris:AV.tris, S:AV.S, gain:ID.gain, exposure:LIGHT.exposure[LIGHT.name], gainLog:ID.gainLog}; },

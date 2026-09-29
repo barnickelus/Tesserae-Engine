@@ -1318,7 +1318,19 @@
         mouth's neighbourhood now follows the rim point nearest it, the
         two rims (the cut row's top and bottom edges, paired by column)
         are kept a slit apart, and each column is walked outward from the
-        slit pushing any row that would cross a rim; within
+        slit pushing any row that would cross a rim. Under that lay the
+        real fault: the conform's anchors are where the tracker finds
+        each landmark on a render of the default head, and around the
+        mouth it reads that render loosely — the mouth line 8 mm above
+        the sculpt's slit, the lower lip's edge 7 mm below it (the
+        sculpt's is 17), the chin's bottom 15 mm above the sculpt's — so
+        every fitted head had its lip line conformed 8 mm above its slit
+        (the snap then dragged the slit up through the rows) and its chin
+        stretched a third too long. The mouth and the chin's midline are
+        now anchored on the sculpt's own features (corners, vermilion
+        borders and bow, the inner contour on the slit, the midline down
+        to the menton), and the tracker's perioral ring, which contradicts
+        them, is left for the field to interpolate; within
         the lip span the skin weight splits at the slit (lower lip the
         jaw's, upper the head's), widening to a soft blend past the
         corners; the hinge moved from eye level to the ear canal's (a
