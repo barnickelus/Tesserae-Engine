@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  sampleSurfaces, layTesserae, TileDriver, decomposePure, srgbToLinear, luminance, toksvig, LAYING,
+  sampleSurfaces, layTesserae, TileDriver, decomposePure, decomposeMuted, shapeOf, srgbToLinear, luminance, toksvig, LAYING,
 } from '../../examples/lib/tessera-kit.js';
 
 const close = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ''} ${a} vs ${b}`);
@@ -74,6 +74,29 @@ test('specular rides from part to tile as an area mean (default 1)', () => {
     if (t.x > 1.2) { close(t.sp, 1, 1e-6, 'a tile on the default sheet'); right++; }
   }
   assert.ok(left > 10 && right > 10, `${left} / ${right} tiles on each side`);
+});
+
+test('muted paint: the patch\'s own light and dark are the accents, and the mix is still the target', () => {
+  const cov = { a: 0.2, b: 0.15, base: 0.65 }, target = [0.35, 0.22, 0.16], A0 = [0.5, 0.34, 0.26], B0 = [0.2, 0.12, 0.09];
+  const [base, a, b] = decomposeMuted(target, A0, B0, cov);
+  for (let c = 0; c < 3; c++) close(cov.base * base[c] + cov.a * a[c] + cov.b * b[c], target[c], 1e-6, 'coverage-weighted mix');
+  assert.ok(luminance(...a) > luminance(...target) && luminance(...b) < luminance(...target), 'light accent above, dark below');
+  // accents that sit on the target are pushed apart so the glyph reads
+  const [, a2, b2] = decomposeMuted(target, target, target, cov);
+  assert.ok(luminance(...a2) - luminance(...target) > 0.02 && luminance(...target) - luminance(...b2) > 0.02, 'contrast forced');
+});
+
+test('a flowing part is cut as slivers, each carrying its flow', () => {
+  const g = grid(), n = g.positions.length / 3, flow = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { flow[i * 3] = 1; }                      // along +x
+  const S = sampleSurfaces([{ ...g, flow }], 20000, { seed: 9 });
+  const { tiles } = layTesserae(S, { maxDepth: 5 });
+  assert.ok(tiles.length > 50);
+  for (const t of tiles) { assert.ok(t.flow, 'flow carried'); close(t.flow[0], 1, 1e-3, 'along +x'); assert.equal(shapeOf(t), 1, 'a sliver'); }
+  const P = sampleSurfaces([g], 20000, { seed: 9 }), { tiles: plain } = layTesserae(P, { maxDepth: 5 });
+  assert.ok(plain.every((t) => !t.flow && shapeOf(t) !== 1 || t.imp > 0), 'no flow, no sliver (unless important)');
+  // and every tile knows its patch's light and dark
+  for (const t of tiles) assert.ok(t.ca && t.cb && luminance(...t.ca) >= luminance(...t.cb) - 1e-9, 'accents ordered');
 });
 
 test('andamento across tile sizes: small and large tiles still partition the surface, each tile local', () => {

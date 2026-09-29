@@ -1253,6 +1253,48 @@
       rig. Open: the mouth region still bulges a little in profile; loose
       strands and updos remain a shell.
 
+- [x] **VibeMesh — a voice you can see, a mouth that is yours, and paint.**
+      · Voice: on an iPad the Voice button did nothing visible. The audio
+        context was made after an `await` — outside the tap, which on iOS
+        leaves it suspended, and the mic read as silence — and a second
+        getUserMedia for audio can stop the camera's stream there. Now the
+        context is made and resumed in the tap; with the camera running the
+        mic is asked for together with the video in one stream, handed back
+        to the picture-in-picture; speech-recognition errors show in the hint
+        ("Speech: not-allowed · prosody only") instead of vanishing; the
+        button fills with the mic's level; interim transcripts show as you
+        speak. The mic's envelope only moves the jaw when the mouth isn't
+        tracked (it had overridden a tracked mouth). Speech also lives in
+        three more shapes the tracker gives — the O (mouthFunnel), the
+        pressed m/p/b (mouthPress), the E (mouthStretch) — now morph targets
+        on the wire (packet +3 bytes at the AVATAR3D tier).
+      · Reading: a Read button. One line — «Oh, we see the moon. My pop
+        bought a big fish — ah, mama.» — passes the mouth through its
+        extremes; the tracker's own scores say when each peaks, and that
+        frame's landmarks against the calibration's neutral are the user's
+        own shape. The jaw bone's share is taken out (it opens the mouth at
+        playback), and the smoothing spline (now shared with the conform as
+        `fitSpline`) carries the moves to the mesh as this person's pucker,
+        funnel, wide and press; the open "ah" sets how far the jaw drops
+        (a gain on the bone). Speaking afterwards keeps refining: a frontal
+        frame that beats a stored peak by 15% replaces it, rebuilt at most
+        every 30 s. Verified headless only by feeding synthetic shapes
+        (`mosaic.fakeRead`): the stand-in heads have no mouths that move.
+      · Paint, from the mosaic page, in the kit: muted (the patch's own
+        brightest and darkest quarter as the accents through the glyph, the
+        base solved so the mix is the target — `decomposeMuted`) and rgb
+        (per-channel noise-threshold dither of pure R, G, B — `makeNoise`),
+        beside flat and pure; VibeMesh's dock has all four. Hair is not
+        skin: the hair part carries a flow (down the head, in the surface),
+        and the kit cuts flowing parts as slivers along it, finer and glass
+        rather than matte; the face stays squares.
+      Measured (tiles against their mesh, medium, grout, 30 / 240 ppd):
+      flat 12.0 / 6.4, muted 11.7 / 6.4, pure 11.8 / 6.5 — the three fuse
+      alike, as the optics say they should; rgb 21.2 / 13.7 at first, 11 L*
+      dark: its dots are albedo 1 and clip in the room rig's tone curve where
+      a flat tile of the same mean does not (the mode is exact in linear
+      light), so the kit takes a coverage lift (1.55 here) to pay it back.
+
 ## Backlog
 
 - Raw WebGL2 renderer — **deferred**. Three.js instancing is already close to

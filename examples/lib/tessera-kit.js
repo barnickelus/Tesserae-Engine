@@ -85,7 +85,9 @@ export function hslToRgb(h, s, l) {
  *   vertex) | rigidBone,
  *   morphs? (array of per-vertex xyz DELTAS, one per blendshape),
  *   importance? (0–1 per vertex: features that deserve small tiles),
- *   mask? (0–1 per vertex: < 0.5 = hidden, e.g. scalp under hair) }
+ *   mask? (0–1 per vertex: < 0.5 = hidden, e.g. scalp under hair),
+ *   flow? (xyz per vertex: a direction the tesserae should run along —
+ *   hair strands; such tiles are cut as slivers, long axis along it) }
  *
  * boost: spend samples where tiles will be small — a triangle is drawn in
  * proportion to area·(1 + boost·importance), and each sample carries the
@@ -122,6 +124,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     r: new Float32Array(n), g: new Float32Array(n), b: new Float32Array(n),
     sr: new Float32Array(n), sg: new Float32Array(n), sb: new Float32Array(n),
     ro: new Float32Array(n), me: new Float32Array(n), sp: new Float32Array(n), imp: new Float32Array(n), part: new Uint16Array(n),
+    fl: parts.some((p) => p.flow) ? new Float32Array(n * 3) : null,
     skinIdx: new Uint16Array(n * 4), skinWt: new Float32Array(n * 4),
     morph: M ? new Float32Array(n * M * 3) : null,
   };
@@ -142,6 +145,7 @@ export function sampleSurfaces(parts, count, { seed = 0xC0FFEE, morphCount = 0, 
     S.sr[i] = linearToSrgb(r); S.sg[i] = linearToSrgb(gg); S.sb[i] = linearToSrgb(bb);
     S.ro[i] = p.roughness ?? 0.6; S.me[i] = p.metalness ?? 0; S.sp[i] = p.specular ?? 1;
     S.imp[i] = p.importance ? L(p.importance, 0, 1) : 0;
+    if (S.fl && p.flow) { S.fl[i * 3] = L(p.flow, 0); S.fl[i * 3 + 1] = L(p.flow, 1); S.fl[i * 3 + 2] = L(p.flow, 2); }
     S.part[i] = triPart[lo];
     S.wa[i] = run / n / triW[lo];                       // the area this sample stands for
     if (p.skinIndex) {
@@ -232,6 +236,14 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
       r += w * S.r[i]; g += w * S.g[i]; b += w * S.b[i]; sr += w * S.sr[i]; sg += w * S.sg[i]; sb += w * S.sb[i];
       ro += w * S.ro[i]; me += w * S.me[i]; sp += w * (S.sp ? S.sp[i] : 1); sem += w * S.imp[i]; }
     px /= W; py /= W; pz /= W; sr /= W; sg /= W; sb /= W; ro /= W; me /= W; sp /= W; sem /= W;
+    // the patch's own light and dark: the brightest and darkest quarter of its
+    // samples (linear), the 'muted' paint's accents
+    const byY = Array.from(ids).sort((a, b2) => luminance(S.r[a], S.g[a], S.b[a]) - luminance(S.r[b2], S.g[b2], S.b[b2])), q = Math.max(1, m >> 2);
+    const acc = (sub) => { let ar = 0, ag = 0, ab = 0; for (const i of sub) { ar += S.r[i]; ag += S.g[i]; ab += S.b[i]; } return [ar / sub.length, ag / sub.length, ab / sub.length]; };
+    const ca = acc(byY.slice(m - q)), cb = acc(byY.slice(0, q));
+    let flow = null;
+    if (S.fl) { let fx = 0, fy = 0, fz = 0; for (let k = 0; k < m; k++) { const i = ids[k], w = WA[i]; fx += w * S.fl[i * 3]; fy += w * S.fl[i * 3 + 1]; fz += w * S.fl[i * 3 + 2]; }
+      const fl = Math.hypot(fx, fy, fz) / W; if (fl > 0.3) flow = [fx / (fl * W), fy / (fl * W), fz / (fl * W)]; }
     let cvar = 0, mvar = 0;
     for (let k = 0; k < m; k++) { const i = ids[k], w = WA[i];
       const dr = S.sr[i] - sr, dg = S.sg[i] - sg, db = S.sb[i] - sb; cvar += w * (dr * dr + dg * dg + db * db);
@@ -239,7 +251,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
     cvar /= W; mvar /= W;
     const nl = Math.hypot(nx, ny, nz) || 1, curv = 1 - nl / W;
     const importance = Math.min(1, cvar * 7 + mvar * 1.5 + curv * 0.85);
-    return { m, W, px, py, pz, ux: nx / nl, uy: ny / nl, uz: nz / nl, r: r / W, g: g / W, b: b / W, sr, sg, sb, ro, me, sp, curv, imp: importance, sem };
+    return { m, W, px, py, pz, ux: nx / nl, uy: ny / nl, uz: nz / nl, r: r / W, g: g / W, b: b / W, sr, sg, sb, ro, me, sp, curv, imp: importance, sem, ca, cb, flow };
   }
 
   // 1. WHERE and HOW BIG — the importance octree
@@ -300,7 +312,7 @@ export function layTesserae(S, { maxDepth = 7, levels = 3, laying = LAYING } = {
       x: px + ux * lift, y: py + uy * lift, z: pz + uz * lift, nx: ux, ny: uy, nz: uz,
       tx: tx / tl, ty: ty / tl, tz: tz / tl, contour: pa.contour, edge: pa.conf,
       s: s0, area: st.W * nbar, r: st.r, g: st.g, b: st.b, sr: st.sr, sg: st.sg, sb: st.sb,
-      ro: toksvig(st.ro, nbar), me: st.me, sp: st.sp, imp: st.imp, curv,
+      ro: toksvig(st.ro, nbar), me: st.me, sp: st.sp, imp: st.imp, curv, ca: st.ca, cb: st.cb, flow: st.flow,
       part: +Object.keys(parts).reduce((a, b) => parts[a] >= parts[b] ? a : b),
       skinIdx, skinWt, morph,
     });
@@ -616,6 +628,41 @@ export function decomposePure(target, cov, split = SPLITS.bold) {
   }
 }
 
+/**
+ * 'muted' paint: the tile's OWN light and dark (its patch's brightest and
+ * darkest quarter) as the accents through the glyph, the base solved so the
+ * coverage-weighted mix is the target — the same optics as pure, with the
+ * source's colours instead of the pure hues. Accents that sit too near the
+ * target are pushed apart, so the glyph reads. Returns [base, A, B], linear.
+ */
+export function decomposeMuted(target, A0, B0, cov) {
+  const Y = luminance(...target), yA = luminance(...A0), yB = luminance(...B0);
+  let A = A0.slice(), B = B0.slice();
+  if (yA - Y < 0.03) A = A.map((v) => Math.min(1, v * 1.3 + 0.02));
+  if (Y - yB < 0.03) B = B.map((v) => v * 0.7);
+  for (let t = 0; t <= 1.001; t += 0.25) {
+    const a = A.map((v, c) => v + (target[c] - v) * t), b = B.map((v, c) => v + (target[c] - v) * t);
+    const base = [0, 1, 2].map((c) => (target[c] - cov.a * a[c] - cov.b * b[c]) / cov.base);
+    if ((Math.min(...base) >= -0.001 && Math.max(...base) <= 1.001) || t >= 1)
+      return [base.map((v) => Math.min(1, Math.max(0, v))), a, b];
+  }
+}
+
+/**
+ * The 'rgb' paint's noise: a random RGB field the shader thresholds per
+ * channel, NEAREST and unmipped so it stays per-pixel noise at any distance
+ * (a mipmapped random field is flat grey). Browser only.
+ */
+export function makeNoise(THREE, res = 256) {
+  const data = new Uint8Array(res * res * 4); let x = 0x5eed1;
+  for (let i = 0; i < data.length; i += 4) { x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0;
+    data[i] = x & 255; data[i + 1] = (x >> 8) & 255; data[i + 2] = (x >> 16) & 255; data[i + 3] = 255; }
+  const t = new THREE.DataTexture(data, res, res, THREE.RGBAFormat);
+  t.colorSpace = THREE.NoColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
+
 /** Glyph masks (R = accent A, G = accent B), one texture-array layer per material. Browser only. */
 export function makeGlyphs(THREE) {
   const S = 128, N = 4, cv = document.createElement('canvas'); cv.width = S * N; cv.height = S;
@@ -653,25 +700,27 @@ export function makeGlyphs(THREE) {
 // face area of each unit shape (rounded corners taken off)
 export const SHAPE_AREA = [1 - (4 - Math.PI) * 0.09 * 0.09, 0.42 * 1.3 - (4 - Math.PI) * 0.07 * 0.07, 0.75 * Math.sqrt(3) * 0.62 * 0.62];
 export function shapeOf(t, laying = LAYING) {
+  if (t.flow) return 1;                                        // along the strands
   return t.curv > laying.curvForce ? 2 : t.imp > laying.subThreshold * 1.3 ? 1 : 0;
 }
 
 /**
  * Tiles → instanced meshes (one per shape) sharing one tile material, plus a
  * TileDriver that poses them. opts: { RoundedBoxGeometry, inset (face share
- * of the patch, linear), bedTint, paint ('flat' | 'pure'), split, glyphs
- * (makeGlyphs(), for 'pure'), glyphOf }. Colours are LINEAR — pages that
- * disable THREE.ColorManagement hand in the values their shaders already use.
+ * of the patch, linear), bedTint, paint ('flat' | 'pure' | 'muted' | 'rgb' |
+ * 'blobs'), split, glyphs (makeGlyphs(), for 'pure' and 'muted'), noise
+ * (makeNoise(), for 'rgb' and 'blobs'), glyphOf }. Colours are LINEAR — pages
+ * that disable THREE.ColorManagement hand in the values their shaders already use.
  */
 export function buildTileMeshes(THREE, tiles, opts = {}) {
-  const { RoundedBoxGeometry, inset = 0.9, bedTint = 0.5, paint = 'flat', split = SPLITS.bold, glyphs = null, pickGlyph = glyphOf } = opts;
+  const { RoundedBoxGeometry, inset = 0.9, bedTint = 0.5, paint = 'flat', split = SPLITS.bold, glyphs = null, noise = null, rgbLift = 1.0, pickGlyph = glyphOf } = opts;
   const shapes = [
     () => new RoundedBoxGeometry(1, 1, 0.5, 2, 0.09),
     () => new RoundedBoxGeometry(0.42, 1.3, 0.42, 2, 0.07),
     () => new THREE.CylinderGeometry(0.62, 0.62, 0.5, 3).rotateX(Math.PI / 2),
   ];
-  const pure = paint === 'pure' && glyphs;
-  const material = tileMaterial(THREE, { pure, glyphs });
+  const pure = (paint === 'pure' || paint === 'muted') && glyphs, muted = paint === 'muted' && glyphs, rgb = (paint === 'rgb' || paint === 'blobs') && noise;
+  const material = tileMaterial(THREE, { pure, glyphs, rgb, noise, scale: paint === 'blobs' ? 0.12 : 3.0, lift: rgbLift });
   const cover = inset * inset, buckets = [[], [], []];
   tiles.forEach((t, i) => buckets[shapeOf(t)].push(i));
   const meshes = [], bindings = [];
@@ -682,6 +731,7 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
     mesh.frustumCulled = false; mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const col = new Float32Array(n * 3), surf = new Float32Array(n * 3), bed = new Float32Array(n * 3);
     const aA = pure ? new Float32Array(n * 3) : null, aB = pure ? new Float32Array(n * 3) : null, aP = pure ? new Float32Array(n) : null;
+    const aCov = rgb ? new Float32Array(n * 3) : null, aOff = rgb ? new Float32Array(n * 2) : null;
     const q = new Float32Array(n * 4), sc = new Float32Array(n * 3), base = new Float32Array(n * 3);
     const depth = shape === 1 ? 0.42 : 0.5;          // unit-shape thickness
     ids.forEach((ti, j) => {
@@ -695,8 +745,17 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
       const sink = 0.5 * depth * side;
       base[j * 3] = t.x - t.nx * sink; base[j * 3 + 1] = t.y - t.ny * sink; base[j * 3 + 2] = t.z - t.nz * sink;
       const target = [compensate(t.r, cover, bedTint), compensate(t.g, cover, bedTint), compensate(t.b, cover, bedTint)];
-      if (pure) {
-        const gl = pickGlyph(t), [base, a, b] = decomposePure(target, glyphs.coverage[gl], split);
+      if (rgb) {
+        // channel-proportional divisionism: the coverage of pure R, G and B is
+        // the target's own linear channels (reflected light adds)
+        aCov.set(target.map((v) => Math.min(1, Math.max(0, v))), j * 3);
+        aOff[j * 2] = hash01(ti, 0x0ff5e7); aOff[j * 2 + 1] = hash01(ti, 0x0ff5e8);
+        col.set(target, j * 3);
+      } else if (pure) {
+        const gl = pickGlyph(t);
+        const [base, a, b] = muted && t.ca && t.cb
+          ? decomposeMuted(target, t.ca.map((v) => compensate(v, cover, bedTint)), t.cb.map((v) => compensate(v, cover, bedTint)), glyphs.coverage[gl])
+          : decomposePure(target, glyphs.coverage[gl], split);
         col.set(base, j * 3); aA.set(a, j * 3); aB.set(b, j * 3); aP[j] = gl;
       } else {
         // hand-cut: a slight, fixed lightness jitter so runs of one colour read as tiles
@@ -713,6 +772,7 @@ export function buildTileMeshes(THREE, tiles, opts = {}) {
     if (pure) { geo.setAttribute('aA', new THREE.InstancedBufferAttribute(aA, 3));
       geo.setAttribute('aB', new THREE.InstancedBufferAttribute(aB, 3));
       geo.setAttribute('aP', new THREE.InstancedBufferAttribute(aP, 1)); }
+    if (rgb) { geo.setAttribute('aCov', new THREE.InstancedBufferAttribute(aCov, 3)); geo.setAttribute('aOff', new THREE.InstancedBufferAttribute(aOff, 2)); }
     meshes.push(mesh); bindings.push({ mesh, ids, q, scale: sc, base });
   });
   const driver = new TileDriver(tiles, bindings);
@@ -730,8 +790,13 @@ function tileQuat(t, shape, j) {
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   let X, Y;
   if (shape === 1) {
-    const alt = cross(n, u), c = t.contour;
-    if (c && Math.abs(alt[0] * c[0] + alt[1] * c[1] + alt[2] * c[2]) > Math.abs(u[0] * c[0] + u[1] * c[1] + u[2] * c[2])) u = alt;
+    if (t.flow) {                                              // the long axis along the flow, in the face's plane
+      const d = t.flow[0] * n[0] + t.flow[1] * n[1] + t.flow[2] * n[2], f = [t.flow[0] - d * n[0], t.flow[1] - d * n[1], t.flow[2] - d * n[2]], l = Math.hypot(...f);
+      if (l > 1e-4) u = [f[0] / l, f[1] / l, f[2] / l];
+    } else {
+      const alt = cross(n, u), c = t.contour;
+      if (c && Math.abs(alt[0] * c[0] + alt[1] * c[1] + alt[2] * c[2]) > Math.abs(u[0] * c[0] + u[1] * c[1] + u[2] * c[2])) u = alt;
+    }
     X = cross(u, n); Y = u;
   } else { X = u; Y = cross(n, u); }
   let q = quatFromBasis(X, Y, n);
@@ -761,14 +826,24 @@ const quatMul = (a, b) => [
  *            are packed with mortar, and bare ones are lit surface the
  *            source never had
  */
-export function tileMaterial(THREE, { pure = false, glyphs = null } = {}) {
+export function tileMaterial(THREE, { pure = false, glyphs = null, rgb = false, noise = null, scale = 3.0, lift = 1.0 } = {}) {
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
   m.onBeforeCompile = (sh) => {
     let v = 'attribute vec3 aSurf; attribute vec3 aBed;\nvarying vec3 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
     let f = 'varying vec3 vSurf; varying vec3 vBedCol; varying float vTileNz;\n';
     let begin = ' vSurf = aSurf; vBedCol = aBed; vTileNz = normal.z;';
     let paintGl = '';
-    if (pure) {
+    if (rgb) {
+      // each channel its own noise-threshold dither: the face is dots of pure
+      // R, G, B (and their sums) that add to the target once the eye fuses them
+      sh.uniforms.noiseTex = { value: noise };
+      v += 'attribute vec3 aCov; attribute vec2 aOff;\nvarying vec3 vCov; varying vec2 vNUv;\n';
+      f += 'uniform sampler2D noiseTex;\nvarying vec3 vCov; varying vec2 vNUv;\n';
+      // (lift: the dots are albedo 1 and clip in a tone curve where a flat tile
+      // of the same mean does not; the coverage is raised to pay that back)
+      begin += ' vCov = min(vec3(1.0), aCov * ' + lift.toFixed(3) + '); vNUv = uv * ' + scale.toFixed(3) + ' + aOff * 17.0;';
+      paintGl = '\n vec3 pn = texture2D(noiseTex, vNUv).rgb;\n diffuseColor.rgb = step(pn, vCov);';
+    } else if (pure) {
       sh.uniforms.patTex = { value: glyphs.texture };
       v += 'attribute vec3 aA; attribute vec3 aB; attribute float aP;\nvarying vec3 vAcc1; varying vec3 vAcc2; varying vec3 vPUv;\n';
       f += 'uniform sampler2DArray patTex;\nvarying vec3 vAcc1; varying vec3 vAcc2; varying vec3 vPUv;\n';
@@ -790,7 +865,7 @@ export function tileMaterial(THREE, { pure = false, glyphs = null } = {}) {
         ' material.specularColor = mix(vec3(0.04 * vSurf.z), diffuseColor.rgb, metalnessFactor);\n' +
         ' material.specularF90 = mix(vSurf.z, 1.0, metalnessFactor);');
   };
-  const key = 'tessera-kit:' + (pure ? 'pure' : 'flat');
+  const key = 'tessera-kit:' + (rgb ? 'rgb' + scale + ':' + lift : pure ? 'pure' : 'flat');
   m.customProgramCacheKey = () => key;
   return m;
 }

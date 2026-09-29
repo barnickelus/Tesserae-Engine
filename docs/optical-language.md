@@ -15,7 +15,11 @@ The same rules as a module any page can use are [`examples/lib/tessera-kit.js`](
 [`examples/tessera-vibemesh.html`](../examples/tessera-vibemesh.html) lays a
 live, puppeted head with it — under the room rig through Khronos PBR Neutral
 rather than AgX, since a likeness is judged against a camera (its tiles carry a
-per-part specular so they shine as the skin does).
+per-part specular so they shine as the skin does). The kit carries the page's
+paints — flat, pure, muted (the patch's own light and dark as the accents,
+`decomposeMuted`) and rgb (a per-channel dither of pure R, G, B, exact in
+linear light and lifted where a tone curve clips its dots) — and cuts a part
+that declares a `flow` (hair, down the head) as slivers along it.
 Nothing here was kept on argument alone: every rule was measured by the eye
 model below, and the ones that didn't help are listed with the ones that did.
 

@@ -147,7 +147,9 @@ canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
     <div class="pl" data-den="fine">Fine</div>
     <span class="sep"></span>
     <div class="pl on" data-paint="flat">Flat</div>
+    <div class="pl" data-paint="muted">Muted</div>
     <div class="pl" data-paint="pure">Pure</div>
+    <div class="pl" data-paint="rgb">RGB</div>
     <span class="sep"></span>
     <div class="pl on" data-grout="thin">Grout</div>
     <div class="pl" data-grout="flush">Flush</div>
@@ -190,6 +192,7 @@ canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
     <button class="btn p" id="b-cam">Start Camera</button>
     <button class="btn" id="b-cal" disabled>Calibrate</button>
     <button class="btn" id="b-ref" disabled>Refine</button>
+    <button class="btn" id="b-read" disabled>Read</button>
     <button class="btn" id="b-voice">Voice</button>
     <button class="btn" id="b-shape">Shape</button>
     <button class="btn" id="b-net">Network</button>
@@ -273,7 +276,7 @@ const lin2srgb=c=>c<=0.0031308?c*12.92:1.055*Math.pow(Math.max(0,c),1/2.4)-0.055
 const Tier={TEXT:1,GLYPH:2,SPRITE:3,PUPPET:4,AVATAR3D:5};
 const TN={1:'TEXT',2:'GLYPH',3:'SPRITE',4:'PUPPET',5:'AVATAR3D'};
 const HZ={1:2,2:4,3:10,4:15,5:20};
-const BS=['jawOpen','smile','frown','browUp','browDown','blinkL','blinkR','pucker'];
+const BS=['jawOpen','smile','frown','browUp','browDown','blinkL','blinkR','pucker','funnel','press','wide'];   // funnel/press/wide: the lips' O, M and E
 
 // Pure + deterministic: both peers compute the same tier from the same
 // exchanged profiles, so no coordinator is needed.
@@ -806,7 +809,7 @@ function buildMorphs(H,pos){
   const {EY,MY,LW,BY}=H.P, n=H.nv, out={};
   const mk=()=>new Float32Array(n*3);
   const g2=(dx,rx,dy,ry)=>Math.exp(-((dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)));
-  const smile=mk(),frown=mk(),bUp=mk(),bDn=mk(),blL=mk(),blR=mk(),puck=mk(),wide=mk();
+  const smile=mk(),frown=mk(),bUp=mk(),bDn=mk(),blL=mk(),blR=mk(),puck=mk(),wide=mk(),funnel=mk(),press=mk();
   for(let i=0;i<n;i++){
     const x=H.canon[i*3],y=H.canon[i*3+1],z=H.canon[i*3+2],f=H.front[i];
     const lip=H.region[i*4], brow=H.region[i*4+1];
@@ -823,6 +826,10 @@ function buildMorphs(H,pos){
     const lb=cl01(lip*1.2);
     puck[i*3]-=x*0.42*lb; puck[i*3+2]+=0.0080*lb; puck[i*3+1]+=(MY-y)*0.20*lb;
     wide[i*3]+=x*0.26*lb; wide[i*3+2]-=0.0028*lb; wide[i*3+1]+=(MY-y)*-0.10*lb;
+    // the O: lips forward and rounded, parting a little; the M: lips pressed
+    // to the mouth line and drawn in
+    funnel[i*3]-=x*0.30*lb; funnel[i*3+2]+=0.0072*lb; funnel[i*3+1]+=Math.sign(y-MY||1)*0.0022*lb;
+    press[i*3+1]+=(MY-y)*0.45*lb; press[i*3+2]-=0.0024*lb; press[i*3]+=x*0.06*lb;
     // brows
     const bw=cl01(f*g2(x,0.048,y-BY,0.0165)+brow*1.2);
     bUp[i*3+1]+=0.0092*bw; bUp[i*3+2]+=0.0012*bw;
@@ -842,7 +849,7 @@ function buildMorphs(H,pos){
     }
   }
   out.smile=smile;out.frown=frown;out.browUp=bUp;out.browDown=bDn;
-  out.blinkL=blL;out.blinkR=blR;out.pucker=puck;out.mouthWide=wide;
+  out.blinkL=blL;out.blinkR=blR;out.pucker=puck;out.mouthWide=wide;out.funnel=funnel;out.press=press;
   return out;
 }
 
@@ -1210,7 +1217,7 @@ const TRAITS={hair:'short',beard:'none'};
 // spec: the skin's specular strength — the photo already holds the person's
 // own highlights, and a full sheen of the room on top greyed dark skin, brows
 // and makeup
-const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true};   // §8b, each switchable for comparison
+const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true,mouth:true};   // §8b, each switchable for comparison
 
 /* Eye: white sclera sphere + a domed iris cap coloured radially in
    vertex colours (pupil → iris → limbal ring). Avoids projecting a
@@ -1281,8 +1288,11 @@ function buildAvatar(){
   AV.photo=photo?{views:photo.views,front:photo.front,probe:photo.probe,viewGain:photo.viewGain}:null; AV.nrm=nrm;
   const G=ID.gain;                              // the camera → render calibration (§8b)
   if(G) for(let v=0;v<H.nv;v++) for(let k=0;k<3;k++) colors[v*3+k]=Math.min(1,colors[v*3+k]*G[k]);
-  const morphs=buildMorphs(H,H.pos);
   const {si,sw}=buildSkin(H);
+  const morphs=buildMorphs(H,H.pos);
+  // the user's own mouth shapes, where a reading caught them (§8c)
+  AV.mouth=null;
+  if(ID.mouth&&LIKE.mouth){ const um=mouthMorphs(H,si,sw,wp([0,-0.008,-0.030])); if(um){ Object.assign(morphs,um); AV.mouth=Object.keys(um); } }
 
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(H.pos,3));
@@ -1299,7 +1309,7 @@ function buildAvatar(){
                                  :new THREE.BufferAttribute(new Uint16Array(H.idx),1));
   geo.morphAttributes.position=[];
   AV.morphIdx={};
-  const order=['smile','frown','browUp','browDown','blinkL','blinkR','pucker','mouthWide'];
+  const order=MORPH_ORDER;
   order.forEach((k,i)=>{
     const d=morphs[k], t=new Float32Array(H.nv*3);
     for(let j=0;j<H.nv*3;j++) t[j]=H.pos[j]+d[j];
@@ -1386,17 +1396,21 @@ function buildAvatar(){
   if(field&&H.rims&&H.rims.mouth.length){ mS=[0,0,0]; for(const i of H.rims.mouth) for(let k=0;k<3;k++) mS[k]+=H.pos[i*3+k]-H.canon[i*3+k];
     mS=mS.map(v=>v/H.rims.mouth.length); }
   const wm=p=>mS?[p[0]+mS[0],p[1]+mS[1],p[2]+mS[2]]:wp(p);
-  const cav=new THREE.Mesh(new THREE.SphereGeometry(0.024,20,14),
-    new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}));
-  cav.scale.set(1.10,0.68,0.42);
-  cav.position.fromArray(toHead(wm([0,H.P.MY-0.006,0.020]))); head.add(cav);
-  cav.userData.tesseraShared=true;
+  // the cavity in two halves, like the teeth: the upper on the head, the
+  // lower on the jaw — one sphere on the head poked out of the chin's sides
+  // when the jaw dropped and the skin there swung back
+  const cavMat=new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}), cavGeo=new THREE.SphereGeometry(0.024,20,14);
+  const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,0.46,0.42);
+  cav.position.fromArray(toHead(wm([0,H.P.MY+0.002,0.020]))); head.add(cav);
+  const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.46,0.40);
+  cav2.position.fromArray(toJaw(wm([0,H.P.MY-0.012,0.019]))); jaw.add(cav2);
+  cav.userData.tesseraShared=cav2.userData.tesseraShared=true;
   const teethMat=new THREE.MeshStandardMaterial({color:0xf2ece2,roughness:0.35});
   const upT=new THREE.Mesh(new THREE.BoxGeometry(0.028,0.0055,0.007),teethMat);
   upT.position.fromArray(toHead(wm([0,H.P.MY+0.0024,0.0358]))); head.add(upT);
   const loT=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.0050,0.007),teethMat);
   loT.position.fromArray(toJaw(wm([0,H.P.MY-0.0068,0.0352]))); jaw.add(loT);
-  upT.userData.tesseraShared=loT.userData.tesseraShared=true; AV.mouthParts=[cav,upT,loT];
+  upT.userData.tesseraShared=loT.userData.tesseraShared=true; AV.mouthParts=[cav,cav2,upT,loT];
 
   // ── ears (rigid on the head bone) ──
   const earMat=new THREE.MeshPhysicalMaterial({
@@ -1762,7 +1776,7 @@ function puppet(now,dt){
 
   // jaw is a real hinge; visemes and gestures add to it
   const jaw=cl01((REM.bs.jawOpen||0)+g.jaw);
-  B.jaw.rotation.x=jaw*0.38;
+  B.jaw.rotation.x=jaw*0.38*(ID.jawGain||1);
 
   // gaze
   B.eL.rotation.set(REM.gy*0.32,-REM.gx*0.42,0);
@@ -1785,7 +1799,9 @@ function puppet(now,dt){
   set('blinkL',Math.max(REM.bs.blinkL,auto));
   set('blinkR',Math.max(REM.bs.blinkR,auto));
   set('pucker',REM.bs.pucker);
-  set('mouthWide',REM.wide||0);
+  set('mouthWide',Math.max(REM.wide||0,REM.bs.wide||0));
+  set('funnel',REM.bs.funnel||0);
+  set('press',REM.bs.press||0);
 }
 
 /* ═══ §7 CAPTURE — MediaPipe → AvatarState ═══════════════════════════ */
@@ -1865,9 +1881,15 @@ const BS_MAP={
   blinkL:B=>smoothstep(0.26,0.62,B.eyeBlinkRight),
   blinkR:B=>smoothstep(0.26,0.62,B.eyeBlinkLeft),
   pucker:B=>B.mouthPucker*1.2,
+  // speech lives in these three as much as in the jaw: the O of "oh", the
+  // closed lips of m/p/b, the E of "see"
+  funnel:B=>B.mouthFunnel*1.3,
+  press:B=>(B.mouthPressLeft+B.mouthPressRight)/2*1.6,
+  wide:B=>(B.mouthStretchLeft+B.mouthStretchRight)/2*1.4,
 };
 const BS_NAMES=['jawOpen','mouthSmileLeft','mouthSmileRight','mouthFrownLeft','mouthFrownRight','browInnerUp',
-  'browOuterUpLeft','browOuterUpRight','browDownLeft','browDownRight','eyeBlinkLeft','eyeBlinkRight','mouthPucker'];
+  'browOuterUpLeft','browOuterUpRight','browDownLeft','browDownRight','eyeBlinkLeft','eyeBlinkRight','mouthPucker',
+  'mouthFunnel','mouthPressLeft','mouthPressRight','mouthStretchLeft','mouthStretchRight'];
 const _m4=new THREE.Matrix4(), _eu=new THREE.Euler();
 function captureFrame(lm,dt,ex){
   CAP.latest=lm;
@@ -1894,6 +1916,7 @@ function captureFrame(lm,dt,ex){
     trackGaze(lm,st);
     moodAndSpeech(lm,st,dt);
     if(CAL.active) calibTick(lm,!CAP.neutral);
+    else readTick(lm,CAP.bsRaw);
     return;
   }
   if(!CAP.neutral){ if(CAL.active) calibTick(lm,true); return; }
@@ -1926,6 +1949,7 @@ function captureFrame(lm,dt,ex){
     blinkL:cl01((n.eaL-m.eaL)/Math.max(0.02,n.eaL-0.06)),
     blinkR:cl01((n.eaR-m.eaR)/Math.max(0.02,n.eaR-0.06)),
     pucker:cl01((n.mw-m.mw-0.02)/0.14),
+    funnel:0,press:0,wide:cl01((m.mw-n.mw-0.01)/0.12),
   };
   for(const k of BS) st.bs[k]+=(tgt[k]-st.bs[k])*0.45;
   trackGaze(lm,st);
@@ -2180,8 +2204,8 @@ function finishCalibration(){
   ID.bundled=LIKE.bundle&&got.length>=3?bundleViews(CAL.views,vid.videoWidth||640,vid.videoHeight||480):null;
   if(ID.bundled) ID.bundled.ms=Math.round(performance.now()-t0);
   commitIdentity(ID.bundled?ID.bundled.cloud:fused,got.length,raw);
-  el('b-ref').disabled=false;
-  hint('Fused '+got.length+' views · Refine to keep converging');
+  el('b-ref').disabled=false; el('b-read').disabled=false;
+  hint('Fused '+got.length+' views · Read a line for your own mouth · Refine to keep converging');
 }
 
 // running-average successive sessions so likeness accumulates
@@ -2434,6 +2458,97 @@ function autoTraits(cloud){
   }
 }
 
+/* ── §8c READING — the user's own mouth ──
+   Every mouth said "oo" and "ee" the same way: the generator's. Reading one
+   line aloud — «Oh, we see the moon. My pop bought a big fish — ah, mama.» —
+   passes the mouth through its extremes (the O, the E, the pursed oo, the
+   pressed m/p/b, the open ah), and the tracker's own scores say when each
+   peaks; that frame's landmarks, against the calibration's neutral, are the
+   user's own shape. The jaw bone's share is taken out (it opens the mouth
+   at playback anyway), and the smoothing spline carries the landmarks' moves
+   to the mesh as morph targets. Speaking afterwards keeps refining them:
+   any frame that beats a stored peak by a margin replaces it. */
+const READ={active:false,t0:0,best:{},dirty:false,lastBuild:0,
+  LINE:'Oh, we see the moon. My pop bought a big fish — ah, mama.',
+  SHAPES:{open:B=>B.jawOpen, pucker:B=>B.jawOpen<0.5?B.mouthPucker:0, funnel:B=>B.mouthFunnel,
+    wide:B=>(B.mouthStretchLeft+B.mouthStretchRight)/2, press:B=>(B.mouthPressLeft+B.mouthPressRight)/2}};
+function readTick(lm,B){
+  if(!CAP.neutral||!B||!CAP.poseAbs) return;
+  const P=CAP.poseAbs, p0=CAP.pose0||{yaw:0,pitch:0};
+  if(Math.abs(P.yaw)>14||Math.abs(P.pitch-p0.pitch)>16) return;       // a frontal mouth, or the shape is a turn
+  const margin=READ.active?1.03:1.15;
+  for(const k in READ.SHAPES){ const sc=READ.SHAPES[k](B); if(sc<0.3) continue;
+    const b=READ.best[k]; if(b&&sc<b.score*margin) continue;
+    READ.best[k]={score:sc,jaw:B.jawOpen,lm:lm.map(p=>({x:p.x,y:p.y,z:p.z})),t:performance.now()}; READ.dirty=true; }
+  if(READ.active){
+    const got=Object.keys(READ.best).length, el_=performance.now()-READ.t0, done=el_>12000||(el_>5000&&got>=5&&Object.values(READ.best).every(b=>b.score>0.55));
+    const f=Math.round(Math.min(1,el_/12000)*10); hint('Read aloud · '+'▰'.repeat(f)+'▱'.repeat(10-f)+' · '+got+'/5 shapes');
+    if(done) finishReading();
+  }
+}
+function startReading(){
+  if(!CAP.neutral){ hint('Calibrate first'); return; }
+  READ.active=true; READ.t0=performance.now();
+  card('READ THIS ALOUD','<span style="font-size:1.05rem;line-height:1.5;letter-spacing:0">«'+READ.LINE+'»</span><br>your own oh · ee · oo · m · ah');
+  hint('Read aloud · face the camera');
+}
+function finishReading(){
+  READ.active=false;
+  const got=Object.keys(READ.best);
+  if(!got.length){ card('READING','no mouth shapes caught · try again, facing the camera'); return; }
+  commitMouth();
+  card('MOUTH · yours',got.map(k=>k+' '+READ.best[k].score.toFixed(2)).join(' · ')+
+    (ID.jawGain?'<br>jaw opens ×'+ID.jawGain.toFixed(2)+' of the model\'s':''));
+  hint('Mouth shapes: yours · keep talking and they refine');
+}
+// the captured shapes become the avatar's (rebuilding it); also called for
+// the opportunistic refinements, at most every 30 s
+function commitMouth(){
+  if(!CAP.neutral||!Object.keys(READ.best).length) return;
+  ID.mouth={neutral:CAP.neutral.pts.map(p=>({x:p[0],y:p[1],z:p[2]})),shapes:{}};
+  for(const k in READ.best) ID.mouth.shapes[k]={lm:READ.best[k].lm,jaw:READ.best[k].jaw,score:READ.best[k].score};
+  READ.dirty=false; READ.lastBuild=performance.now();
+  buildAvatar();
+}
+setInterval(()=>{ if(READ.dirty&&!READ.active&&!CAL.active&&ID.mouth&&performance.now()-READ.lastBuild>30000&&!TES.waiting) commitMouth(); },5000);
+// the shapes → morph targets on this head (called by buildAvatar)
+function mouthMorphs(H,si,sw,jawPivot){
+  const M=ID.mouth; if(!M||!ID.lm) return null;
+  const neutral=toModel(M.neutral), out={}, z0=(CAP.bsZero&&CAP.bsZero.jawOpen)||0;
+  const jawAngle=raw=>cl01((raw*1.25-z0)/Math.max(0.35,1-z0))*0.38;       // as the live path and puppet do
+  const mc=[(ID.lm[13*3]+ID.lm[14*3])/2,(ID.lm[13*3+1]+ID.lm[14*3+1])/2,(ID.lm[13*3+2]+ID.lm[14*3+2])/2];
+  // each landmark's jaw share: the nearest vertex's weight (bone 3, slot 1)
+  const jawW=new Float32Array(468);
+  for(let i=0;i<468;i++){ const x=ID.lm[i*3],y=ID.lm[i*3+1],z=ID.lm[i*3+2]; if(!isFinite(x)) continue;
+    let best=1e9, bv=-1; for(let v=0;v<H.nv;v++){ const d=(H.pos[v*3]-x)**2+(H.pos[v*3+1]-y)**2+(H.pos[v*3+2]-z)**2; if(d<best){ best=d; bv=v; } }
+    if(bv>=0) jawW[i]=sw[bv*4+1]; }
+  const toKey={open:null,pucker:'pucker',funnel:'funnel',wide:'mouthWide',press:'press'};
+  for(const k in M.shapes){
+    const S=M.shapes[k], P=alignCloud(toModel(S.lm),neutral), th=jawAngle(S.jaw), c=Math.cos(th), sn=Math.sin(th);
+    const A=[], R=[], Wt=[];
+    for(let i=0;i<468;i++){ const x=ID.lm[i*3],y=ID.lm[i*3+1],z=ID.lm[i*3+2]; if(!isFinite(x)||!isFinite(P[i*3])) continue;
+      let d=[P[i*3]-neutral[i*3],P[i*3+1]-neutral[i*3+1],(P[i*3+2]-neutral[i*3+2])*0.5];
+      const far=Math.hypot(x-mc[0],y-mc[1],z-mc[2]);
+      if(far>0.075) d=[0,0,0];                                          // the field fades to nothing away from the mouth
+      else if(th>0.001&&jawW[i]>0){                                     // the bone's share, taken out
+        const ry=y-jawPivot[1], rz=z-jawPivot[2], dy=(ry*c-rz*sn)-ry, dz=(ry*sn+rz*c)-rz;
+        d[1]-=jawW[i]*dy; d[2]-=jawW[i]*dz; }
+      const L=Math.hypot(...d); if(L>0.02) d=d.map(v=>v*0.02/L);
+      A.push([x,y,z]); R.push(d); Wt.push(far<0.04?4:1); }
+    if(k==='open'){                                                     // how far THIS jaw drops: a gain on the bone
+      const i=152, dyUser=P[i*3+1]-neutral[i*3+1], ry=ID.lm[i*3+1]-jawPivot[1], rz=ID.lm[i*3+2]-jawPivot[2], dyModel=((ry*c-rz*sn)-ry)*Math.max(0.5,jawW[i]);
+      if(dyModel<-0.002&&dyUser<0) ID.jawGain=clamp(dyUser/dyModel,0.6,1.8);
+      continue; }
+    const field=fitSpline(A,R,Wt,0.0008,0.003); if(!field) continue;
+    const morph=new Float32Array(H.nv*3), q=[0,0,0];
+    for(let v=0;v<H.nv;v++){ const x=H.pos[v*3],y=H.pos[v*3+1],z=H.pos[v*3+2];
+      if(Math.hypot(x-mc[0],y-mc[1],z-mc[2])>0.09) continue;
+      field(x,y,z,q); morph[v*3]=q[0]; morph[v*3+1]=q[1]; morph[v*3+2]=q[2]; }
+    out[toKey[k]]=morph;
+  }
+  return out;
+}
+
 /* ═══ §8b LIKENESS — the user's own face, on the fitted head ═════════════
    The fitter (§4b) moves parameters, so every face it makes is a plausible
    face — but only the faces its sliders can reach. What calibration captured
@@ -2469,24 +2584,10 @@ function autoTraits(cloud){
 const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003};   // …Tri: with a triangulated cloud (§8)
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
-let CONFORM_FEAT=null, CONFORM_CACHE=null;
-function conformField(S,cloud,conf){
-  if(!cloud) return null;
-  const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM)+'|'+!!ID.bundled;
-  const zW=ID.bundled?CONFORM.zTri:CONFORM.z, lamZ=ID.bundled?CONFORM.lamZTri:CONFORM.lamZ;
-  if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
-  if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
-  const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
-  for(let lm=0;lm<468;lm+=CONFORM.step){
-    if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
-    if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
-    const tp=lmTP(lm); if(!tp) continue;
-    const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
-    sculptPoint(tp[0],tp[1],S,P,o);
-    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*zW];
-    const L=Math.hypot(d[0],d[1],d[2]); if(L>CONFORM.max) d=d.map(v=>v*CONFORM.max/L);
-    A.push([o[0],o[1],o[2]]); R.push(d); Wt.push(CONFORM_FEAT.has(lm)?CONFORM.featW:1);
-  }
+// The smoothing spline itself: anchors A (xyz), their targets R (xyz),
+// weights Wt (a heavier anchor is held tighter), λ for x/y and λz for depth.
+// Returns field(x,y,z,out) — the displacement anywhere.
+function fitSpline(A,R,Wt,lam,lamZ){
   const n=A.length; if(n<20) return null;
   const N=n+1, D=new Float64Array(n*n);
   for(let i=0;i<n;i++) for(let j=0;j<i;j++){ const r=Math.hypot(A[i][0]-A[j][0],A[i][1]-A[j][1],A[i][2]-A[j][2]); D[i*n+j]=r; D[j*n+i]=r; }
@@ -2505,12 +2606,32 @@ function conformField(S,cloud,conf){
       for(let r=N-1;r>=0;r--){ let v=x[r]; for(let k=r+1;k<N;k++) v-=M[r*N+k]*x[k]; x[r]=v/(M[r*N+r]||1e-18); }
       return x; });
   };
-  const [wx,wy]=solve(CONFORM.lam,[0,1]), [wz]=solve(lamZ,[2]);
+  const [wx,wy]=solve(lam,[0,1]), [wz]=solve(lamZ,[2]);
   const field=(x,y,z,out=[0,0,0])=>{ let a=wx[n],b=wy[n],c=wz[n];
     for(let j=0;j<n;j++){ const r=Math.hypot(x-A[j][0],y-A[j][1],z-A[j][2]); a-=wx[j]*r; b-=wy[j]*r; c-=wz[j]*r; }
     out[0]=a; out[1]=b; out[2]=c; return out; };
-  // how closely it holds the landmarks (the smoothing lets noise go)
-  let rms=0, exy=0, ez=0; const q=[0,0,0];
+  return field;
+}
+let CONFORM_FEAT=null, CONFORM_CACHE=null;
+function conformField(S,cloud,conf){
+  if(!cloud) return null;
+  const key=JSON.stringify(S)+'|'+JSON.stringify(CONFORM)+'|'+!!ID.bundled;
+  const zW=ID.bundled?CONFORM.zTri:CONFORM.z, lamZ=ID.bundled?CONFORM.lamZTri:CONFORM.lamZ;
+  if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
+  if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
+  const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
+  for(let lm=0;lm<468;lm+=CONFORM.step){
+    if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
+    if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
+    const tp=lmTP(lm); if(!tp) continue;
+    const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
+    sculptPoint(tp[0],tp[1],S,P,o);
+    let d=[ob[0]-o[0],ob[1]-o[1],(ob[2]-o[2])*zW];
+    const L=Math.hypot(d[0],d[1],d[2]); if(L>CONFORM.max) d=d.map(v=>v*CONFORM.max/L);
+    A.push([o[0],o[1],o[2]]); R.push(d); Wt.push(CONFORM_FEAT.has(lm)?CONFORM.featW:1);
+  }
+  const field=fitSpline(A,R,Wt,CONFORM.lam,lamZ); if(!field) return null;
+  const n=A.length; let rms=0, exy=0, ez=0; const q=[0,0,0];
   for(let i=0;i<n;i++){ field(A[i][0],A[i][1],A[i][2],q); rms+=R[i][0]**2+R[i][1]**2+R[i][2]**2;
     exy+=(q[0]-R[i][0])**2+(q[1]-R[i][1])**2; ez+=(q[2]-R[i][2])**2; }
   field.anchors=n; field.rms=Math.sqrt(rms/n); field.fitMm={xy:+(Math.sqrt(exy/n)*1000).toFixed(2),z:+(Math.sqrt(ez/n)*1000).toFixed(2)};
@@ -3301,26 +3422,46 @@ function applyIdentity(p){
 const VO={on:false,ctx:null,an:null,buf:null,rec:null,pitch:0.5,energy:0};
 async function toggleVoice(){
   const b=el('b-voice');
-  if(VO.on){ VO.on=false;b.classList.remove('on');
+  if(VO.on){ VO.on=false; b.classList.remove('on'); b.style.backgroundImage='';
     try{VO.rec&&VO.rec.stop();}catch(_){} try{VO.ctx&&VO.ctx.close();}catch(_){}
-    VO.ctx=null; return; }
+    if(VO.stream) for(const t of VO.stream.getAudioTracks()) t.stop();
+    VO.ctx=null; VO.rec=null; VO.stream=null; hint('Voice off'); return; }
+  // the audio context is made IN the tap: made after an await it starts
+  // suspended on iOS and stays so — the mic then read as silence
+  const AC=window.AudioContext||window.webkitAudioContext; if(!AC){ hint('No audio API here'); return; }
+  VO.ctx=new AC(); try{ await VO.ctx.resume(); }catch(_){}
+  b.textContent='Mic…';
+  let st;
   try{
-    const st=await navigator.mediaDevices.getUserMedia({audio:true});
-    VO.ctx=new (window.AudioContext||window.webkitAudioContext)();
-    VO.an=VO.ctx.createAnalyser(); VO.an.fftSize=2048;
-    VO.ctx.createMediaStreamSource(st).connect(VO.an);
-    VO.buf=new Float32Array(2048);
-  }catch(e){ hint('Mic denied'); return; }
+    // one stream on iOS: a second getUserMedia can stop the first, so while
+    // the camera runs, ask for both together and hand the video back to the pip
+    const pip=el('pip'), had=pip.srcObject;
+    if(had&&TRK.on){
+      st=await navigator.mediaDevices.getUserMedia({audio:true,video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}});
+      pip.srcObject=st; try{ await pip.play(); }catch(_){} for(const t of had.getTracks()) t.stop();
+    } else st=await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){ hint('Mic: '+(e&&e.name==='NotAllowedError'?'denied':((e&&e.message)||e))); b.textContent='Voice';
+    try{VO.ctx.close();}catch(_){} VO.ctx=null; return; }
+  VO.stream=st;
+  VO.an=VO.ctx.createAnalyser(); VO.an.fftSize=2048;
+  VO.ctx.createMediaStreamSource(new MediaStream(st.getAudioTracks())).connect(VO.an);
+  VO.buf=new Float32Array(2048);
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  VO.srErr=null;
   if(SR){
-    VO.rec=new SR(); VO.rec.continuous=true; VO.rec.interimResults=true;
-    VO.rec.lang=navigator.language||'en-US';
-    VO.rec.onresult=e=>{const r=e.results[e.results.length-1];
-      if(r.isFinal&&r[0].transcript.trim()){CAP.st.text=r[0].transcript.trim();CAP.st.textDirty=true;}};
-    VO.rec.onend=()=>{ if(VO.on){try{VO.rec.start();}catch(_){}} };
-    try{VO.rec.start();}catch(_){}
+    try{
+      VO.rec=new SR(); VO.rec.continuous=true; VO.rec.interimResults=true;
+      VO.rec.lang=navigator.language||'en-US';
+      VO.rec.onresult=e=>{ const r=e.results[e.results.length-1], t=(r[0].transcript||'').trim();
+        if(r.isFinal&&t){ CAP.st.text=t; CAP.st.textDirty=true; hint('“'+t+'”'); } else if(t) hint('… '+t); };
+      VO.rec.onerror=e=>{ VO.srErr=e.error; if(e.error!=='no-speech'&&e.error!=='aborted') hint('Speech: '+e.error+' · prosody only'); };
+      // Safari ends a session every so often: start it again, unless it refused
+      VO.rec.onend=()=>{ if(VO.on&&VO.srErr!=='not-allowed'&&VO.srErr!=='service-not-allowed'){ try{VO.rec.start();}catch(_){} } };
+      VO.rec.start();
+    }catch(e){ VO.rec=null; hint('Speech API failed · prosody only'); }
   } else hint('No speech API here · prosody only');
-  VO.on=true; b.classList.add('on'); hint('Voice live · words become packets');
+  VO.on=true; b.classList.add('on'); b.textContent='Voice';
+  if(VO.rec) hint('Voice live · speak, and the words follow');
 }
 setInterval(()=>{
   if(!VO.on||!VO.an)return;
@@ -3329,6 +3470,7 @@ setInterval(()=>{
   let rms=0; for(let i=0;i<n;i++)rms+=b[i]*b[i];
   rms=Math.sqrt(rms/n);
   VO.energy+=(Math.min(1,rms*9)-VO.energy)*0.4;
+  el('b-voice').style.backgroundImage='linear-gradient(90deg,rgba(0,229,255,.32) '+Math.round(VO.energy*100)+'%,transparent 0)';
   if(rms>0.01){
     const sr=VO.ctx.sampleRate, lo=Math.floor(sr/350), hi=Math.min(n>>1,Math.ceil(sr/70));
     let best=0,bl=lo;
@@ -3403,7 +3545,7 @@ function remoteTick(){
       REM.wide=mix(REM.wide,cur.w,0.45);
       REM.speaking=true;
     }
-  } else if(REM.pros&&t.speaking){
+  } else if(REM.pros&&t.speaking&&t.tier<4){          // (a tracked mouth is better than an envelope)
     REM.bs.jawOpen+=(REM.pros.energy*0.65-REM.bs.jawOpen)*0.4;
   }
 }
@@ -3810,6 +3952,7 @@ function wire(){
   el('b-cam').onclick=startCamera;
   el('b-cal').onclick=()=>startCalibration(false);
   el('b-ref').onclick=()=>{ startCalibration(true); hint('Refining · averages into your scan'); };
+  el('b-read').onclick=()=>startReading();
   el('b-voice').onclick=toggleVoice;
   el('b-net').onclick=()=>{ el('netp').classList.toggle('op'); el('b-net').classList.toggle('on'); };
   document.querySelectorAll('#traits .pl[data-hair]').forEach(p=>p.onclick=()=>{
@@ -3869,7 +4012,10 @@ const DENSITY={
 };
 const GROUT={thin:0.9,flush:0.99};             // the face's linear share of its patch
 const BED_TINT=0.5, SAMPLE_BOOST=7;
-const MORPH_ORDER=['smile','frown','browUp','browDown','blinkL','blinkR','pucker','mouthWide'];
+// the rgb paint's dots clip in the room rig's tone curve where flat tiles
+// don't (they're albedo 1): measured 11 L* dark at 1.0, this pays it back
+const RGB_LIFT=1.55;
+const MORPH_ORDER=['smile','frown','browUp','browDown','blinkL','blinkR','pucker','mouthWide','funnel','press'];
 
 function avatarParts(){
   const H=AV.H, parts=[];
@@ -3895,10 +4041,20 @@ function avatarParts(){
   }
   for(const [m,ro,me,sp] of [[AV.neck,0.72,0,1],[AV.hair,0.58,0.03,1]]){
     if(!m) continue; const g=m.geometry, phys=m.material&&m.material.isMeshPhysicalMaterial;
-    if(m===AV.hair) parts.hair=parts.length;
-    parts.push({positions:arr(g,'position'),normals:arr(g,'normal'),colors:arr(g,'color'),index:g.index.array,
+    const part={positions:arr(g,'position'),normals:arr(g,'normal'),colors:arr(g,'color'),index:g.index.array,
       skinIndex:arr(g,'skinIndex'),skinWeight:arr(g,'skinWeight'),
-      roughness:phys?m.material.roughness:ro,metalness:phys?m.material.metalness:me,specular:phys?m.material.specularIntensity:sp});
+      roughness:phys?m.material.roughness:ro,metalness:phys?m.material.metalness:me,specular:phys?m.material.specularIntensity:sp};
+    if(m===AV.hair){
+      // hair is not skin: its tesserae are slivers laid along the strands (the
+      // flow: down the head, in the surface), finer than plain skin, and glass
+      // rather than matte — how mosaicists cut hair
+      parts.hair=parts.length;
+      const P=part.positions, N=part.normals, n=P.length/3, flow=new Float32Array(n*3), imp=new Float32Array(n).fill(0.5);
+      for(let i=0;i<n;i++){ const nx=N[i*3],ny=N[i*3+1],nz=N[i*3+2]; let fx=-ny*nx, fy=-1+ny*ny, fz=-ny*nz;   // (0,−1,0) less its normal part
+        const l=Math.hypot(fx,fy,fz)||1; flow[i*3]=fx/l; flow[i*3+1]=fy/l; flow[i*3+2]=fz/l; }
+      Object.assign(part,{flow,importance:imp,roughness:0.38,specular:0.6});
+    }
+    parts.push(part);
   }
   // ears ride the head bone rigidly: carry them into bind space through the
   // head bone's bind matrix (the inverse of its bone inverse)
@@ -3975,9 +4131,13 @@ function buildTesserae(){
     if(job!==TES.job||head!==AV.head||!TES.on) return false;      // superseded
     const t1=performance.now();
     removeTesserae();
-    if(look.paint==='pure'&&!TES.glyphs) TES.glyphs=TK.makeGlyphs(THREE);
+    // the mosaic page's paints: pure (two pure hues through a glyph, the base
+    // solved), muted (the patch's own light and dark through the glyph), rgb
+    // (per-channel dither of pure R, G, B) — see docs/optical-language.md
+    if((look.paint==='pure'||look.paint==='muted')&&!TES.glyphs) TES.glyphs=TK.makeGlyphs(THREE);
+    if((look.paint==='rgb'||look.paint==='blobs')&&!TES.noise) TES.noise=TK.makeNoise(THREE);
     const set=TK.buildTileMeshes(THREE,tiles,{RoundedBoxGeometry,inset:GROUT[look.grout],bedTint:BED_TINT,
-      paint:look.paint,glyphs:TES.glyphs,pickGlyph});
+      paint:look.paint,glyphs:TES.glyphs,noise:TES.noise,rgbLift:RGB_LIFT,pickGlyph});
     for(const m of set.meshes) scene.add(m);
     TES.set=set;
     // the setting bed: the tiled surfaces themselves, just below the faces,
@@ -4086,6 +4246,15 @@ window.mosaic={THREE,
     for(let i=0;i<sh.W*sh.H;i++){ const a=m[i]/255; im.data[i*4]=im.data[i*4]*(1-a)+255*a; im.data[i*4+1]*=1-a*0.8; im.data[i*4+2]*=1-a*0.8; }
     g.putImageData(im,0,0); return cv.toDataURL('image/png'); },
   // the room rig's balance, re-applied and re-calibrated (exposure, balance)
+  // a reading, fed synthetically: the neutral landmarks with the lips moved
+  // (dx, dy, dz in image units, jawOpen score), for checking the plumbing
+  fakeRead(shapes){ if(!CAP.neutral) return 'calibrate first';
+    const LIPS=new Set([...LIPS_IDS,...LIPS_IN_IDS,...LIPS_UP_IN,...LIPS_LO_IN]);
+    for(const k in shapes){ const o=shapes[k], lm=CAP.neutral.pts.map((p,i)=>{ const q={x:p[0],y:p[1],z:p[2]};
+        if(LIPS.has(i)){ q.x+=(q.x-0.5)*(o.sx||0); q.y+=(o.dy||0)*Math.sign(q.y-(CAP.neutral.pts[13][1]+CAP.neutral.pts[14][1])/2||1); q.z+=(o.dz||0); } return q; });
+      READ.best[k]={score:o.score||0.8,jaw:o.jaw||0,lm,t:performance.now()}; }
+    commitMouth(); return JSON.stringify({mouth:AV.mouth,jawGain:ID.jawGain}); },
+  get read(){ return {active:READ.active,best:Object.fromEntries(Object.entries(READ.best).map(([k,b])=>[k,+b.score.toFixed(2)])),mouth:AV.mouth,jawGain:ID.jawGain}; },
   relight(key,fill){ LIGHT.key=key; LIGHT.fill=fill; if(LIGHT.rigs) LIGHT.rigs.room(); ID.gain=null; LIGHT.exposure.room=1; renderer.toneMappingExposure=1;
     buildAvatar(); ID.gainLog=calibrateColour(); return JSON.stringify({key,fill,probe:AV.photo&&AV.photo.probe,x:LIGHT.exposure.room}); },
   calDump(){ const v=el('pip'); return JSON.stringify({W:v.videoWidth,H:v.videoHeight,lm:ID.lm&&Array.from(ID.lm,x=>+x.toFixed(5)),
