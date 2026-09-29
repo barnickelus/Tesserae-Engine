@@ -646,7 +646,7 @@ function buildHead(S, opts){
   // onto the exact ellipse — the edge then reads as an eyelid at any
   // resolution instead of a staircase.
   const EAR=[0.0155*S.eyeSize, 0.0072*S.eyeSize], EYC=0.0008, CANT=0.10;
-  const MAR=[LW*0.90, 0.0013];
+  const MAR=[LW*0.90, 0.0002];   // the slit at rest: lips meeting — a line, not a gap (a 2.6 mm gap had shown the teeth)
   const eyeR2=(x,y,sx)=>{
     const dx=(x-sx*EY)/EAR[0], dy=(y-EYC)/EAR[1];
     const c=Math.cos(sx*CANT), s=Math.sin(sx*CANT);
@@ -1445,13 +1445,13 @@ function buildAvatar(){
   const chinH=Math.max(0.025,H.P.MY-H.P.CHY), cs=chinH/0.041;
   const cavMat=new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}), cavGeo=new THREE.SphereGeometry(0.024,20,14);
   const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,1.05*cs,1.05*cs);
-  cav.position.fromArray(toHead(wm([0,H.P.MY-0.008*cs,0.002]))); head.add(cav);
+  cav.position.fromArray(toHead(wm([0,H.P.MY-0.008*cs,-0.012]))); head.add(cav);   // its front behind the lower teeth's swing at a full opening
   const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.70*cs,0.60);
   cav2.position.fromArray(toJaw(wm([0,H.P.MY-0.012*cs,0.019]))); jaw.add(cav2);
   cav.userData.tesseraShared=cav2.userData.tesseraShared=true;
   const teethMat=new THREE.MeshStandardMaterial({color:0xf2ece2,roughness:0.35});
   const upT=new THREE.Mesh(new THREE.BoxGeometry(0.028,0.0055,0.007),teethMat);
-  upT.position.fromArray(toHead(wm([0,H.P.MY+0.0024,0.0358]))); head.add(upT);
+  upT.position.fromArray(toHead(wm([0,H.P.MY+0.0015,0.0358]))); head.add(upT);   // the incisors' edge a millimetre below the lip line, as it hangs
   const loT=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.0050,0.007),teethMat);
   loT.position.fromArray(toJaw(wm([0,H.P.MY-0.0068,0.0352]))); jaw.add(loT);
   upT.userData.tesseraShared=loT.userData.tesseraShared=true; AV.mouthParts=[cav,cav2,upT,loT];
@@ -1497,7 +1497,7 @@ function buildBust(H,COL,skel){
     [-0.228,0.132,0.070,-0.012],[-0.202,0.101,0.063,-0.014],
     [-0.182,0.072,0.056,-0.016],[-0.164,0.052,0.049,-0.018],
     [-0.146,0.043,0.044,-0.019],[-0.126,0.039,0.041,-0.020],
-    [-0.106,0.038,0.040,-0.021],[-0.090,0.036,0.038,-0.022]];
+    [-0.106,0.038,0.034,-0.030],[-0.090,0.036,0.030,-0.034]];   // the top two ride inside the head: kept behind the mouth's space (their fronts had shown through an open mouth)
   const NR=48, NS=SEC.length;
   const nv=NR*NS, pos=new Float32Array(nv*3), col=new Float32Array(nv*3);
   const si=new Uint16Array(nv*4), sw=new Float32Array(nv*4), idx=[];
@@ -2823,14 +2823,14 @@ function snapFeatures(H,cloud){
   const eyes=EYE_IDS.map(ids=>ids.map(pt)), cx=e=>e.reduce((a,p)=>a+p[0],0)/e.length;
   const eP=eyes.find(e=>cx(e)>0), eN=eyes.find(e=>cx(e)<0);
   out.eyeP=eP?move(H.rims.eyeP,eP,0):null; out.eyeN=eN?move(H.rims.eyeN,eN,0):null;
-  out.mouth=move(H.rims.mouth,[...LIPS_UP_IN,...LIPS_LO_IN.slice(1,-1)].map(pt),0.0006,true);
+  out.mouth=move(H.rims.mouth,[...LIPS_UP_IN,...LIPS_LO_IN.slice(1,-1)].map(pt),0.0002,true);
   // The slit's two rims are paired by column (the cut row's top and bottom
   // edges). A closed mouth's contour put both on one line, and a rim moved
   // onto the user's line can still reach past the row beyond it: keep the
   // rims a slit apart, then walk each column outward pushing any row that
   // would cross the rim — outward only, and only where it must.
   if(out.mouth&&H.mrow>=0){
-    const NA=H.NA, at=(iu,iv)=>iv*(NA+1)+iu, HALF=0.0006, GAP=0.0005, cx=out.mouth[0], reach=H.P.LW*0.9+0.02;
+    const NA=H.NA, at=(iu,iv)=>iv*(NA+1)+iu, HALF=0.0002, GAP=0.0005, cx=out.mouth[0], reach=H.P.LW*0.9+0.02;
     for(let iu=0;iu<=NA;iu++){
       const u=at(iu,H.mrow), l=at(iu,H.mrow+1); if(Math.abs(P[u*3]-cx)>reach) continue;
       if(P[u*3+1]-P[l*3+1]<2*HALF){ const mid=(P[u*3+1]+P[l*3+1])/2; P[u*3+1]=mid+HALF; P[l*3+1]=mid-HALF; }
