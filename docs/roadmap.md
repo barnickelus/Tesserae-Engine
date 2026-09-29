@@ -1305,7 +1305,11 @@
         36 mm blend band), so an "ah" stretched the chin over a closed
         mouth. Now: one row is cut across the lip span (the one that
         straddles the line at the centre column, so no quad twists across
-        the opening), its rims projected straight onto the slit; within
+        the opening), first centred on the line at every column by a
+        shear fading over six rows (the sculpt tilts rows a little across
+        the span, and a rim projected from a tilted row crossed the next
+        row and creased every fitted head's lower lip), its rims then
+        projected straight onto the slit; within
         the lip span the skin weight splits at the slit (lower lip the
         jaw's, upper the head's), widening to a soft blend past the
         corners; the hinge moved from eye level to the ear canal's (a
