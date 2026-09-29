@@ -1387,7 +1387,7 @@ const TRAITS={hair:'short',beard:'none'};
 // spec: the skin's specular strength — the photo already holds the person's
 // own highlights, and a full sheen of the room on top greyed dark skin, brows
 // and makeup
-const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true,mouth:true};   // §8b, each switchable for comparison
+const LIKE={conform:true,photo:true,texture:true,probe:true,spec:0.3,outline:true,features:true,bundle:true,mouth:true,hairTex:true,lashes:true};   // §8b, each switchable for comparison
 
 /* Eye: white sclera sphere + a domed iris cap coloured radially in
    vertex colours (pupil → iris → limbal ring). Avoids projecting a
@@ -1566,7 +1566,7 @@ function buildAvatar(){
   // ── eyelashes: fans of lashes along each lid margin, on the head bone (the
   // eye bones turn with the gaze; lids don't), the upper ones swung down with
   // a blink by the puppet ──
-  AV.lashes=buildLashes(H,nrm,COL,W,head);
+  AV.lashes=LIKE.lashes?buildLashes(H,nrm,COL,W,head):null;
 
   // ── mouth cavity + teeth (positions are bone-local, hence the offsets) ──
   const toHead=w=>sub(w,W.head), toJaw=w=>sub(w,W.jaw);
@@ -1816,8 +1816,10 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   // and behind: how far the hair stands off the back of the head at each
   // height, from the side views' profile (the front view can't see it; the
   // sides' own thickness stood in for it and flattened every head's back)
-  const hBack=new Float32Array(NB).fill(NaN);
-  for(const [y,zb] of (F.prof||[])){ const b=bin(y); hBack[b]=isNaN(hBack[b])?zb:Math.min(hBack[b],zb); }
+  // (rows below the jaw's border are hair hanging behind the neck, not the
+  // head's back; and the sides' turn is a partial profile, so it is capped)
+  const hBack=new Float32Array(NB).fill(NaN), yBorder=H.P.CHY+0.020;
+  for(const [y,zb] of (F.prof||[])){ if(y<yBorder) continue; const b=bin(y); hBack[b]=isNaN(hBack[b])?zb:Math.min(hBack[b],zb); }
   // the hair's silhouette per side, binned the same way; thickness = how far it
   // stands off the head there (gaps filled from the nearest measured height)
   const hPos=new Float32Array(NB).fill(NaN), hNeg=new Float32Array(NB).fill(NaN);
@@ -1848,7 +1850,8 @@ function buildHairFit(H,nrm,COL,F,skinCol){
     cov[i]=smoothstep(-0.004,0.016,(y-line)/Math.sqrt(1+sl*sl));
     const nx=nrm[i*3],ny=nrm[i*3+1],nz=nrm[i*3+2], b=bin(y);
     let side=x>0?tPos[b]:tNeg[b]; if(isNaN(side)) side=0.004;
-    const tb=isNaN(tBack[b])?Math.max(isNaN(tPos[b])?0:tPos[b],isNaN(tNeg[b])?0:tNeg[b],0.004):tBack[b];
+    const tSide=Math.max(isNaN(tPos[b])?0:tPos[b],isNaN(tNeg[b])?0:tNeg[b],0.004);
+    const tb=isNaN(tBack[b])?tSide:Math.min(tBack[b],Math.max(0.03,tSide*1.6));
     t[i]=nx*nx*side+(ny>0?ny*ny*tTop:ny*ny*side)+(nz>0?nz*nz*tFront:nz*nz*tb);
   }
   // even the thickness over the scalp's own grid
@@ -1949,7 +1952,7 @@ function buildHairFit(H,nrm,COL,F,skinCol){
   // the photographs themselves on the hair, as on the face: its strands at the
   // camera's own resolution, each view where it saw hair squarely (the vertex
   // colour, a 3 mm average, stays beneath — the tesserae read that)
-  if(LIKE.texture&&VIEWS.length){
+  if(LIKE.texture&&LIKE.hairTex&&VIEWS.length){
     const n=Pp.length/3, Nn=g.attributes.normal.array, T=VIEWS.slice(0,3), pw=new Float32Array(n*3), pg=new Float32Array(n*3).fill(1), VG=(AV.photo&&AV.photo.viewGain)||{};
     T.forEach((V,k)=>{ const uv=new Float32Array(n*2);
       for(let i=0;i<n;i++){ const x=Pp[i*3],y=Pp[i*3+1],z=Pp[i*3+2], [u,v]=V.project(x,y,z); uv[i*2]=u/V.sh.W; uv[i*2+1]=v/V.sh.H;
@@ -3432,10 +3435,12 @@ function bakePhoto(H,nrm){
   if(skin.length>40){
     const med=k=>{ const a=skin.map(v=>out[v*3+k]).sort((x,y)=>x-y); return a[a.length>>1]; };
     const fm=[med(0),med(1),med(2)], ch=c=>{ const t=c[0]+c[1]+c[2]||1e-6; return [c[0]/t,c[1]/t]; }, fc=ch(fm), Lf=lumY(...fm);
+    // (and no photo texture there: even a pixel that passes carries the chin's
+    // shadow, which read as a grey patch under every chin)
     for(let v=0;v<nv;v++){ if(H.canon[v*3+1]>=H.P.CHY+0.006||wsum[v]<1e-4) continue;
       const c=[out[v*3],out[v*3+1],out[v*3+2]], cc=ch(c), d=Math.hypot(cc[0]-fc[0],cc[1]-fc[1]);
-      const ok=smoothstep(0.045,0.02,d)*smoothstep(0.45,0.7,lumY(...c)/Math.max(Lf,1e-3));
-      for(let k=0;k<3;k++) out[v*3+k]=fm[k]+(c[k]-fm[k])*ok; mask[v]*=ok; }
+      const ok=smoothstep(0.035,0.015,d)*smoothstep(0.65,0.9,lumY(...c)/Math.max(Lf,1e-3));
+      for(let k=0;k<3;k++) out[v*3+k]=fm[k]+(c[k]-fm[k])*ok*ok; mask[v]=0; }
   }
   // the skin the photograph never saw (skull, neck, ears) takes the face's
   // own median — so the seam at the edge of the photo isn't a colour step
