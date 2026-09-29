@@ -654,17 +654,26 @@ function buildHead(S, opts){
     return [rx*rx+ry*ry, rx, ry, c, s];
   };
   const eyeAp=(x,y)=>{ for(const sx of[1,-1]) if(eyeR2(x,y,sx)[0]<1) return true; return false; };
-  const mouthAp=(x,y)=>{ const dx=x/MAR[0], dy=(y-MY)/MAR[1]; return dx*dx+dy*dy<1; };
-
+  // The slit is thinner than a grid row (1.3 mm against 2–4 mm), so testing
+  // quad centres against it cut the mouth only when a row happened to land
+  // on the line — on most heads it never did, the mouth stayed a closed
+  // surface, and a dropped jaw stretched the chin instead of parting the
+  // lips. Cut one row across the lip span: the row that straddles the line
+  // at the face's centre column (chosen per column, the row shifted by one
+  // where the sculpt tilts it, and a quad twisted across the opening).
   const idx=[], cut=[];
-  const at=(iu,iv)=>iv*(NA+1)+iu;
+  const at=(iu,iv)=>iv*(NA+1)+iu, ivOf=i=>Math.floor(i/(NA+1));
+  let MROW=-1;
+  { const iuC=Math.round(NA/2);
+    for(let iv=0;iv<NP;iv++){ if(canon[at(iuC,iv)*3+1]>=MY&&canon[at(iuC,iv+1)*3+1]<MY){ MROW=iv; break; } } }
+  const mouthRow=(iv,cx)=>iv===MROW&&Math.abs(cx)<MAR[0]*0.985;
   const inKept=new Uint8Array(nv), inCut=new Uint8Array(nv);
   for(let iv=0;iv<NP;iv++)for(let iu=0;iu<NA;iu++){
     const a=at(iu,iv),b=at(iu+1,iv),c=at(iu+1,iv+1),d=at(iu,iv+1);
     const cx=(canon[a*3]+canon[b*3]+canon[c*3]+canon[d*3])/4;
     const cy=(canon[a*3+1]+canon[b*3+1]+canon[c*3+1]+canon[d*3+1])/4;
     const cz=(canon[a*3+2]+canon[b*3+2]+canon[c*3+2]+canon[d*3+2])/4;
-    if(cz>0.02&&(eyeAp(cx,cy)||mouthAp(cx,cy))){
+    if(cz>0.02&&(eyeAp(cx,cy)||mouthRow(iv,cx))){
       inCut[a]=inCut[b]=inCut[c]=inCut[d]=1; cut.push(a);
       continue;
     }
@@ -683,8 +692,11 @@ function buildHead(S, opts){
     (dM<Math.min(dL,dR)?rims.mouth:dL<dR?rims.eyeP:rims.eyeN).push(i);
     let nx=x, ny=y;
     if(dM<Math.min(dL,dR)){
-      const dx=x/MAR[0], dy=(y-MY)/MAR[1], r=Math.hypot(dx,dy);
-      if(r>1e-9){ nx=(dx/r)*MAR[0]; ny=MY+(dy/r)*MAR[1]; }
+      // straight down (or up) onto the slit: a radial projection in the
+      // ellipse's own units, 17:1, had dragged a vertex 3 mm above the
+      // line from 15 mm out to 6 mm and bunched the rim at the centre
+      const dx=clamp(x/MAR[0],-1,1);
+      nx=dx*MAR[0]; ny=MY+(ivOf(i)<=MROW?1:-1)*MAR[1]*Math.sqrt(1-dx*dx);   // the cut row's top edge is the upper lip's
     } else {
       const sx=dL<dR?1:-1;
       const [,rx,ry,c,s]=eyeR2(x,y,sx), r=Math.hypot(rx,ry);
@@ -854,14 +866,26 @@ function buildMorphs(H,pos){
 }
 
 /* ── Skin weights: head / jaw / neck ── */
+// The jaw's hinge (canonical metres): the ear canal's height — level with the
+// nose base — and 8 cm behind the lips. Set at eye level it had swung a
+// dropped jaw back more than down (the chin receded 4 cm at a full opening
+// and the lower lip went in behind the upper); from here the lip's swing is
+// three parts down to one back, the chin's about even, as a mandible's is.
+const JAW_PIVOT=[0,-0.042,-0.030];
 function buildSkin(H){
   const n=H.nv, si=new Uint16Array(n*4), sw=new Float32Array(n*4);
-  const {MY,CHY}=H.P;
+  const {MY,CHY}=H.P, MAR0=H.P.LW*0.90;                          // the mouth slit's half-width (the aperture's)
   for(let i=0;i<n;i++){
     const x=H.canon[i*3],y=H.canon[i*3+1],z=H.canon[i*3+2],f=H.front[i];
     // jaw: everything below the mouth line that faces forward, fading
-    // toward the hinge at the back
-    let wj=smoothstep(MY+0.006,MY-0.030,y)*smoothstep(-0.055,0.005,z);
+    // toward the hinge at the back. Within the lip span the split is the
+    // slit itself — the lower lip is the jaw's, the upper lip the head's —
+    // so a dropped jaw parts the lips instead of stretching the chin
+    // (a 36 mm band had left the lip line a tenth of the drop); past the
+    // corners the band widens to soft tissue's blend.
+    const ax=Math.abs(x), sx=smoothstep(MAR0*0.9,MAR0+0.022,ax);
+    const cy=MY-0.012*sx, hy=0.0012+0.0168*sx;
+    let wj=smoothstep(cy+hy,cy-hy,y)*smoothstep(-0.055,0.005,z);
     wj*=smoothstep(0.085,0.050,Math.abs(x))*0.55+0.45*smoothstep(0.090,0.020,Math.abs(x));
     wj=cl01(wj);
     let wn=smoothstep(CHY+0.012,CHY-0.040,y)*(1-f*0.8);   // under-chin toward neck
@@ -1292,7 +1316,7 @@ function buildAvatar(){
   const morphs=buildMorphs(H,H.pos);
   // the user's own mouth shapes, where a reading caught them (§8c)
   AV.mouth=null;
-  if(ID.mouth&&LIKE.mouth){ const um=mouthMorphs(H,si,sw,wp([0,-0.008,-0.030])); if(um){ Object.assign(morphs,um); AV.mouth=Object.keys(um); } }
+  if(ID.mouth&&LIKE.mouth){ const um=mouthMorphs(H,si,sw,wp(JAW_PIVOT)); if(um){ Object.assign(morphs,um); AV.mouth=Object.keys(um); } }
 
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(H.pos,3));
@@ -1322,7 +1346,7 @@ function buildAvatar(){
   // the anatomy reads directly: head pivots at the atlas, jaw at the
   // condyle, eyes at the eyeball centres.
   const W={root:[0,-0.300,0], neck:[0,-0.160,-0.020], head:[0,-0.045,-0.022],
-           jaw:wp([0,-0.008,-0.030]), eL:wp([H.P.EY,0,0.048]), eR:wp([-H.P.EY,0,0.048])};
+           jaw:wp(JAW_PIVOT), eL:wp([H.P.EY,0,0.048]), eR:wp([-H.P.EY,0,0.048])};
   // an eyeball sits behind its opening: centred on the user's own lid contour
   if(AV.snap) for(const [k,c] of [['eL',AV.snap.eyeP],['eR',AV.snap.eyeN]]) if(c){ W[k][0]=c[0]; W[k][1]=c[1]; }
   const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
@@ -1399,10 +1423,15 @@ function buildAvatar(){
   // the cavity in two halves, like the teeth: the upper on the head, the
   // lower on the jaw — one sphere on the head poked out of the chin's sides
   // when the jaw dropped and the skin there swung back
+  // Both are the dark of a mouth: together they must close off everything
+  // behind the opening at any jaw (the neck's top rises inside the head, and
+  // showed through an open mouth as a skin-coloured floor between two thin
+  // shells). The head's sits deep and round, its underside clear of the
+  // chin's swing; the jaw's is tall enough to meet it at a full opening.
   const cavMat=new THREE.MeshStandardMaterial({color:0x2a0d10,roughness:0.85}), cavGeo=new THREE.SphereGeometry(0.024,20,14);
-  const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,0.46,0.42);
-  cav.position.fromArray(toHead(wm([0,H.P.MY+0.002,0.020]))); head.add(cav);
-  const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.46,0.40);
+  const cav=new THREE.Mesh(cavGeo,cavMat); cav.scale.set(1.10,1.05,1.05);
+  cav.position.fromArray(toHead(wm([0,H.P.MY-0.008,0.002]))); head.add(cav);
+  const cav2=new THREE.Mesh(cavGeo,cavMat); cav2.scale.set(1.04,0.70,0.60);
   cav2.position.fromArray(toJaw(wm([0,H.P.MY-0.012,0.019]))); jaw.add(cav2);
   cav.userData.tesseraShared=cav2.userData.tesseraShared=true;
   const teethMat=new THREE.MeshStandardMaterial({color:0xf2ece2,roughness:0.35});

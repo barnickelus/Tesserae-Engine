@@ -1293,7 +1293,27 @@
       alike, as the optics say they should; rgb 21.2 / 13.7 at first, 11 L*
       dark: its dots are albedo 1 and clip in the room rig's tone curve where
       a flat tile of the same mean does not (the mode is exact in linear
-      light), so the kit takes a coverage lift (1.55 here) to pay it back.
+      light), so the kit takes a coverage lift (1.55 here) to pay it back:
+      19.3 / 9.2 with it, the lightness back to flat's (ΔL* −4.0 against
+      −3.9). What remains is the dither's own colour grain (ΔC 15.5 of the
+      19.3 at 30 ppd, 6.4 at 240), the look of the mode, not a fault in it.
+      · The mouth, seen open for the first time. Rendering the jaw dropped
+        showed the lips did not part: the mouth slit (1.3 mm) is thinner
+        than a grid row, so testing quad centres against it cut a hole
+        only when a row chanced onto the line — on the headless heads
+        never — and the lower lip carried a tenth of the jaw's weight (a
+        36 mm blend band), so an "ah" stretched the chin over a closed
+        mouth. Now: one row is cut across the lip span (the one that
+        straddles the line at the centre column, so no quad twists across
+        the opening), its rims projected straight onto the slit; within
+        the lip span the skin weight splits at the slit (lower lip the
+        jaw's, upper the head's), widening to a soft blend past the
+        corners; the hinge moved from eye level to the ear canal's (a
+        dropped jaw had swung the lip back more than down); and the two
+        cavity shells were enlarged to close off the interior at any
+        opening — the neck's top rises inside the head and had shown
+        through as a skin-coloured floor. Teeth and a dark mouth at every
+        opening, front and three-quarter.
 
 ## Backlog
 
