@@ -4300,7 +4300,7 @@ let FROZEN=false;
 window.mosaic={THREE,
   get scene(){return scene;}, get camera(){return camera;}, get renderer(){return renderer;},
   get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);}, get H(){return AV.H;},
-  rebuild(){ buildAvatar(); return AV.tris; },   // the avatar again from the same identity (a harness comparing settings)
+  rebuildAvatar(){ buildAvatar(); return AV.tris; },   // the avatar again from the same identity (a harness comparing settings); `rebuild` below is the tesserae's
   // where the tracker's landmark lm sits on this head's sculpt (the conform's anchor for it), with the mouth line
   lmModel(lm,tp){ tp=tp||lmTP(lm); if(!tp) return null; const S=AV.S||measToShape(ID.meas), P=derived(S), o=new Float32Array(8); sculptPoint(tp[0],tp[1],S,P,o); return [o[0],o[1],o[2],P.MY,P.LW]; },
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
