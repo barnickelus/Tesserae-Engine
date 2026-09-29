@@ -2625,7 +2625,8 @@ function mouthMorphs(H,si,sw,jawPivot){
 // and ridges wherever neighbouring landmarks disagreed by a millimetre.) The
 // features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
 // held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
-const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003};   // …Tri: with a triangulated cloud (§8)
+const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003,
+  mouthAnchors:true,chinAnchors:true,perioralSkip:true};   // …Tri: with a triangulated cloud (§8); the last three: the mouth (and chin midline) on the sculpt's own features, the tracker's perioral ring left out — each false for comparison
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
 // The smoothing spline itself: anchors A (xyz), their targets R (xyz),
@@ -2698,10 +2699,11 @@ function conformField(S,cloud,conf){
   if(CONFORM_CACHE&&CONFORM_CACHE.cloud===cloud&&CONFORM_CACHE.conf===conf&&CONFORM_CACHE.key===key) return CONFORM_CACHE.field;
   if(!CONFORM_FEAT) CONFORM_FEAT=new Set([...EYE_IDS.flat(),...BROW_IDS.flat(),...LIPS_IDS,...LIPS_IN_IDS,...NOSE_IDS]);
   const P=derived(S), o=new Float32Array(8), A=[], R=[], Wt=[];
-  const MOUTH=new Map(mouthSpecs(P).map(([lm,x,y])=>[lm,[x,y]]));
+  const CHIN=new Set([18,200,199,175,152]);
+  const MOUTH=new Map(mouthSpecs(P).filter(([lm])=>CHIN.has(lm)?CONFORM.chinAnchors:CONFORM.mouthAnchors).map(([lm,x,y])=>[lm,[x,y]]));
   for(let lm=0;lm<468;lm+=CONFORM.step){
     if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
-    if(PERIORAL_SKIP.has(lm)) continue;
+    if(CONFORM.perioralSkip&&PERIORAL_SKIP.has(lm)) continue;
     if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
     const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
     if(MOUTH.has(lm)){ const [mx,my]=MOUTH.get(lm); sculptAt(S,P,mx,my,o); }
