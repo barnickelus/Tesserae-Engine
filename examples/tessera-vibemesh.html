@@ -2626,7 +2626,7 @@ function mouthMorphs(H,si,sw,jawPivot){
 // features' landmarks — eyes, brows, lips, nose, dense and well tracked — are
 // held tight; the rest loosely; depth, the tracker's least sure axis, loosest.
 const CONFORM={lam:0.001,lamZ:0.01,featW:8,z:0.7,max:0.018,step:1,zTri:1.0,lamZTri:0.003,
-  mouthAnchors:true,chinAnchors:true,perioralSkip:true};   // …Tri: with a triangulated cloud (§8); the last three: the mouth (and chin midline) on the sculpt's own features, the tracker's perioral ring left out — each false for comparison
+  mouthAnchors:true,chinAnchors:true,perioralSkip:true,chinLift:0};   // chinLift: metres the chin anchors sit above the sculpt's chin bottom (the tracker's menton sits above the silhouette's)   // …Tri: with a triangulated cloud (§8); the last three: the mouth (and chin midline) on the sculpt's own features, the tracker's perioral ring left out — each false for comparison
 const LOCATION_PARAMS=['headW','faceLen','jawW','jawTaper','chinProj','noseLen','noseW','noseProj','eyeSpacing','eyeSize',
   'mouthW','lipFull','browHeight','browProm','cheekProm'];
 // The smoothing spline itself: anchors A (xyz), their targets R (xyz),
@@ -2673,7 +2673,7 @@ function mouthSpecs(P){
   const {MY,LW,CHY}=P, hU=0.0108*P.S.lipFull, hL=0.0168*P.S.lipFull, sl=LW*0.9;   // sl: the slit's half-width
   const out=[[61,LW,MY],[291,-LW,MY],[0,0,MY+hU],[17,0,MY-hL],[13,0,MY+0.0022],[14,0,MY-0.0026],
     [11,0,MY+0.55*hU],[12,0,MY+0.3*hU],[15,0,MY-0.45*hL],[16,0,MY-0.75*hL],
-    [18,0,MY-hL-0.004],[200,0,MY-hL-0.009],[199,0,MY-hL-0.014],[175,0,CHY+0.0085],[152,0,CHY+0.0025]];
+    [18,0,MY-hL-0.004],[200,0,MY-hL-0.009],[199,0,MY-hL-0.014],[175,0,CHY+0.0085+CONFORM.chinLift],[152,0,CHY+0.0025+CONFORM.chinLift]];
   const pairs=[ // [right id, left id, x fraction, y]
     [185,409,0.78*LW,MY+0.35*hU],[40,270,0.60*LW,MY+0.70*hU],[39,269,0.40*LW,MY+0.92*hU],[37,267,0.20*LW,MY+hU],
     [146,375,0.80*LW,MY-0.35*hL],[91,321,0.62*LW,MY-0.70*hL],[181,405,0.42*LW,MY-0.90*hL],[84,314,0.20*LW,MY-hL],
@@ -4300,6 +4300,7 @@ let FROZEN=false;
 window.mosaic={THREE,
   get scene(){return scene;}, get camera(){return camera;}, get renderer(){return renderer;},
   get root(){return AV.root;}, get ready(){return AV.built&&(!TES.on||!!TES.set);}, get H(){return AV.H;},
+  rebuild(){ buildAvatar(); return AV.tris; },   // the avatar again from the same identity (a harness comparing settings)
   // where the tracker's landmark lm sits on this head's sculpt (the conform's anchor for it), with the mouth line
   lmModel(lm,tp){ tp=tp||lmTP(lm); if(!tp) return null; const S=AV.S||measToShape(ID.meas), P=derived(S), o=new Float32Array(8); sculptPoint(tp[0],tp[1],S,P,o); return [o[0],o[1],o[2],P.MY,P.LW]; },
   get stats(){return TES.stats;}, TES, rebuild:buildTesserae, parts:avatarParts,
