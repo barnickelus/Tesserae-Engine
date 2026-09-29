@@ -2703,7 +2703,7 @@ function conformField(S,cloud,conf){
   const MOUTH=new Map(mouthSpecs(P).filter(([lm])=>CHIN.has(lm)?CONFORM.chinAnchors:CONFORM.mouthAnchors).map(([lm,x,y])=>[lm,[x,y]]));
   for(let lm=0;lm<468;lm+=CONFORM.step){
     if(FACE_OVAL.has(lm)&&lm!==152) continue;        // the outline is the tracker's guess
-    if(CONFORM.perioralSkip&&PERIORAL_SKIP.has(lm)) continue;
+    if(CONFORM.perioralSkip&&(PERIORAL_SKIP.has(lm)||(!CONFORM.chinAnchors&&(lm===18||lm===200||lm===199)))) continue;   // the tracker's lip-to-chin midline contradicts an analytic lower lip
     if(conf&&isFinite(conf[lm])&&conf[lm]<0.25) continue;
     const ob=[cloud[lm*3],cloud[lm*3+1],cloud[lm*3+2]]; if(!ob.every(isFinite)) continue;
     if(MOUTH.has(lm)){ const [mx,my]=MOUTH.get(lm); sculptAt(S,P,mx,my,o); }
